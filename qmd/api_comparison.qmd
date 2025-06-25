@@ -5,72 +5,18 @@ editor: visual
 theme: yeti
 ---
 
-## 1. Google Maps Platform
+## Key Concepts + Vocabulary
 
-### Pricing Structure ([as of March 2025](https://9to5google.com/2024/12/09/google-maps-platform-usage-limits/))
+### What is a POI (Point of Interest)
 
--   Monthly Free Tier:
-    -   10,000 Geocoding API requests
-    -   10,000 Places API requests
-    -   10,000 Maps JavaScript API loads
--   Overage Pricing:
-    -   Geocoding: \$5 per 1,000 requests
-    -   Places Details: \$17 per 1,000 requests
-    -   Nearby Search: \$32 per 1,000 requests
+A **point of interest** is any specific location that someone might find useful or interesting. For this specific use case, our POIs include:
 
-### Rate Limits:
+-   **Risk locations**: Bars, liquor stores, nightclubs
+-   **Support locations**: Hospitals, treatment centers, AA meetings
+-   **Routine locations**: Work, home, church, gym
 
--   50 requests per second (can be increased..?)
+### Key Terms
 
-### Strengths:
+An **API (Application Programming Interface)** is a service that lets your computer program automatically request information from another company's database. 
 
--   High accuracy in urban areas
--   High coverage of businesses
--   Real-time updates (not useful unless RTS)
--   lots of metadata
--   good for alcohol VENUE detection (bars, nightclubs, liquor stores)
-
-### Limitations:
-
--   Cost prohibitive for RTS
--   Cannot identify restaurants serving alcohol specifically???
--   Requires billing account even for free tier
--   Storage restrictions on cached data
-
-### Potential Use-Case
-
--   one-time lookups
--   verification of critical locations
-
-## 2. OpenStreetMap (Nominatim)
-
-### Pricing Structure
-
--   **Completely free** (community-driven)
--   No API key required for public instance
-
-### Rate Limits
-
--   **Public server**: 1 request per second absolute maximum
--   **Daily maximum**: \~80,000 requests is theoretical limit
--   Must include User-Agent header
--   No bulk processing allowed on public servers
-
-### Strengths
-
--   Totally free with no registration
--   open data
--   flexible querying
--   can self-host for unlimited requests
-
-### Limitations
-
--   Strict rate limits on public servers
--   variable data quality/accuracy
--   less business metadata comparatively
--   rural areas sparser
-
-### Potential Use-Case
-
--   batch processing with time flexibility
--   self-hosted deployment
+Geocoding
