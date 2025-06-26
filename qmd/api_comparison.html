@@ -75,7 +75,220 @@ ul.task-list li input[type="checkbox"] {
 </section>
 <section id="key-terms" class="level3">
 <h3 class="anchored" data-anchor-id="key-terms">Key Terms</h3>
-<p>An <strong>API (Application Programming Interface)</strong> is a service that lets your computer program automatically request information from another company’s database.</p>
+<p><strong>API</strong>: an <u>Application Programming Interface</u> is a service that lets your computer program automatically request information from another company’s database.</p>
+<p><strong>Geocoding</strong>: Converting addresses to GPS coordinates (latitude/longitude)</p>
+<p><strong>Reverse Geocoding</strong>: Converting GPS coordinates to addresses or place names</p>
+<p><strong>Batch Processing</strong>: Sending multiple requests at once or processing stored data all together (possible with the already collected GPS data)</p>
+</section>
+<section id="preprocessing-steps-to-look-into" class="level3">
+<h3 class="anchored" data-anchor-id="preprocessing-steps-to-look-into">Preprocessing Steps to Look Into:</h3>
+<ol type="1">
+<li>De-duplication</li>
+<li>Clustering nearby points</li>
+<li>Potentially focusing API calls on high-risk times or important locations?</li>
+</ol>
+</section>
+</section>
+<section id="google-maps-effective-march-2025" class="level2">
+<h2 class="anchored" data-anchor-id="google-maps-effective-march-2025">Google Maps (<a href="https://mapsplatform.google.com/pricing/?utm_experiment=13102542">Effective March 2025</a>)</h2>
+<ul>
+<li>10,000 Geocoding (or Reverse Geocoding) API requests per month free</li>
+<li>10,000 Places API requests per month free
+<ul>
+<li>provides “place search” (find all “x” locations nearby)</li>
+<li>place “details”(business hours, ratings, phone #’s, price level, photos)</li>
+<li>place autocomplete (not relevant)</li>
+</ul></li>
+</ul>
+<section id="what-counts-as-a-request" class="level3">
+<h3 class="anchored" data-anchor-id="what-counts-as-a-request">What counts as a request?</h3>
+<ul>
+<li>Each GPS coordinate lookup = 1 request</li>
+<li>Each request for place details = 1 request</li>
+</ul>
+</section>
+<section id="costs-past-free-tier" class="level3">
+<h3 class="anchored" data-anchor-id="costs-past-free-tier">Costs past free tier?</h3>
+<ul>
+<li>Geocoding: $5 per 1,000 additional requests</li>
+<li>Places: $17 per 1,000 additional requests</li>
+</ul>
+</section>
+<section id="rate-limits" class="level3">
+<h3 class="anchored" data-anchor-id="rate-limits"><strong>Rate Limits</strong>:</h3>
+<ul>
+<li><p>50 req/second (3,000/minute)</p></li>
+<li><p>can be increased by requesting a quota increase</p></li>
+</ul>
+</section>
+<section id="strengths" class="level3">
+<h3 class="anchored" data-anchor-id="strengths">Strengths</h3>
+<ol type="1">
+<li><strong>Exceptional Alcohol Venue Detection</strong>
+<ul>
+<li>Identifies bars with high accuracy</li>
+<li>Distinguishes between bar, nightclub, pub categories</li>
+<li>Includes liquor stores with <code>liquor_store</code> type</li>
+<li>Shows real-time hours and busy times</li>
+</ul></li>
+<li><strong>Rich Business Information</strong>
+<ul>
+<li>Operating hours (potential for time-based risk assessment?)</li>
+<li>User ratings and review count (venue popularity metric?)</li>
+<li>Price levels (socioeconomic indicators?)</li>
+<li>Photos (possible image analysis down the road)</li>
+</ul></li>
+</ol>
+</section>
+<section id="limitations" class="level3">
+<h3 class="anchored" data-anchor-id="limitations"><strong>Limitations</strong></h3>
+<ul>
+<li>Cannot identify restaurants serving alcohol</li>
+<li>Restaurants are labeled generically
+<ul>
+<li>No flag for alcohol service</li>
+<li>Major gap for recovery research</li>
+</ul></li>
+<li>High cost for larger or RTS studies</li>
+<li>Low Data Storage amount and flexibility</li>
+</ul>
+</section>
+</section>
+<section id="openstreetmap-services" class="level2">
+<h2 class="anchored" data-anchor-id="openstreetmap-services">OpenStreetMap Services</h2>
+<p>OpenStreetMap (OSM) is a collaborative project where volunteers worldwide contribute geographic data. It offers several free services:</p>
+<section id="nominatim---reverse-geocoding-service" class="level3">
+<h3 class="anchored" data-anchor-id="nominatim---reverse-geocoding-service">Nominatim - Reverse Geocoding Service</h3>
+<p><strong>What it does</strong>: Converts GPS coordinates to addresses and place names using OpenStreetMap data.</p>
+<p><strong>Pricing</strong>:</p>
+<ul>
+<li>Completely free</li>
+<li>No API key required</li>
+<li>Must follow usage policy</li>
+</ul>
+<p><a href="https://operations.osmfoundation.org/policies/nominatim/"><strong>Rate Limits on Public Server</strong>:</a></p>
+<ul>
+<li><strong>Absolute maximum</strong>: 1 request per second</li>
+<li><strong>Daily theoretical max</strong>: 86,400 requests (if running 24/7)</li>
+<li><strong>Required</strong>: User-Agent header identifying your application</li>
+<li><strong>Prohibited</strong>: Bulk processing, commercial use on public servers</li>
+</ul>
+<section id="strengths-1" class="level4">
+<h4 class="anchored" data-anchor-id="strengths-1"><strong>Strengths</strong>:</h4>
+<ol type="1">
+<li><strong>Completely free</strong> with no registration</li>
+<li><strong>Global coverage</strong> (quality varies by region)</li>
+<li><strong>Flexible querying</strong> - can search by name, address, or coordinates</li>
+<li><strong>Self-hosting option</strong> - run your own server with no limits</li>
+</ol>
+</section>
+<section id="limitations-1" class="level4">
+<h4 class="anchored" data-anchor-id="limitations-1"><strong>Limitations</strong>:</h4>
+<ol type="1">
+<li><strong>Data quality varies</strong> - depends on local volunteer activity</li>
+<li><strong>Less business metadata</strong> - may not have hours, phone numbers</li>
+<li><strong>Slower processing</strong> - rate limits mean 24+ hours for large data sets</li>
+</ol>
+</section>
+<section id="related---openstreetmap-tags" class="level4">
+<h4 class="anchored" data-anchor-id="related---openstreetmap-tags">Related - OpenStreetMap Tags</h4>
+<p>OSM uses a tagging system to categorize places.</p>
+<p><a href="https://wiki.openstreetmap.org/wiki/Map_features"><strong>Alcohol-Related Venues</strong></a><strong>:</strong></p>
+<ul>
+<li><code>amenity = bar</code> - Establishments focused on drinking</li>
+<li><code>amenity = pub</code> - British/Irish style pubs (often serve food)</li>
+<li><code>amenity = nightclub</code> - Dance clubs, late-night venues</li>
+<li><code>shop = alcohol</code> - Liquor stores, off-licenses</li>
+<li><code>amenity = restaurant</code> + <code>drink:wine = yes</code> - Restaurants serving alcohol (when tagged)</li>
+</ul>
+</section>
+</section>
+<section id="overpass-api" class="level3">
+<h3 class="anchored" data-anchor-id="overpass-api">Overpass API</h3>
+<p>Search tool that works with the OSM database for complex search capabilities, similar to the google maps “place search” functionality</p>
+</section>
+<section id="rate-limits-1" class="level3">
+<h3 class="anchored" data-anchor-id="rate-limits-1"><strong>Rate Limits</strong>:</h3>
+<ul>
+<li>No fixed rate limit</li>
+<li>Uses “slot” system - limited concurrent queries</li>
+<li>Large queries may be rejected during busy times</li>
+</ul>
+</section>
+<section id="location-iq" class="level3">
+<h3 class="anchored" data-anchor-id="location-iq"><a href="https://locationiq.com/pricing">Location IQ</a></h3>
+<p><strong>What it is:</strong> A commercial service built on OpenStreetMap data with added enhancements and better infrastructure.</p>
+<section id="free-tier-details" class="level4">
+<h4 class="anchored" data-anchor-id="free-tier-details">Free Tier Details:</h4>
+<ul>
+<li>5,000 requests per day (not per month)</li>
+<li>2 requests per second rate limit</li>
+<li>Includes geocoding and reverse geocoding</li>
+</ul>
+</section>
+<section id="strengths-2" class="level4">
+<h4 class="anchored" data-anchor-id="strengths-2">Strengths</h4>
+<ol type="1">
+<li><strong>Daily limits reset</strong> - Unlike monthly limits, you get fresh quota each day</li>
+<li><strong>Allows caching</strong> - You can store results permanently</li>
+<li><strong>Better infrastructure</strong> - likely more reliable than public Nominatim</li>
+</ol>
+</section>
+<section id="limitations-2" class="level4">
+<h4 class="anchored" data-anchor-id="limitations-2">Limitations:</h4>
+<ol type="1">
+<li>Likely would need to heavily deduplicate / cluster points to utilize efficiently</li>
+</ol>
+</section>
+</section>
+</section>
+<section id="government-apis" class="level2">
+<h2 class="anchored" data-anchor-id="government-apis">Government APIs</h2>
+<p><a href="https://www.census.gov/programs-surveys/geography/technical-documentation/complete-technical-documentation/census-geocoder.html">Official US government service</a> for converting addresses to coordinates and census geography.</p>
+<section id="strengths-3" class="level3">
+<h3 class="anchored" data-anchor-id="strengths-3"><strong>Strengths:</strong></h3>
+<ul>
+<li>Completely unlimited - no rate limits published</li>
+<li>Batch processing - can send up to 10,000 addresses at once</li>
+<li>No registration required for basic use</li>
+<li>Returns census tract/block data for demographic analysis</li>
+</ul>
+</section>
+<section id="limitations-3" class="level3">
+<h3 class="anchored" data-anchor-id="limitations-3"><strong>Limitations:</strong></h3>
+<ul>
+<li>US addresses only</li>
+<li>No business/POI information</li>
+<li>Just address standardization and coordinates</li>
+</ul>
+</section>
+<section id="potential-use-case" class="level3">
+<h3 class="anchored" data-anchor-id="potential-use-case"><strong>Potential Use-Case:</strong></h3>
+<ol type="1">
+<li>First pass: Geocode all locations with Census API (free, unlimited)</li>
+<li>Second pass: Use commercial APIs only for venue identification</li>
+</ol>
+</section>
+</section>
+<section id="proposed-hybrid-approach" class="level1">
+<h1>Proposed Hybrid Approach:</h1>
+<section id="tier-1-bulk-processing-free" class="level3">
+<h3 class="anchored" data-anchor-id="tier-1-bulk-processing-free">Tier 1: Bulk Processing (Free)</h3>
+<ul>
+<li>US Census API for geocoding</li>
+<li>Overpass API for POI extraction</li>
+<li>Process 99% of locations</li>
+</ul>
+</section>
+<section id="tier-2-verificationhigh-impact-sparse-google-use" class="level3">
+<h3 class="anchored" data-anchor-id="tier-2-verificationhigh-impact-sparse-google-use">Tier 2: Verification/High Impact (Sparse Google Use)</h3>
+<p><strong>For the 1% of locations that are:</strong></p>
+<ul>
+<li>Frequently visited</li>
+<li>Potential risk venues</li>
+<li>Visited during high-risk times</li>
+<li>Ambiguous in OSM data</li>
+</ul>
 </section>
 </section>
 
