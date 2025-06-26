@@ -17,7 +17,7 @@ A **point of interest** is any specific location that someone might find useful 
 
 ### Key Terms
 
-An **API (Application Programming Interface)** is a service that lets your computer program automatically request information from another company's database.
+**API**: an [Application Programming Interface]{.underline} is a service that lets your computer program automatically request information from another company's database.
 
 **Geocoding**: Converting addresses to GPS coordinates (latitude/longitude)
 
@@ -49,7 +49,7 @@ An **API (Application Programming Interface)** is a service that lets your compu
 -   Geocoding: \$5 per 1,000 additional requests
 -   Places: \$17 per 1,000 additional requests
 
-### Rate Limits:
+### **Rate Limits**:
 
 -   50 req/second (3,000/minute)
 
@@ -109,4 +109,85 @@ OpenStreetMap (OSM) is a collaborative project where volunteers worldwide contri
 
 1.  **Data quality varies** - depends on local volunteer activity
 2.  **Less business metadata** - may not have hours, phone numbers
-3.  **Slower processing** - rate limits mean 24+ hours for large datasets
+3.  **Slower processing** - rate limits mean 24+ hours for large data sets
+
+#### Related - OpenStreetMap Tags
+
+OSM uses a tagging system to categorize places.
+
+[**Alcohol-Related Venues**](https://wiki.openstreetmap.org/wiki/Map_features)**:**
+
+-   `amenity = bar` - Establishments focused on drinking
+-   `amenity = pub` - British/Irish style pubs (often serve food)
+-   `amenity = nightclub` - Dance clubs, late-night venues
+-   `shop = alcohol` - Liquor stores, off-licenses
+-   `amenity = restaurant` + `drink:wine = yes` - Restaurants serving alcohol (when tagged)
+
+### Overpass API
+
+Search tool that works with the OSM database for complex search capabilities, similar to the google maps "place search" functionality
+
+### **Rate Limits**:
+
+-   No fixed rate limit
+-   Uses "slot" system - limited concurrent queries
+-   Large queries may be rejected during busy times
+
+### [Location IQ](https://locationiq.com/pricing)
+
+**What it is:** A commercial service built on OpenStreetMap data with added enhancements and better infrastructure.
+
+#### Free Tier Details:
+
+-   5,000 requests per day (not per month)
+-   2 requests per second rate limit
+-   Includes geocoding and reverse geocoding
+
+#### Strengths
+
+1.  **Daily limits reset** - Unlike monthly limits, you get fresh quota each day
+2.  **Allows caching** - You can store results permanently
+3.  **Better infrastructure** - likely more reliable than public Nominatim
+
+#### Limitations:
+
+1.  Likely would need to heavily deduplicate / cluster points to utilize efficiently
+
+## Government APIs
+
+[Official US government service](https://www.census.gov/programs-surveys/geography/technical-documentation/complete-technical-documentation/census-geocoder.html) for converting addresses to coordinates and census geography.
+
+### **Strengths:**
+
+-   Completely unlimited - no rate limits published
+-   Batch processing - can send up to 10,000 addresses at once
+-   No registration required for basic use
+-   Returns census tract/block data for demographic analysis
+
+### **Limitations:**
+
+-   US addresses only
+-   No business/POI information
+-   Just address standardization and coordinates
+
+### **Potential Use-Case:**
+
+1.  First pass: Geocode all locations with Census API (free, unlimited)
+2.  Second pass: Use commercial APIs only for venue identification
+
+# Proposed Hybrid Approach:
+
+### Tier 1: Bulk Processing (Free)
+
+-   US Census API for geocoding
+-   Overpass API for POI extraction
+-   Process 99% of locations
+
+### Tier 2: Verification/High Impact (Sparse Google Use)
+
+**For the 1% of locations that are:**
+
+-   Frequently visited
+-   Potential risk venues
+-   Visited during high-risk times
+-   Ambiguous in OSM data
