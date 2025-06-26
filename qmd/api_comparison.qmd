@@ -17,6 +17,96 @@ A **point of interest** is any specific location that someone might find useful 
 
 ### Key Terms
 
-An **API (Application Programming Interface)** is a service that lets your computer program automatically request information from another company's database. 
+An **API (Application Programming Interface)** is a service that lets your computer program automatically request information from another company's database.
 
-Geocoding
+**Geocoding**: Converting addresses to GPS coordinates (latitude/longitude)
+
+**Reverse Geocoding**: Converting GPS coordinates to addresses or place names
+
+**Batch Processing**: Sending multiple requests at once or processing stored data all together (possible with the already collected GPS data)
+
+### Preprocessing Steps to Look Into:
+
+1.  De-duplication
+2.  Clustering nearby points
+3.  Potentially focusing API calls on high-risk times or important locations?
+
+## Google Maps ([Effective March 2025](https://mapsplatform.google.com/pricing/?utm_experiment=13102542))
+
+-   10,000 Geocoding (or Reverse Geocoding) API requests per month free
+-   10,000 Places API requests per month free
+    -   provides "place search" (find all "x" locations nearby)
+    -   place "details"(business hours, ratings, phone \#'s, price level, photos)
+    -   place autocomplete (not relevant)
+
+### What counts as a request?
+
+-   Each GPS coordinate lookup = 1 request
+-   Each request for place details = 1 request
+
+### Costs past free tier?
+
+-   Geocoding: \$5 per 1,000 additional requests
+-   Places: \$17 per 1,000 additional requests
+
+### Rate Limits:
+
+-   50 req/second (3,000/minute)
+
+-   can be increased by requesting a quota increase
+
+### Strengths
+
+1.  **Exceptional Alcohol Venue Detection**
+    -   Identifies bars with high accuracy
+    -   Distinguishes between bar, nightclub, pub categories
+    -   Includes liquor stores with `liquor_store` type
+    -   Shows real-time hours and busy times
+2.  **Rich Business Information**
+    -   Operating hours (potential for time-based risk assessment?)
+    -   User ratings and review count (venue popularity metric?)
+    -   Price levels (socioeconomic indicators?)
+    -   Photos (possible image analysis down the road)
+
+### **Limitations**
+
+-   Cannot identify restaurants serving alcohol
+-   Restaurants are labeled generically
+    -   No flag for alcohol service
+    -   Major gap for recovery research
+-   High cost for larger or RTS studies
+-   Low Data Storage amount and flexibility
+
+## OpenStreetMap Services
+
+OpenStreetMap (OSM) is a collaborative project where volunteers worldwide contribute geographic data. It offers several free services:
+
+### Nominatim - Reverse Geocoding Service
+
+**What it does**: Converts GPS coordinates to addresses and place names using OpenStreetMap data.
+
+**Pricing**:
+
+-   Completely free
+-   No API key required
+-   Must follow usage policy
+
+[**Rate Limits on Public Server**:](https://operations.osmfoundation.org/policies/nominatim/)
+
+-   **Absolute maximum**: 1 request per second
+-   **Daily theoretical max**: 86,400 requests (if running 24/7)
+-   **Required**: User-Agent header identifying your application
+-   **Prohibited**: Bulk processing, commercial use on public servers
+
+#### **Strengths**:
+
+1.  **Completely free** with no registration
+2.  **Global coverage** (quality varies by region)
+3.  **Flexible querying** - can search by name, address, or coordinates
+4.  **Self-hosting option** - run your own server with no limits
+
+#### **Limitations**:
+
+1.  **Data quality varies** - depends on local volunteer activity
+2.  **Less business metadata** - may not have hours, phone numbers
+3.  **Slower processing** - rate limits mean 24+ hours for large datasets
