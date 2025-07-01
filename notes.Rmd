@@ -1,0 +1,14 @@
+---
+title: "notes"
+author: "chris"
+output: html_document
+---
+
+# Notes
+
+## 7/1/2025
+
+to do:
+-   make robust data access script
+-   establish traveling vs stationary distinction (time derivative ref)
+-   make clustering script
