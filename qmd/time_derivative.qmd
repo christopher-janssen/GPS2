@@ -1,0 +1,323 @@
+---
+title: "time_derivative"
+author: "Christopher Janssen" 
+date: "`r lubridate::today()`"
+format: 
+  html:
+    toc: true 
+    toc_depth: 4
+    embed-resources: true
+editor_options: 
+  chunk_output_type: console
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+source("scripts/make_gps_splice.R")
+gps_splice |> view()
+
+library(dplyr)
+library(geosphere)
+```
+
+```{r}
+classify_movement_states <- function(gps_data, 
+                                   speed_threshold_kmh = 1) {
+  
+  # Convert time column to POSIXct if it's character
+  if (is.character(gps_data$time)) {
+    gps_data$time <- as.POSIXct(gps_data$time)
+  }
+  
+  # ensure data is sorted by time
+  gps_data <- gps_data |> arrange(time)
+  
+  # create lagged versions for vectorized calculation
+  gps_data <- gps_data |>
+    mutate(
+      lat_prev = lag(lat),
+      lon_prev = lag(lon),
+      time_prev = lag(time)
+    )
+  
+  # calculate distances and speeds vectorized
+  gps_data <- gps_data |>
+    rowwise() |>
+    mutate(
+      # distance in meters using Haversine formula
+      distance_m = ifelse(is.na(lat_prev), 
+                         0,
+                         distHaversine(c(lon_prev, lat_prev), c(lon, lat))),
+      
+      # time difference in hours
+      time_diff_hours = ifelse(is.na(time_prev),
+                              0,
+                              as.numeric(difftime(time, time_prev, units = "hours"))),
+      
+      # speed calculation (km/h)
+      speed_kmh = ifelse(time_diff_hours > 0, 
+                        (distance_m / 1000) / time_diff_hours, 
+                        0),
+      
+      # movement state classification based on 1 km/h threshold
+      movement_state = ifelse(speed_kmh <= speed_threshold_kmh, 
+                             "stationary", 
+                             "transition")
+    ) |>
+    ungroup() |>
+    # clean up temporary columns
+    select(-lat_prev, -lon_prev, -time_prev, -distance_m, -time_diff_hours)
+  
+  return(gps_data)
+}
+```
+
+```{r}
+results <- classify_movement_states(gps_splice)
+```
+
+```{r}
+create_movement_plots <- function(results_data) {
+  library(ggplot2)
+  
+  # speed histogram
+  speed_plot <- ggplot(results_data, aes(x = speed_kmh)) +
+    geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+    geom_vline(xintercept = 1, color = "red", linetype = "dashed", size = 1) +
+    labs(title = "Distribution of Movement Speeds",
+         subtitle = "Red line shows 1 km/h threshold for stationary vs transition states",
+         x = "Speed (km/h)",
+         y = "Frequency") +
+    theme_bw()
+  
+  # time series plot showing movement states
+  time_plot <- ggplot(results_data, aes(x = time, y = speed_kmh, color = movement_state)) +
+    geom_point(alpha = 0.7) +
+    geom_hline(yintercept = 1, color = "red", linetype = "dashed") +
+    labs(title = "Movement States Over Time",
+         x = "Time",
+         y = "Speed (km/h)",
+         color = "Movement State") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  return(list(speed_plot = speed_plot, time_plot = time_plot))
+}
+```
+
+```{r}
+create_movement_plots(results)
+```
+
+```{r}
+# GPS Speed Outlier Filtering for Movement State Detection
+# Remove implausible GPS speeds before analysis
+
+library(dplyr)
+library(ggplot2)
+
+# Function to filter GPS outliers and clean data
+filter_gps_outliers <- function(gps_data, 
+                               max_speed_kmh = 200,
+                               max_distance_m = 10000,
+                               min_time_diff_sec = 5) {
+  
+  # Convert time to POSIXct if needed
+  if (is.character(gps_data$time)) {
+    gps_data$time <- as.POSIXct(gps_data$time)
+  }
+  
+  # Sort by time
+  gps_data <- gps_data %>% arrange(time)
+  
+  # Calculate basic movement metrics
+  gps_data_with_metrics <- gps_data %>%
+    mutate(
+      lat_prev = lag(lat),
+      lon_prev = lag(lon),
+      time_prev = lag(time)
+    ) %>%
+    rowwise() %>%
+    mutate(
+      # Distance in meters
+      distance_m = ifelse(is.na(lat_prev), 
+                         0,
+                         geosphere::distHaversine(c(lon_prev, lat_prev), c(lon, lat))),
+      
+      # Time difference in seconds and hours
+      time_diff_sec = ifelse(is.na(time_prev),
+                            0,
+                            as.numeric(difftime(time, time_prev, units = "secs"))),
+      time_diff_hours = time_diff_sec / 3600,
+      
+      # Speed calculation
+      speed_kmh = ifelse(time_diff_hours > 0, 
+                        (distance_m / 1000) / time_diff_hours, 
+                        0)
+    ) %>%
+    ungroup()
+  
+  # Create filtering flags
+  gps_filtered <- gps_data_with_metrics %>%
+    mutate(
+      # Flag various types of outliers
+      speed_outlier = speed_kmh > max_speed_kmh,
+      distance_outlier = distance_m > max_distance_m,
+      time_outlier = time_diff_sec > 0 & time_diff_sec < min_time_diff_sec,
+      
+      # Combined outlier flag
+      is_outlier = speed_outlier | distance_outlier | time_outlier,
+      
+      # Outlier reason for diagnostics
+      outlier_reason = case_when(
+        speed_outlier & distance_outlier ~ "Speed + Distance",
+        speed_outlier ~ "Speed",
+        distance_outlier ~ "Distance", 
+        time_outlier ~ "Time",
+        TRUE ~ "None"
+      )
+    )
+  
+  # Summary of outliers before filtering
+  outlier_summary <- gps_filtered %>%
+    summarise(
+      total_points = n(),
+      speed_outliers = sum(speed_outlier, na.rm = TRUE),
+      distance_outliers = sum(distance_outlier, na.rm = TRUE),
+      time_outliers = sum(time_outlier, na.rm = TRUE),
+      total_outliers = sum(is_outlier, na.rm = TRUE),
+      max_speed_observed = max(speed_kmh, na.rm = TRUE),
+      max_distance_observed = max(distance_m, na.rm = TRUE),
+      outlier_percentage = round(sum(is_outlier, na.rm = TRUE) / n() * 100, 2)
+    )
+  
+  cat("=== GPS OUTLIER FILTERING SUMMARY ===\n")
+  cat("Total GPS points:", outlier_summary$total_points, "\n")
+  cat("Speed outliers (>", max_speed_kmh, "km/h):", outlier_summary$speed_outliers, "\n")
+  cat("Distance outliers (>", max_distance_m, "m):", outlier_summary$distance_outliers, "\n") 
+  cat("Time outliers (<", min_time_diff_sec, "sec):", outlier_summary$time_outliers, "\n")
+  cat("Total outliers removed:", outlier_summary$total_outliers, 
+      "(", outlier_summary$outlier_percentage, "%)\n")
+  cat("Max speed observed:", round(outlier_summary$max_speed_observed, 1), "km/h\n")
+  cat("Max distance observed:", round(outlier_summary$max_distance_observed, 1), "m\n\n")
+  
+  # Filter out outliers and clean up
+  gps_clean <- gps_filtered %>%
+    filter(!is_outlier) %>%
+    select(subid, lat, lon, time)  # Keep only original columns
+  
+  # Return both clean data and diagnostic info
+  return(list(
+    clean_data = gps_clean,
+    outlier_summary = outlier_summary,
+    diagnostic_data = gps_filtered  # For further analysis if needed
+  ))
+}
+
+# Alternative: Statistical outlier detection using IQR method
+filter_gps_outliers_statistical <- function(gps_data, iqr_multiplier = 3) {
+  
+  # First pass: basic outlier removal
+  basic_filtered <- filter_gps_outliers(gps_data, max_speed_kmh = 500)
+  temp_data <- basic_filtered$clean_data
+  
+  # Calculate movement metrics for statistical analysis
+  temp_data <- temp_data %>%
+    arrange(time) %>%
+    mutate(
+      lat_prev = lag(lat),
+      lon_prev = lag(lon), 
+      time_prev = lag(time)
+    ) %>%
+    rowwise() %>%
+    mutate(
+      distance_m = ifelse(is.na(lat_prev), 0,
+                         geosphere::distHaversine(c(lon_prev, lat_prev), c(lon, lat))),
+      time_diff_hours = ifelse(is.na(time_prev), 0,
+                              as.numeric(difftime(time, time_prev, units = "hours"))),
+      speed_kmh = ifelse(time_diff_hours > 0, (distance_m / 1000) / time_diff_hours, 0)
+    ) %>%
+    ungroup()
+  
+  # Statistical outlier detection for speeds > 0
+  speeds_nonzero <- temp_data$speed_kmh[temp_data$speed_kmh > 0]
+  
+  if (length(speeds_nonzero) > 0) {
+    Q1 <- quantile(speeds_nonzero, 0.25, na.rm = TRUE)
+    Q3 <- quantile(speeds_nonzero, 0.75, na.rm = TRUE)
+    IQR <- Q3 - Q1
+    
+    # Statistical outlier threshold
+    stat_threshold <- Q3 + (iqr_multiplier * IQR)
+    
+    cat("=== STATISTICAL OUTLIER DETECTION ===\n")
+    cat("Speed Q1:", round(Q1, 2), "km/h\n")
+    cat("Speed Q3:", round(Q3, 2), "km/h\n") 
+    cat("IQR:", round(IQR, 2), "km/h\n")
+    cat("Statistical threshold (Q3 + ", iqr_multiplier, "*IQR):", round(stat_threshold, 2), "km/h\n\n")
+    
+    # Apply statistical filter
+    final_data <- temp_data %>%
+      filter(speed_kmh <= stat_threshold) %>%
+      select(subid, lat, lon, time)
+    
+    return(list(
+      clean_data = final_data,
+      threshold_used = stat_threshold,
+      basic_summary = basic_filtered$outlier_summary
+    ))
+  } else {
+    return(basic_filtered)
+  }
+}
+
+# visualization function to compare before/after filtering
+compare_filtering_results <- function(original_data, filtered_results) {
+  
+  # run movement detection on both datasets
+  original_results <- classify_movement_states(original_data)
+  filtered_results_movement <- classify_movement_states(filtered_results$clean_data)
+  
+  # create comparison plots
+  p1 <- ggplot(original_results, aes(x = speed_kmh)) +
+    geom_histogram(bins = 100, fill = "red", alpha = 0.7) +
+    geom_vline(xintercept = 1, color = "blue", linetype = "dashed") +
+    scale_x_log10() +
+    labs(title = "BEFORE Filtering", 
+         x = "Speed (km/h, log scale)", y = "Frequency") +
+    theme_minimal()
+  
+  p2 <- ggplot(filtered_results_movement, aes(x = speed_kmh)) +
+    geom_histogram(bins = 50, fill = "green", alpha = 0.7) +
+    geom_vline(xintercept = 1, color = "blue", linetype = "dashed") +
+    labs(title = "AFTER Filtering",
+         x = "Speed (km/h)", y = "Frequency") +
+    theme_minimal()
+  
+  # Print comparison stats
+  cat("=== BEFORE vs AFTER COMPARISON ===\n")
+  cat("Original data points:", nrow(original_data), "\n")
+  cat("Filtered data points:", nrow(filtered_results$clean_data), "\n")
+  cat("Points removed:", nrow(original_data) - nrow(filtered_results$clean_data), "\n")
+  cat("Max speed before:", round(max(original_results$speed_kmh, na.rm = TRUE), 1), "km/h\n")
+  cat("Max speed after:", round(max(filtered_results_movement$speed_kmh, na.rm = TRUE), 1), "km/h\n\n")
+  
+  return(list(before_plot = p1, after_plot = p2, 
+              filtered_movement_data = filtered_results_movement))
+}
+
+
+# Step 1: Filter outliers
+filtered_results <- filter_gps_outliers(gps_splice)
+
+# Step 2: Compare results  
+comparison <- compare_filtering_results(gps_splice, filtered_results)
+print(comparison$before_plot)
+print(comparison$after_plot)
+
+# Step 3: Use cleaned data for movement analysis
+clean_movement_results <- comparison$filtered_movement_data
+```
+
