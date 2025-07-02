@@ -9,6 +9,8 @@ output: html_document
 ## 7/1/2025
 
 to do:
--   make robust data access script
--   establish traveling vs stationary distinction (time derivative ref)
+
+-   make robust data access script [DONE]
+-   establish traveling vs stationary distinction (time derivative ref) [DONE]
 -   make clustering script
+
