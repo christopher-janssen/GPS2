@@ -12,5 +12,10 @@ to do:
 
 -   make robust data access script [DONE]
 -   establish traveling vs stationary distinction (time derivative ref) [DONE]
--   make clustering script
+-   ~~make clustering script~~
+
+
+## 7/3/2025
+
+-  Look into alternative clustering over k-means or k-means ++, particularly DBSCAN and `fpc` package in R
 
