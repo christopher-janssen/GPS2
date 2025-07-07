@@ -19,3 +19,7 @@ to do:
 
 -  Look into alternative clustering over k-means or k-means ++, particularly DBSCAN and `fpc` package in R
 
+
+## 7/6/2025
+
+- made script to view stationary points, bring this to discuss whether or not the stationary script is working well, then talk about clustering
