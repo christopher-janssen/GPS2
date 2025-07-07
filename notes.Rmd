@@ -18,8 +18,14 @@ to do:
 ## 7/3/2025
 
 -  Look into alternative clustering over k-means or k-means ++, particularly DBSCAN and `fpc` package in R
+-  read claire papers / dbscan papers
 
 
 ## 7/6/2025
 
 - made script to view stationary points, bring this to discuss whether or not the stationary script is working well, then talk about clustering
+
+
+## 7/7/2025
+
+- made downloaded leaflet maps for meeting tomorrow
