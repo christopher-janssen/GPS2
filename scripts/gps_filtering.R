@@ -1,6 +1,7 @@
 # gps_filtering.R
 # GPS data processing for location clustering
 # Adapted from lab approach (thanks claire and john)
+# gps_spliced <- read_csv(here::here(path_processed, "gps2_splice.csv"), show_col_types = FALSE)
 
 library(dplyr)
 library(geosphere)
@@ -8,7 +9,7 @@ library(lubridate)
 
 process_gps <- function(gps_data,
                         speed_threshold_mph = 100,
-                        stationary_threshold_mph = 4) {
+                        stationary_threshold_mph = 2) {
   
   # convert time to POSIXct and set timezone
   gps_data <- gps_data %>%
