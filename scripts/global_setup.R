@@ -2,7 +2,6 @@
 
 options(conflicts.policy = "depends.ok")
 library(tidyverse)
-library(tidymodels, exclude = c("discard", "col_factor"))
 devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/format_path.R?raw=true")
 
 # file paths

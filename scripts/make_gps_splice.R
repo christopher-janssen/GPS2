@@ -4,7 +4,7 @@
 
 # load libraries
 library(tidyverse)
-library(tidymodels)
+library(tidymodels, exclude = c("discard", "col_factor"))
 options(conflicts.policy = "depends.ok")
 
 # source lab_support
