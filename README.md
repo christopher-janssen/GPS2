@@ -1,4 +1,4 @@
-# The Panopticon Project - Location Contextualization for Recovery Monitoring
+# The GPS2 Project - Location Contextualization for Recovery Monitoring
 
 ## Project Goal
 
