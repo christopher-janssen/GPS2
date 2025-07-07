@@ -38,7 +38,7 @@ process_gps <- function(gps_data,
     mutate(
       duration = if_else(dist > 0.01 & duration == 0, NA_real_, duration),
       duration = if_else(speed > speed_threshold_mph, NA_real_, duration),
-      duration = if_else(duration > 30 & dist > 0.31, NA_real_, duration),
+      duration = if_else(duration > 0.5 & dist > 0.31, NA_real_, duration),
       valid_record = !is.na(duration),
       speed = if_else(valid_record & duration > 0, dist / (duration / 60), 0)
     ) %>%
