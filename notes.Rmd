@@ -29,3 +29,11 @@ to do:
 ## 7/7/2025
 
 - made downloaded leaflet maps for meeting tomorrow
+
+
+## 7/8/2025
+
+- go with more liberal stationary definitions, as these patterns are split across days
+- create clusters across DAYS rather than total datasets for both DBSCAN and K-MEANS
+- decide a radius for establishing clusters
+- create maps that show this
