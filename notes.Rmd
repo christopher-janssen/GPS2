@@ -37,3 +37,9 @@ to do:
 - create clusters across DAYS rather than total datasets for both DBSCAN and K-MEANS
 - decide a radius for establishing clusters
 - create maps that show this
+
+## 7/11/2025
+
+- success on the daily visualizations, improved readability + combined scripts for cleanliness
+- move towards clustering
+- visualize own and claire data for accuracy?
