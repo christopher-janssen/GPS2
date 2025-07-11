@@ -8,8 +8,8 @@ library(lubridate)
 map_gps_overview <- function(gps_data, show_paths = FALSE) {
   
   participants <- unique(gps_data$subid)
-  colors <- c("#FF1744", "#00E676", "#2979FF", "#FFEA00", 
-              "#FF6D00", "#D500F9", "#00E5FF", "#76FF03")
+  colors <- c("#fbb4ae", "#b3cde3", "#ccebc5", "#decbe4", 
+              "#fed9a6", "#ffffcc", "#e5d8bd", "#fddaec")
   
   # improve date readability for buttons
   gps_data <- gps_data %>%
@@ -33,9 +33,10 @@ map_gps_overview <- function(gps_data, show_paths = FALSE) {
         data = participant_data,
         lng = ~lon, 
         lat = ~lat,
-        color = color,
-        radius = 4,
-        fillOpacity = 0.7,
+        color = "#000",
+        fillColor = color,
+        radius = 2,
+        fillOpacity = 1,
         stroke = TRUE,
         weight = 1,
         popup = ~paste0("<strong>Participant ", subid, "</strong><br>",
@@ -58,8 +59,8 @@ map_gps_overview <- function(gps_data, show_paths = FALSE) {
               lng = ~lon,
               lat = ~lat,
               color = color,
-              weight = 2,
-              opacity = 0.4,
+              weight = 1,
+              opacity = 0.5,
               group = paste("Participant", participant)
             )
         }
@@ -109,8 +110,8 @@ map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) 
   unique_dates <- sort(unique(participant_data$date))
   
   # same color pallete for days
-  colors <- c("#FF1744", "#00E676", "#2979FF", "#FFEA00", 
-              "#FF6D00", "#D500F9", "#00E5FF", "#76FF03")
+  colors <- c("#fbb4ae", "#b3cde3", "#ccebc5", "#decbe4", 
+              "#fed9a6", "#ffffcc", "#e5d8bd", "#fddaec")
   
   # create base map
   map <- leaflet() %>%
@@ -140,9 +141,10 @@ map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) 
         data = day_data,
         lng = ~lon, 
         lat = ~lat,
-        color = day_color,
-        radius = 5,
-        fillOpacity = 0.8,
+        color = "#000",
+        fillColor = day_color,
+        radius = 3,
+        fillOpacity = 1,
         stroke = TRUE,
         weight = 1,
         popup = popup_text,
@@ -156,9 +158,9 @@ map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) 
           data = day_data,
           lng = ~lon,
           lat = ~lat,
-          color = day_color,
-          weight = 3,
-          opacity = 0.6,
+          color = "#000",
+          weight = 1,
+          opacity = 0.4,
           group = if(show_all_days) "All Days" else date_str
         )
     }
