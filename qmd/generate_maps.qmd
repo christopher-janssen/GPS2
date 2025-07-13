@@ -1,0 +1,87 @@
+---
+title: "generate_maps"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format: html
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+## Introduction
+
+This QMD is designed to guide one through the process of creating maps for GPS analysis.
+
+## Source Scripts
+
+```{r setup}
+#| message: false
+#| warning: false
+
+options(conflicts.policy = "depends.ok") 
+library(tidyverse)
+library(scales, exclude = c("discard", "col_factor"))
+library(datasets, exclude = "penguins")
+
+source("scripts/global_setup.R")
+source("scripts/gps_filtering.R")
+source("scripts/map_gps.R")
+```
+
+```{r source-data}
+#| eval: false
+#| include: false
+
+# read in data
+gps_full <- read_csv(here::here(path_shared, "gps.csv"), show_col_types = FALSE)
+```
+
+```{r create-splice}
+#| eval: false
+#| include: false
+
+# sample a few participant IDs to get complete data for
+set.seed(123)  
+selected_subids <- gps_full |> 
+  distinct(subid) |> 
+  slice_sample(n = 5) |>  
+  pull(subid)
+
+# get ALL GPS data for these selected participants
+gps_splice <- gps_full |> 
+  filter(subid %in% selected_subids) |> 
+  select(subid, lat, lon, time)
+
+# write out
+write_csv(gps_splice, here::here(path_processed, "gps2_splice.csv"))
+```
+
+```{r load-splice}
+gps_splice <- read_csv(here::here(path_processed, "gps2_splice.csv"), show_col_types = FALSE)
+```
+
+```{r filter-to-stationary}
+stationary_splice <- process_gps(gps_data = gps_splice,
+                                 speed_threshold_mph = 100,
+                                 stationary_threshold_mph = 4) |> 
+  get_stationary()
+```
+
+```{r map-overview}
+map_gps(stationary_splice)
+```
+
+```{r map-overview-paths}
+map_gps(stationary_splice, show_paths = TRUE)
+```
+
+```{r map-ind-day}
+map_gps(stationary_splice, participant_id = 19)
+```
+
+```{r map-ind-alldays}
+map_gps(stationary_splice, participant_id = 19, show_all_days = TRUE)
+```
+
