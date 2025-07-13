@@ -24,6 +24,7 @@ options(conflicts.policy = "depends.ok")
 library(tidyverse)
 library(scales, exclude = c("discard", "col_factor"))
 library(datasets, exclude = "penguins")
+library(htmlwidgets)
 
 source("scripts/global_setup.R")
 source("scripts/gps_filtering.R")
@@ -78,10 +79,40 @@ map_gps(stationary_splice, show_paths = TRUE)
 ```
 
 ```{r map-ind-day}
-map_gps(stationary_splice, participant_id = 19)
+map_19 <- map_gps(stationary_splice, participant_id = 19)
+map_56 <- map_gps(stationary_splice, participant_id = 56)
+map_65 <- map_gps(stationary_splice, participant_id = 65)
+map_189 <- map_gps(stationary_splice, participant_id = 189)
+map_259 <- map_gps(stationary_splice, participant_id = 259)
 ```
 
 ```{r map-ind-alldays}
 map_gps(stationary_splice, participant_id = 19, show_all_days = TRUE)
+```
+
+```{r save-maps-func}
+save_leaflet_map <- function(map, filename) {
+  # ensure filename has .html extension
+  if (!grepl("\\.html$", filename)) {
+    filename <- paste0(filename, ".html")
+  }
+  
+  # create full path to maps folder
+  filepath <- file.path("maps", filename)
+  
+  # save the map
+  saveWidget(map, file = filepath, selfcontained = TRUE)
+  
+  # confirmation
+  cat("Map saved to:", filepath, "\n")
+}
+```
+
+```{r save-out-maps}
+save_leaflet_map(map_19, "map_19")
+save_leaflet_map(map_56, "map_56")
+save_leaflet_map(map_65, "map_65")
+save_leaflet_map(map_189, "map_189")
+save_leaflet_map(map_259, "map_259")
 ```
 
