@@ -43,3 +43,9 @@ to do:
 - success on the daily visualizations, improved readability + combined scripts for cleanliness
 - move towards clustering
 - visualize own and claire data for accuracy?
+
+## 7/13/2025
+
+- consolidated workflows into QMD scripts that are much neater, cleaner, and easy to follow. Big documentation win today
+- make a first-attempt at a clustering script, need to move to day to day for better use-case
+- fixed time_derivative and mapping demos
