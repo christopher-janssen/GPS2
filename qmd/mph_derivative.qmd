@@ -1,0 +1,80 @@
+---
+title: "mph_derivative"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format: html
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+## Introduction
+
+This QMD is designed to orient one to our decision in setting the stationary threshold at 4mph.
+
+## Source Scripts
+
+```{r setup}
+#| message: false
+#| warning: false
+
+options(conflicts.policy = "depends.ok") 
+library(tidyverse)
+library(scales, exclude = c("discard", "col_factor"))
+library(datasets, exclude = "penguins")
+library(htmlwidgets)
+
+source("scripts/global_setup.R")
+source("scripts/gps_filtering.R")
+source("scripts/map_gps.R")
+```
+
+```{r load-data-splice}
+gps_splice <- read_csv(here::here(path_processed, "gps2_splice.csv"), show_col_types = FALSE)
+```
+
+```{r 2mph}
+stationary_2mph <- process_gps(gps_data = gps_splice,
+                                 speed_threshold_mph = 100,
+                                 stationary_threshold_mph = 2) |> 
+  get_stationary()
+```
+
+```{r 4mph}
+stationary_4mph <- process_gps(gps_data = gps_splice,
+                                 speed_threshold_mph = 100,
+                                 stationary_threshold_mph = 4) |> 
+  get_stationary()
+```
+
+```{r compare-cutoffs}
+map_gps(stationary_2mph)
+
+map_gps(stationary_4mph)
+```
+
+```{r save-maps-func}
+save_leaflet_map <- function(map, filename) {
+  # ensure filename has .html extension
+  if (!grepl("\\.html$", filename)) {
+    filename <- paste0(filename, ".html")
+  }
+  
+  # create full path to maps folder
+  filepath <- file.path("maps", filename)
+  
+  # save the map
+  saveWidget(map, file = filepath, selfcontained = TRUE)
+  
+  # confirmation
+  cat("Map saved to:", filepath, "\n")
+}
+```
+
+```{r save-maps}
+map_gps(stationary_2mph) |> save_leaflet_map("2mph")
+map_gps(stationary_4mph) |> save_leaflet_map("4mph")
+```
+
