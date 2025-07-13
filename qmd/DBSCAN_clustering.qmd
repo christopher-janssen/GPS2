@@ -1,0 +1,89 @@
+---
+title: "DBSCAN_clustering"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format: html
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+```{r setup}
+#| message: false
+#| warning: false
+
+options(conflicts.policy = "depends.ok") 
+library(tidyverse)
+library(scales, exclude = c("discard", "col_factor"))
+library(datasets, exclude = "penguins")
+library(htmlwidgets)
+library(dbscan, exclude = "as.dendrogram")
+
+source("scripts/global_setup.R")
+source("scripts/gps_filtering.R")
+source("scripts/map_gps.R")
+source("scripts/dbscan_cluster.R")
+```
+
+```{r load-data-splice}
+gps2_stationary <- read_csv(here::here(path_processed, "gps2_stationary.csv"), show_col_types = FALSE)
+```
+
+```{r perform-clustering}
+clustered_19 <- cluster_stationary_gps(gps2_stationary, participant_id = 19, eps = 20, min_pts = 4)
+```
+
+```{r show cluster-distributions}
+print(clustered_19)
+```
+
+```{r}
+map_cluster_representatives <- function(clustered_data) {
+  # color palette for many clusters
+  cluster_colors <- c("#e41a1c", "#377eb8", "#4daf4a", "#984ea3", 
+                      "#ff7f00", "#ffff33", "#a65628", "#f781bf", "#999999",
+                      "#1f78b4", "#33a02c", "#e31a1c", "#ff7f00", "#6a3d9a",
+                      "#b15928", "#a6cee3", "#b2df8a", "#fb9a99", "#fdbf6f",
+                      "#cab2d6", "#ffff99", "#05a5f5", "#fd8d3c", "#bd0026",
+                      "#800026", "#41b6c4", "#2c7fb8", "#253494", "#081d58")
+  
+  # if more clusters than colors, generate additional colors
+  max_cluster <- max(clustered_data$cluster)
+  if (max_cluster >= length(cluster_colors)) {
+    additional_colors <- rainbow(max_cluster - length(cluster_colors) + 5)
+    cluster_colors <- c(cluster_colors, additional_colors)
+  }
+  
+  # create base map
+  map <- leaflet() %>%
+    addTiles() %>%
+    setView(lng = mean(clustered_data$lon), lat = mean(clustered_data$lat), zoom = 12)
+  
+  # add representative points with colors
+  for (cluster_id in unique(clustered_data$cluster)) {
+    cluster_data <- clustered_data %>% filter(cluster == cluster_id)
+    color <- cluster_colors[cluster_id]
+    
+    map <- map %>%
+      addCircleMarkers(
+        data = cluster_data,
+        lng = ~lon, lat = ~lat,
+        color = "#000", fillColor = color,
+        radius = 6, fillOpacity = 0.8, stroke = TRUE, weight = 2,
+        popup = ~paste0("Cluster ", cluster, "<br>", 
+                        "Points: ", n_points, "<br>",
+                        "First visit: ", format(first_visit, "%Y-%m-%d"), "<br>",
+                        "Last visit: ", format(last_visit, "%Y-%m-%d")),
+        label = ~paste("Cluster", cluster)
+      )
+  }
+  
+  return(map)
+}
+```
+
+```{r}
+map_cluster_representatives(clustered_19)
+```
