@@ -1,7 +1,6 @@
 # gps_filtering.R
 # GPS data processing for location clustering
 # Adapted from lab approach (thanks claire and john)
-gps_splice <- read_csv(here::here(path_processed, "gps2_splice.csv"), show_col_types = FALSE)
 
 library(dplyr)
 library(geosphere)
