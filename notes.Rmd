@@ -49,3 +49,9 @@ to do:
 - consolidated workflows into QMD scripts that are much neater, cleaner, and easy to follow. Big documentation win today
 - make a first-attempt at a clustering script, need to move to day to day for better use-case
 - fixed time_derivative and mapping demos
+
+## 7/15/2025
+
+- looking to time-duration modified DBSCAN algorithm, doing this to better identify USEFUL points, and filter out things like stops for bus transits, and other superfluous stops
+- for this, looking into paper sent to Claire
+- research how caching for large amount of places across multiple people across multiple points could be done sustainably. (might finally get to work with julia/c?????)
