@@ -32,8 +32,11 @@ gps2_stationary <- read_csv(here::here(path_processed, "gps2_stationary.csv"), s
 ```
 
 ```{r perform-clustering}
-clustered_19 <- cluster_stationary_gps(gps2_stationary, participant_id = 19, eps = 20)
-clustered_259 <- cluster_stationary_gps(gps2_stationary, participant_id = 259, eps = 20)
+clustered_19 <- cluster_stationary_gps(gps2_stationary, participant_id = 19, eps = 50)
+clustered_56 <- cluster_stationary_gps(gps2_stationary, participant_id = 56, eps = 50)
+clustered_65 <- cluster_stationary_gps(gps2_stationary, participant_id = 65, eps = 50)
+clustered_189 <- cluster_stationary_gps(gps2_stationary, participant_id = 189, eps = 50)
+clustered_259 <- cluster_stationary_gps(gps2_stationary, participant_id = 259, eps = 50)
 ```
 
 ```{r show cluster-distributions}
@@ -45,7 +48,7 @@ map_cluster_representatives <- function(clustered_data) {
   
   if (nrow(clustered_data) == 0) {
     # return empty map if no clusters
-    return(leaflet() %>% addTiles() %>% setView(lng = -89.4, lat = 43.1, zoom = 10))
+    return(leaflet() %>% addTiles() %>% setView(lng = -89.384373, lat = 43.074713, zoom = 10))
   }
   
   # classify locations based on visit patterns and assign colors directly
@@ -178,5 +181,8 @@ map_cluster_representatives <- function(clustered_data) {
 
 ```{r}
 map_cluster_representatives(clustered_19)
+map_cluster_representatives(clustered_56)
+map_cluster_representatives(clustered_65)
+map_cluster_representatives(clustered_189)
 map_cluster_representatives(clustered_259)
 ```
