@@ -70,6 +70,15 @@ stationary_splice <- process_gps(gps_data = gps_splice,
   get_stationary()
 ```
 
+```{r followmee-to-stationary}
+tracks_data <- read_csv("data/tracks.csv", show_col_types = FALSE)
+
+claire_data <- process_followmee_gps(tracks_data) |> 
+  get_stationary()
+
+```
+
+
 ```{r map-overview}
 map_gps(stationary_splice)
 ```

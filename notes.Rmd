@@ -54,10 +54,18 @@ to do:
 
 - looking to time-duration modified DBSCAN algorithm, doing this to better identify USEFUL points, and filter out things like stops for bus transits, and other superfluous stops
 - for this, looking into paper sent to Claire
-- research how caching for large amount of places across multiple people across multiple points could be done sustainably. (might finally get to work with julia/c?????)
+- research how caching for large amount of places across multiple people across multiple points could be done sustainably. (might finally get to work with julia/c ?????)
 
 
 ## 7/16/2025
 
 - ditched DBSCAN entirely as it sucks given our data collection techniques, moved to time/duration based clustering methods, promising results as of right now
-- GPS POI caching proposal. perhaps grid-based hierarchacal methods. JULIA ANGLE
+- GPS POI caching proposal. perhaps grid-based hierarchical methods. JULIA ANGLE
+
+## 7/17/2025
+
+- following meeting, even an un-optimized caching system will likely be enough to match with the daily rate limits of OSM (we can go do it anyways )
+- check out function decorators that Adam mentioned for caching.
+- need to develop the POI querying, can link it with known information.
+
+
