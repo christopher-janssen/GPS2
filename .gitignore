@@ -52,4 +52,4 @@ rsconnect/
 .DS_Store
 
 # stupid map files
-maps/*_files/
+maps/

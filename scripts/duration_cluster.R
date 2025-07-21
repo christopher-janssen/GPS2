@@ -5,7 +5,7 @@ library(dplyr)
 library(geosphere)
 library(lubridate)
 
-cluster_stationary_gps <- function(gps_data, participant_id, eps = 20, min_pts = NULL) {
+cluster_stationary_gps <- function(gps_data, participant_id, eps = 20) {
   
   # note: eps represents radius in meters, min_pts replaced with duration threshold
   radius_m <- eps
