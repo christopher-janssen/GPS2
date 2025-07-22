@@ -19,7 +19,6 @@ library(tidyverse)
 library(scales, exclude = c("discard", "col_factor"))
 library(datasets, exclude = "penguins")
 library(htmlwidgets)
-library(dbscan, exclude = "as.dendrogram")
 
 source("scripts/global_setup.R")
 source("scripts/gps_filtering.R")
