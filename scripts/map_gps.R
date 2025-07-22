@@ -12,23 +12,23 @@ map_gps_overview <- function(gps_data, show_paths = FALSE) {
               "#fed9a6", "#ffffcc", "#e5d8bd", "#fddaec")
   
   # improve date readability for buttons
-  gps_data <- gps_data %>%
-    mutate(date = as.Date(dttm_obs)) %>%
+  gps_data <- gps_data |>
+    mutate(date = as.Date(dttm_obs)) |>
     arrange(subid, dttm_obs)
   
   # create the base map, centered on the lat/lon data
-  map <- leaflet() %>%
-    addTiles() %>%
+  map <- leaflet() |>
+    addTiles() |>
     setView(lng = mean(gps_data$lon), lat = mean(gps_data$lat), zoom = 11)
   
   # add points and paths for each participant
   for (i in seq_along(participants)) {
     participant <- participants[i]
-    participant_data <- gps_data %>% filter(subid == participant)
+    participant_data <- gps_data |> filter(subid == participant)
     color <- colors[((i - 1) %% length(colors)) + 1]
     
     # add circle markers for the data points
-    map <- map %>%
+    map <- map |>
       addCircleMarkers(
         data = participant_data,
         lng = ~lon, 
@@ -51,9 +51,9 @@ map_gps_overview <- function(gps_data, show_paths = FALSE) {
       # group by date and add paths for each day
       dates <- unique(participant_data$date)
       for (date in dates) {
-        day_data <- participant_data %>% filter(date == !!date)
+        day_data <- participant_data |> filter(date == !!date)
         if (nrow(day_data) > 1) {
-          map <- map %>%
+          map <- map |>
             addPolylines(
               data = day_data,
               lng = ~lon,
@@ -70,7 +70,7 @@ map_gps_overview <- function(gps_data, show_paths = FALSE) {
   
   # add layer controls
   if (length(participants) > 1) {
-    map <- map %>%
+    map <- map |>
       addLayersControl(
         overlayGroups = paste("Participant", participants),
         options = layersControlOptions(collapsed = FALSE)
@@ -78,7 +78,7 @@ map_gps_overview <- function(gps_data, show_paths = FALSE) {
   }
   
   # add summary info box for clarity
-  map <- map %>%
+  map <- map |>
     addControl(
       html = paste0("<div style='background: rgba(255,255,255,0.9); padding: 10px; ",
                     "border-radius: 5px; border: 1px solid #ccc;'>",
@@ -97,9 +97,9 @@ map_gps_overview <- function(gps_data, show_paths = FALSE) {
 map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) {
   
   # filter for specific participant
-  participant_data <- gps_data %>%
-    filter(subid == participant_id) %>%
-    mutate(date = as.Date(dttm_obs)) %>%
+  participant_data <- gps_data |>
+    filter(subid == participant_id) |>
+    mutate(date = as.Date(dttm_obs)) |>
     arrange(dttm_obs)
   
   if (nrow(participant_data) == 0) {
@@ -114,14 +114,14 @@ map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) 
               "#fed9a6", "#ffffcc", "#e5d8bd", "#fddaec")
   
   # create base map
-  map <- leaflet() %>%
-    addTiles() %>%
+  map <- leaflet() |>
+    addTiles() |>
     setView(lng = mean(participant_data$lon), lat = mean(participant_data$lat), zoom = 13)
   
   # add each day as a separate layer
   for (i in seq_along(unique_dates)) {
     date <- unique_dates[i]
-    day_data <- participant_data %>% filter(date == !!date)
+    day_data <- participant_data |> filter(date == !!date)
     
     # color based on day
     day_color <- colors[((i - 1) %% length(colors)) + 1]
@@ -136,7 +136,7 @@ map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) 
                             paste0("Speed: ", round(speed, 2), " m/s<br>") else "",
                           "Coordinates: ", round(lat, 4), ", ", round(lon, 4))
     
-    map <- map %>%
+    map <- map |>
       addCircleMarkers(
         data = day_data,
         lng = ~lon, 
@@ -153,7 +153,7 @@ map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) 
     
     # add lines to show movement path for the day
     if (nrow(day_data) > 1) {
-      map <- map %>%
+      map <- map |>
         addPolylines(
           data = day_data,
           lng = ~lon,
@@ -168,7 +168,7 @@ map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) 
   
   # add layer control unless showing all days
   if (!show_all_days && length(unique_dates) > 1) {
-    map <- map %>%
+    map <- map |>
       addLayersControl(
         baseGroups = format(unique_dates, "%Y-%m-%d (%A)"),
         options = layersControlOptions(collapsed = FALSE)
@@ -176,7 +176,7 @@ map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) 
   }
   
   # add participant info box again
-  map <- map %>%
+  map <- map |>
     addControl(
       html = paste0("<div style='background: rgba(255,255,255,0.9); padding: 10px; ",
                     "border-radius: 5px; border: 1px solid #ccc;'>",

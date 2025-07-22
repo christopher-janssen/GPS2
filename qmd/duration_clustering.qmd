@@ -47,11 +47,11 @@ map_cluster_representatives <- function(clustered_data) {
   
   if (nrow(clustered_data) == 0) {
     # return empty map if no clusters
-    return(leaflet() %>% addTiles() %>% setView(lng = -89.384373, lat = 43.074713, zoom = 10))
+    return(leaflet() |> addTiles() |> setView(lng = -89.384373, lat = 43.074713, zoom = 10))
   }
   
   # classify locations based on visit patterns and assign colors directly
-  clustered_data <- clustered_data %>%
+  clustered_data <- clustered_data |>
     mutate(
       location_type = case_when(
         unique_days >= 5 & total_visits >= 8 ~ "routine",           # Daily routine (work, home)
@@ -72,8 +72,8 @@ map_cluster_representatives <- function(clustered_data) {
     )
   
   # create base map
-  map <- leaflet(clustered_data) %>%
-    addTiles() %>%
+  map <- leaflet(clustered_data) |>
+    addTiles() |>
     setView(lng = mean(clustered_data$lon), lat = mean(clustered_data$lat), zoom = 12)
   
   # calculate date range and total days
@@ -87,7 +87,7 @@ map_cluster_representatives <- function(clustered_data) {
   )
   
   # add summary info box FIRST 
-  map <- map %>%
+  map <- map |>
     addControl(
       html = paste0(
         "<div style='background: rgba(255,255,255,0.95); padding: 12px; ",
@@ -107,9 +107,9 @@ map_cluster_representatives <- function(clustered_data) {
   location_types <- unique(clustered_data$location_type)
   
   for (type in location_types) {
-    type_data <- clustered_data %>% filter(location_type == type)
+    type_data <- clustered_data |> filter(location_type == type)
     
-    map <- map %>%
+    map <- map |>
       addCircleMarkers(
         data = type_data,
         lng = ~lon, 
@@ -141,7 +141,7 @@ map_cluster_representatives <- function(clustered_data) {
   }
   
   # add layer control
-  map <- map %>%
+  map <- map |>
     addLayersControl(
       overlayGroups = stringr::str_to_title(location_types),
       options = layersControlOptions(collapsed = FALSE)
@@ -165,7 +165,7 @@ map_cluster_representatives <- function(clustered_data) {
   }
   
   # add legend
-  map <- map %>%
+  map <- map |>
     addLegend(
       position = "bottomleft",
       colors = legend_colors,

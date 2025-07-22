@@ -11,17 +11,17 @@ process_gps <- function(gps_data,
                         stationary_threshold_mph = 4) {
   
   # convert time to POSIXct and set timezone
-  gps_data <- gps_data %>%
+  gps_data <- gps_data |>
     mutate(
       dttm_obs = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
       dttm_obs = with_tz(dttm_obs, tz = "America/Chicago")
-    ) %>%
+    ) |>
     arrange(subid, dttm_obs)
   
   # calculate distances, durations, and speeds
   # specifically calculate Haversine distance (great circle distance) between consecutive GPS points
-  gps_processed <- gps_data %>%
-    group_by(subid) %>%
+  gps_processed <- gps_data |>
+    group_by(subid) |>
     mutate(
       dist_m = ifelse(row_number() == 1, 0,
                       distHaversine(cbind(lag(lon), lag(lat)), 
@@ -30,23 +30,23 @@ process_gps <- function(gps_data,
       duration = ifelse(row_number() == 1, 0,
                         as.numeric(difftime(dttm_obs, lag(dttm_obs), units = "mins"))),
       speed = ifelse(duration > 0, dist / (duration / 60), 0)
-    ) %>%
+    ) |>
     ungroup()
   
   # apply lab filtering rules
-  gps_filtered <- gps_processed %>%
+  gps_filtered <- gps_processed |>
     mutate(
       duration = if_else(dist > 0.01 & duration == 0, NA_real_, duration),
       duration = if_else(speed > speed_threshold_mph, NA_real_, duration),
       duration = if_else(duration > 0.5 & dist > 0.31, NA_real_, duration),
       valid_record = !is.na(duration),
       speed = if_else(valid_record & duration > 0, dist / (duration / 60), 0)
-    ) %>%
-    filter(valid_record) %>%
+    ) |>
+    filter(valid_record) |>
     select(-valid_record)
   
   # movement state classification
-  gps_classified <- gps_filtered %>%
+  gps_classified <- gps_filtered |>
     mutate(
       movement_state = if_else(speed <= stationary_threshold_mph, "stationary", "transition"),
       transit = if_else(speed <= stationary_threshold_mph, "no", "yes")
@@ -63,20 +63,20 @@ process_followmee_gps <- function(followmee_data,
                                   stationary_threshold_mph = 4) {
   
   # Map FollowMe columns to expected format and prepare data
-  gps_data <- followmee_data %>%
+  gps_data <- followmee_data |>
     # Map columns to match the expected format
     rename(
       original_name = Name,   # Keep original name for reference
       time = Date,            # Use Date as timestamp
       lat = Lat,              # Latitude
       lon = Lng               # Longitude (note: script expects 'lon' not 'lng')
-    ) %>%
+    ) |>
     # Create participant IDs starting from 501
     mutate(
       subid = as.numeric(as.factor(original_name)) + 500
-    ) %>%
+    ) |>
     # Remove rows with missing essential data
-    filter(!is.na(lat), !is.na(lon), !is.na(time)) %>%
+    filter(!is.na(lat), !is.na(lon), !is.na(time)) |>
     # Convert time to POSIXct and set timezone
     mutate(
       dttm_obs = case_when(
@@ -86,13 +86,13 @@ process_followmee_gps <- function(followmee_data,
         TRUE ~ as.POSIXct(time, tz = "UTC")
       ),
       dttm_obs = with_tz(dttm_obs, tz = "America/Chicago")
-    ) %>%
+    ) |>
     arrange(subid, dttm_obs)
   
   # Calculate distances, durations, and speeds
   # Following the same logic as the original process_gps function
-  gps_processed <- gps_data %>%
-    group_by(subid) %>%
+  gps_processed <- gps_data |>
+    group_by(subid) |>
     mutate(
       # Calculate Haversine distance between consecutive GPS points
       dist_m = ifelse(row_number() == 1, 0,
@@ -105,23 +105,23 @@ process_followmee_gps <- function(followmee_data,
                         as.numeric(difftime(dttm_obs, lag(dttm_obs), units = "mins"))),
       # Calculate speed in mph
       speed = ifelse(duration > 0, dist / (duration / 60), 0)
-    ) %>%
+    ) |>
     ungroup()
   
   # Apply lab filtering rules (same as original)
-  gps_filtered <- gps_processed %>%
+  gps_filtered <- gps_processed |>
     mutate(
       duration = if_else(dist > 0.01 & duration == 0, NA_real_, duration),
       duration = if_else(speed > speed_threshold_mph, NA_real_, duration),
       duration = if_else(duration > 0.5 & dist > 0.31, NA_real_, duration),
       valid_record = !is.na(duration),
       speed = if_else(valid_record & duration > 0, dist / (duration / 60), 0)
-    ) %>%
-    filter(valid_record) %>%
+    ) |>
+    filter(valid_record) |>
     select(-valid_record)
   
   # Movement state classification
-  gps_classified <- gps_filtered %>%
+  gps_classified <- gps_filtered |>
     mutate(
       movement_state = if_else(speed <= stationary_threshold_mph, "stationary", "transition"),
       transit = if_else(speed <= stationary_threshold_mph, "no", "yes")
@@ -132,8 +132,8 @@ process_followmee_gps <- function(followmee_data,
 
 # Updated get_stationary function with optional file writing
 get_stationary <- function(processed_data, write_file = FALSE, output_path = NULL) {
-  stationary_points <- processed_data %>%
-    filter(movement_state == "stationary") %>%
+  stationary_points <- processed_data |>
+    filter(movement_state == "stationary") |>
     select(subid, lat, lon, dttm_obs, dist, duration, speed, transit, movement_state)
   
   # Write to CSV file if requested

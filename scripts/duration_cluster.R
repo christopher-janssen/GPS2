@@ -12,9 +12,9 @@ cluster_stationary_gps <- function(gps_data, participant_id, eps = 20) {
   min_duration_min <- 30  # Minimum duration for a meaningful stop within a day
   
   # filter for specific participant and stationary points only
-  participant_data <- gps_data %>%
-    filter(subid == participant_id, movement_state == "stationary") %>%
-    mutate(date = as.Date(dttm_obs)) %>%
+  participant_data <- gps_data |>
+    filter(subid == participant_id, movement_state == "stationary") |>
+    mutate(date = as.Date(dttm_obs)) |>
     arrange(dttm_obs)
   
   if (nrow(participant_data) == 0) {
@@ -22,8 +22,8 @@ cluster_stationary_gps <- function(gps_data, participant_id, eps = 20) {
   }
   
   # process each day separately
-  daily_clusters <- participant_data %>%
-    group_by(date) %>%
+  daily_clusters <- participant_data |>
+    group_by(date) |>
     group_modify(~ {
       day_data <- .x
       day_data$daily_cluster <- 0
@@ -36,7 +36,7 @@ cluster_stationary_gps <- function(gps_data, participant_id, eps = 20) {
         current_point <- day_data[i, ]
         
         # find remaining unassigned points within radius on this day
-        remaining_points <- day_data[(i):nrow(day_data), ] %>%
+        remaining_points <- day_data[(i):nrow(day_data), ] |>
           filter(daily_cluster == 0)
         
         if (nrow(remaining_points) == 0) next
@@ -70,8 +70,8 @@ cluster_stationary_gps <- function(gps_data, participant_id, eps = 20) {
       }
       
       # return clustered day data
-      day_data %>% filter(daily_cluster != 0)
-    }) %>%
+      day_data |> filter(daily_cluster != 0)
+    }) |>
     ungroup()
   
   if (nrow(daily_clusters) == 0) {
@@ -84,8 +84,8 @@ cluster_stationary_gps <- function(gps_data, participant_id, eps = 20) {
   }
   
   # create daily location summaries
-  daily_locations <- daily_clusters %>%
-    group_by(date, daily_cluster) %>%
+  daily_locations <- daily_clusters |>
+    group_by(date, daily_cluster) |>
     summarise(
       subid = first(subid),
       lat = mean(lat),
@@ -126,9 +126,9 @@ cluster_stationary_gps <- function(gps_data, participant_id, eps = 20) {
   }
   
   # create final cluster representatives
-  representatives <- daily_locations %>%
-    filter(final_cluster != 0) %>%
-    group_by(final_cluster) %>%
+  representatives <- daily_locations |>
+    filter(final_cluster != 0) |>
+    group_by(final_cluster) |>
     summarise(
       subid = first(subid),
       lat = mean(lat),
@@ -140,7 +140,7 @@ cluster_stationary_gps <- function(gps_data, participant_id, eps = 20) {
       total_duration_hours = sum(duration_min) / 60,
       unique_days = n_distinct(date),
       .groups = "drop"
-    ) %>%
+    ) |>
     rename(cluster = final_cluster)
   
   return(representatives)
