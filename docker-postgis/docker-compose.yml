@@ -1,0 +1,35 @@
+# docker-compose.yml
+# PostGIS spatial database for GPS2 analysis
+
+services:
+  postgis:
+    image: postgis/postgis:15-3.3
+    # explicitly specify platform to handle Silicon Mac architecture
+    platform: linux/amd64
+    container_name: gps2_geocoding
+    environment:
+      # database configuration - these create the initial database and user
+      POSTGRES_DB: gps2_geocoding
+      POSTGRES_USER: gps2_researcher  
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_research_password}
+    ports:
+      # Map container port 5432 to my port 5432 for database access
+      - "5432:5432"
+    volumes:
+      # persistent storage for database files (stays local)
+      - postgis_data:/var/lib/postgresql/data
+      # mount your risk study folder as read-only for data access
+      - /Volumes/jjcurtin/studydata/risk:/research_data:ro
+      # mount initialization scripts that run when database first starts
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    # use healthcheck to ensure database is ready before declaring success
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gps2_researcher -d gps2_geocoding"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# volume definitions - creates persistent storage that survives container restarts
+volumes:
+  postgis_data: {}
