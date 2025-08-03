@@ -56,57 +56,76 @@ connect_to_gps2_db <- function() {
 }
 
 # test of PostGIS spatial functionality
-test_postgis_spatial_functions <- function() {
-  cat("Testing PostGIS spatial functionality for GPS2 analysis...\n")
-  cat(paste(rep("=", 55), collapse = ""), "\n")  # FIXED THIS LINE
+test_spatial_data <- function() {
+  cat("🧪 Testing spatial queries on your GPS data...\n")
   
   con <- connect_to_gps2_db()
   
   tryCatch({
-    # test 1: Verify test data exists and spatial table structure is correct
-    test_data_count <- dbGetQuery(con, "SELECT COUNT(*) as count FROM gps2.connection_test;")
-    cat("✅ Found", test_data_count$count, "test locations in database\n")
+    # Test 1: Basic data check
+    data_summary <- dbGetQuery(con, "
+      SELECT 
+        COUNT(*) as total_points,
+        COUNT(DISTINCT subid) as participants,
+        MIN(dttm_obs) as earliest_data,
+        MAX(dttm_obs) as latest_data
+      FROM gps2.gps_stationary_points;
+    ")
     
-    # test 2: Verify spatial distance calculations work with real coordinates
-    distance_results <- dbGetQuery(con, "SELECT * FROM gps2.test_spatial_functions();")
-    cat("✅ Spatial distance calculations working:\n")
-    for (i in 1:min(3, nrow(distance_results))) {
-      row <- distance_results[i, ]
-      cat("   ", row$from_location, "to", row$to_location, ":", 
-          round(row$distance_meters), "meters\n")
-    }
+    cat("📊 Your GPS data in PostGIS:\n")
+    print(data_summary)
     
-    # test 3: verify spatial indexing is functioning for performance
-    index_check <- dbGetQuery(con, 
-                              "SELECT schemaname, tablename, indexname 
-       FROM pg_indexes 
-       WHERE schemaname = 'gps2' AND indexname LIKE 'idx_%';")
-    cat("✅ Found", nrow(index_check), "spatial indexes for optimized queries\n")
+    # Test 2: Spatial extent (bounding box of all your data)
+    extent_check <- dbGetQuery(con, "
+      SELECT 
+        ROUND(ST_XMin(ST_Extent(location))::numeric, 4) as min_lon,
+        ROUND(ST_YMin(ST_Extent(location))::numeric, 4) as min_lat,
+        ROUND(ST_XMax(ST_Extent(location))::numeric, 4) as max_lon,
+        ROUND(ST_YMax(ST_Extent(location))::numeric, 4) as max_lat
+      FROM gps2.gps_stationary_points;
+    ")
     
-    # test 4: test coordinate extraction and manipulation
-    coordinate_test <- dbGetQuery(con,
-                                  "SELECT 
-         location_name,
-         ROUND(ST_X(test_point)::numeric, 6) as longitude,
-         ROUND(ST_Y(test_point)::numeric, 6) as latitude
-       FROM gps2.connection_test 
-       LIMIT 1;")
-    cat("✅ Coordinate extraction working:", coordinate_test$location_name, 
-        "is at", coordinate_test$latitude, ",", coordinate_test$longitude, "\n")
+    cat("🗺️  Geographic extent of your data:\n")
+    print(extent_check)
     
-    # test 5: Verify geographic coordinate system handling
-    crs_test <- dbGetQuery(con,
-                           "SELECT ST_SRID(test_point) as coordinate_system 
-       FROM gps2.connection_test LIMIT 1;")
-    cat("✅ Coordinate system verification: EPSG:", crs_test$coordinate_system, 
-        "(WGS84 GPS standard)\n")
+    # Test 3: Sample points by participant (much faster!)
+    sample_by_participant <- dbGetQuery(con, "
+      SELECT 
+        subid,
+        COUNT(*) as points,
+        ROUND(ST_X(ST_Centroid(ST_Collect(location)))::numeric, 4) as center_lon,
+        ROUND(ST_Y(ST_Centroid(ST_Collect(location)))::numeric, 4) as center_lat
+      FROM gps2.gps_stationary_points 
+      GROUP BY subid 
+      ORDER BY points DESC
+      LIMIT 5;
+    ")
     
-    cat("\n All PostGIS spatial functions verified and ready for GPS analysis!\n")
+    cat("📍 Top 5 participants by GPS points:\n")
+    print(sample_by_participant)
+    
+    # Test 4: Simple distance test with just a few points
+    distance_test <- dbGetQuery(con, "
+      WITH sample_points AS (
+        SELECT subid, location, lat, lon, id
+        FROM gps2.gps_stationary_points 
+        WHERE subid = 19 
+        ORDER BY dttm_obs 
+        LIMIT 3
+      )
+      SELECT 
+        a.id as point_a,
+        b.id as point_b,
+        ROUND(ST_Distance(a.location::geography, b.location::geography)) as distance_meters
+      FROM sample_points a, sample_points b
+      WHERE a.id < b.id;
+    ")
+    
+    cat("📏 Sample distances between consecutive points (meters):\n")
+    print(distance_test)
     
   }, error = function(e) {
-    cat("❌ Spatial function test failed:", e$message, "\n")
-    cat("This may indicate incomplete database initialization.\n")
-    cat("Try: docker-compose down && docker-compose up -d\n")
+    cat("❌ Error testing spatial data:", e$message, "\n")
   }, finally = {
     dbDisconnect(con)
   })
