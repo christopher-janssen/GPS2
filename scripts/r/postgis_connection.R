@@ -101,7 +101,7 @@ test_postgis_spatial_functions <- function() {
     cat("✅ Coordinate system verification: EPSG:", crs_test$coordinate_system, 
         "(WGS84 GPS standard)\n")
     
-    cat("\n🎉 All PostGIS spatial functions verified and ready for GPS analysis!\n")
+    cat("\n All PostGIS spatial functions verified and ready for GPS analysis!\n")
     
   }, error = function(e) {
     cat("❌ Spatial function test failed:", e$message, "\n")
