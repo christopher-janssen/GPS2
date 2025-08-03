@@ -21,7 +21,7 @@ Ideally, the local setup would involve configuring QGIS to connect to locally-ho
 
 ## The Elephant in the Room
 
-The GPS2 project aims to automatically contextualize GPS coordinates from study participants by identifying venue type and information (bars, healthcare facilities, parks, etc.) to enhance relapse-risk prediction. This hypothetical approach aims to reduce participant burden by eliminating manual location logging while still providing richer data for understanding recovery patterns.
+The project aims to contextualize GPS coordinates from study participants by identifying venue type and information (bars, healthcare facilities, parks, etc.) to enhance relapse-risk prediction. This hypothetical approach aims to reduce participant burden by eliminating manual location logging while still providing richer data for understanding recovery patterns.
 
 This creates potential privacy challenges similar to those identified by Rundle et al. regarding the transmission of location data to third-party services. While Rundle et al. focus specifically on patient residential addresses, the same fundamental privacy principles would likely apply to GPS coordinate data. 
 
