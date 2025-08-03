@@ -68,4 +68,12 @@ to do:
 - check out function decorators that Adam mentioned for caching.
 - need to develop the POI querying, can link it with known information.
 
+## 8/3/2025
 
+- set up PostGIS + Docker infrastructure for privacy-compliant GPS analysis
+- built Docker container with PostgreSQL + PostGIS spatial extensions running locally 
+- created `postgis_connection.R` script with comprehensive database connection and testing functions
+- verified all spatial operations working: distance calculations, coordinate extraction, indexing
+- successfully tested with Madison WI test data (downtown, campus, capitol locations)
+- established R ↔ PostGIS bridge for future GPS data integration
+- next: move CSV-based analysis workflows into secure local database for API caching system

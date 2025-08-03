@@ -20,10 +20,10 @@ library(scales, exclude = c("discard", "col_factor"))
 library(datasets, exclude = "penguins")
 library(htmlwidgets)
 
-source("scripts/global_setup.R")
-source("scripts/gps_filtering.R")
-source("scripts/map_gps.R")
-source("scripts/duration_cluster.R")
+source("scripts/r/global_setup.R")
+source("scripts/r/gps_filtering.R")
+source("scripts/r/map_gps.R")
+source("scripts/r/duration_cluster.R")
 ```
 
 ```{r load-data-splice}

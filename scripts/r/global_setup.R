@@ -6,4 +6,4 @@ devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/format_p
 
 # file paths
 path_shared <- format_path(str_c("studydata/risk/data_processed/shared"))
-path_processed <- format_path(str_c("studydata/risk/data_processed/gps2"))
+path_processed <- format_path(str_c("studydata/risk/data_processed/gps2/data"))

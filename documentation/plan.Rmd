@@ -1,3 +1,10 @@
+---
+title: "updated privacy plan"
+author: "chris"
+output: html_document
+---
+
+
 Project Summary:
 Goal: Develop a methodology for analyzing GPS data from AUD recovery participants to create features for relapse prediction models, directly addressing privacy concerns about transmitting patient location data to external services.
 
