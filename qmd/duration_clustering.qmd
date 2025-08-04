@@ -185,3 +185,15 @@ map_cluster_representatives(clustered_65)
 map_cluster_representatives(clustered_189)
 map_cluster_representatives(clustered_259)
 ```
+
+## All Participant-Clustering
+
+```{r}
+gps2_clusters <- unique(gps2_stationary$subid) |>
+ map_dfr(~ cluster_stationary_gps(gps2_stationary, .x, eps = 50))
+```
+
+```{r}
+write_csv(gps2_clusters, file.path(path_processed, "gps2_clusters.csv"))
+```
+

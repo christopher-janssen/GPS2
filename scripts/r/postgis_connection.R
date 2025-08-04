@@ -193,7 +193,7 @@ show_gps2_database_info <- function() {
 }
 
 # utility function to safely disconnect from database
-# (always call this when you're done with database operations)
+# (always call this when done with database operations)
 safe_disconnect <- function(connection) {
   if (!is.null(connection) && dbIsValid(connection)) {
     dbDisconnect(connection)
