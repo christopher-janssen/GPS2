@@ -43,6 +43,7 @@ print(clustered_19)
 ```
 
 ```{r}
+# for direct clustering with R data (v1)
 map_cluster_representatives <- function(clustered_data) {
   
   if (nrow(clustered_data) == 0) {
@@ -179,11 +180,190 @@ map_cluster_representatives <- function(clustered_data) {
 ```
 
 ```{r}
-map_cluster_representatives(clustered_19)
-map_cluster_representatives(clustered_56)
-map_cluster_representatives(clustered_65)
-map_cluster_representatives(clustered_189)
-map_cluster_representatives(clustered_259)
+# for clustering through POSTGIS database
+# this version works with the get_participant_clusters() function output
+
+map_cluster_representatives_postgis <- function(cluster_data, participant_id) {
+  
+  if (nrow(cluster_data) == 0) {
+    # return empty map if no clusters
+    return(leaflet() |> addTiles() |> setView(lng = -89.384373, lat = 43.074713, zoom = 10))
+  }
+  
+  # map PostGIS column names to expected names and classify locations
+  clustered_data <- cluster_data |>
+    rename(cluster = cluster_id) |>
+    # add subid column if it doesn't exist
+    mutate(subid = if(!"subid" %in% names(cluster_data)) participant_id else subid) |>
+    mutate(
+      # ensure datetime columns are properly formatted
+      first_visit = as.POSIXct(first_visit),
+      last_visit = as.POSIXct(last_visit),
+      
+      # classify locations based on visit patterns and assign colors directly
+      location_type = case_when(
+        unique_days >= 5 & total_visits >= 8 ~ "routine",           # Daily routine (work, home)
+        unique_days >= 3 & total_visits >= 5 ~ "frequent",          # Regular spots (gym, store)
+        unique_days >= 2 ~ "occasional",                            # Sometimes visited
+        TRUE ~ "rare"                                               # One-off visits
+      ),
+      # assign colors directly to avoid named vector issues
+      marker_color = case_when(
+        location_type == "routine" ~ "#d73027",     # Red - daily routine locations
+        location_type == "frequent" ~ "#fc8d59",    # Orange - frequent visits  
+        location_type == "occasional" ~ "#91bfdb",  # Light blue - occasional
+        location_type == "rare" ~ "#999999"         # Gray - rare visits
+      ),
+      # size based on importance (visits + duration)
+      importance_score = scale(total_visits)[,1] + scale(total_duration_hours)[,1],
+      marker_size = pmax(4, pmin(12, 6 + importance_score * 2))    # size between 4-12
+    )
+  
+  # create base map
+  map <- leaflet(clustered_data) |>
+    addTiles() |>
+    setView(lng = mean(clustered_data$lon), lat = mean(clustered_data$lat), zoom = 12)
+  
+  # calculate date range and total days
+  start_date <- min(clustered_data$first_visit)
+  end_date <- max(clustered_data$last_visit)
+  total_days <- as.numeric(difftime(end_date, start_date, units = "days")) + 1
+  
+  date_range_text <- paste0(
+    "[", format(start_date, "%m-%d-%Y"), " to ", 
+    format(end_date, "%m-%d-%Y"), " (Total ", round(total_days), " days)]"
+  )
+  
+  # add summary info box FIRST 
+  map <- map |>
+    addControl(
+      html = paste0(
+        "<div style='background: rgba(255,255,255,0.95); padding: 12px; ",
+        "border-radius: 8px; border: 2px solid #333; font-family: Arial;'>",
+        "<strong>Participant ", participant_id, " - Location Summary</strong><br>",
+        "<strong>", nrow(clustered_data), "</strong> meaningful locations<br>",
+        "<strong>", sum(clustered_data$total_visits), "</strong> total visits<br>",
+        "<strong>", round(sum(clustered_data$total_duration_hours), 1), "</strong> hours tracked<br>",
+        "<strong>Timeframe:</strong> ", date_range_text, "<br>",
+        "<em>Marker size = visit importance</em>",
+        "</div>"
+      ),
+      position = "topright"
+    )
+  
+  # add markers for each location type separately to ensure colors work
+  location_types <- unique(clustered_data$location_type)
+  
+  for (type in location_types) {
+    type_data <- clustered_data |> filter(location_type == type)
+    
+    map <- map |>
+      addCircleMarkers(
+        data = type_data,
+        lng = ~lon, 
+        lat = ~lat,
+        radius = ~marker_size,
+        color = "#000", 
+        fillColor = ~marker_color,  # use the directly assigned colors
+        fillOpacity = 0.8, 
+        stroke = TRUE, 
+        weight = 1,
+        popup = ~paste0(
+          "<strong>Location Cluster ", cluster, "</strong><br>",
+          "<em>", stringr::str_to_title(location_type), " location</em><br><br>",
+          "<strong>Visit Pattern:</strong><br>",
+          "• Total visits: ", total_visits, "<br>",
+          "• Days visited: ", unique_days, "<br>",
+          "• Total time: ", round(total_duration_hours, 1), " hours<br>",
+          "• GPS points: ", n_points, "<br><br>",
+          "<strong>Timeline:</strong><br>",
+          "• First visit: ", format(first_visit, "%m/%d/%Y %H:%M"), "<br>",
+          "• Last visit: ", format(last_visit, "%m/%d/%Y %H:%M"), "<br><br>",
+          "<strong>Coordinates:</strong><br>",
+          round(lat, 4), ", ", round(lon, 4)
+        ),
+        label = ~paste0("Cluster ", cluster, ": ", unique_days, " days, ", 
+                       total_visits, " visits"),
+        group = stringr::str_to_title(type)
+      )
+  }
+  
+  # add layer control
+  map <- map |>
+    addLayersControl(
+      overlayGroups = stringr::str_to_title(location_types),
+      options = layersControlOptions(collapsed = FALSE)
+    )
+  
+  # create legend with manual color assignments to avoid named vector issues
+  legend_colors <- c()
+  legend_labels <- c()
+  
+  for (type in location_types) {
+    type_color <- case_when(
+      type == "routine" ~ "#d73027",
+      type == "frequent" ~ "#fc8d59", 
+      type == "occasional" ~ "#91bfdb",
+      type == "rare" ~ "#999999"
+    )
+    type_count <- sum(clustered_data$location_type == type)
+    
+    legend_colors <- c(legend_colors, type_color)
+    legend_labels <- c(legend_labels, paste0(stringr::str_to_title(type), " (", type_count, ")"))
+  }
+  
+  # add legend
+  map <- map |>
+    addLegend(
+      position = "bottomleft",
+      colors = legend_colors,
+      labels = legend_labels,
+      title = "Location Types",
+      opacity = 0.8
+    )
+  
+  return(map)
+}
+
+# convenience wrapper function that gets cluster data from PostGIS and maps it
+map_participant_clusters_from_db <- function(participant_id) {
+  
+  # Check if get_participant_clusters function is available
+  if (!exists("get_participant_clusters")) {
+    stop("get_participant_clusters() function not found. Make sure postgis_setup.qmd has been run.")
+  }
+  
+  # Get cluster data from database
+  cluster_data <- get_participant_clusters(participant_id)
+  
+  # Check if any clusters were found
+  if (nrow(cluster_data) == 0) {
+    cat("No clusters found for participant", participant_id, "\n")
+    return(leaflet() |> 
+           addTiles() |> 
+           setView(lng = -89.384373, lat = 43.074713, zoom = 10) |>
+           addControl(
+             html = paste0("<div style='background: rgba(255,255,255,0.95); padding: 12px; ",
+                          "border-radius: 8px; border: 2px solid #333; font-family: Arial;'>",
+                          "<strong>No clusters found for Participant ", participant_id, "</strong><br>",
+                          "This participant may not have sufficient stationary GPS data.",
+                          "</div>"),
+             position = "topright"
+           ))
+  }
+  
+  # Create and return the map
+  return(map_cluster_representatives_postgis(cluster_data, participant_id))
+}
+
+# Usage examples:
+# 
+# Option 1: Get data from database and map in one step
+# map_participant_clusters_from_db(19)
+# 
+# Option 2: Get data first, then map
+# cluster_data <- get_participant_clusters(19)
+# map_cluster_representatives_postgis(cluster_data, 19)
 ```
 
 ## All Participant-Clustering
