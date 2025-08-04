@@ -58,17 +58,12 @@ Following privacy best practices outlined in recent spatial epidemiology researc
 - **R integration**: Seamless data transfer between R analysis and PostGIS storage
 - **Batch processing**: Efficient handling of large GPS datasets
 
-## Planned Enhancements
+## Planned Features
 
 ### Venue Identification Pipeline
 - **Risk-relevant categorization**: Automatic identification of bars, liquor stores, treatment centers
 - **Support location detection**: Healthcare facilities, AA meeting locations, gyms
 - **Environmental context**: Neighborhood characteristics, accessibility, hours of operation
-
-### Advanced Analytics
-- **Temporal pattern analysis**: Time-of-day and day-of-week behavioral patterns
-- **Risk prediction features**: Location-based variables for machine learning models  
-- **Social environment mapping**: Co-occurrence patterns and peer influence indicators
 
 ## File Structure
 
@@ -91,7 +86,7 @@ GPS2/
 │   ├── docker-compose.yml       # PostGIS service configuration
 │   └── init-scripts/            # Database initialization
 ├── documentation/               # Project planning and progress notes
-└── data/                       # Sample GPS data (anonymized)
+└── data/                       # Sample GPS data
 ```
 
 ## Getting Started
