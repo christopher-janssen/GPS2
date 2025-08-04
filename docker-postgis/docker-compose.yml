@@ -13,12 +13,12 @@ services:
       POSTGRES_USER: gps2_researcher  
       POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_research_password}
     ports:
-      # Map container port 5432 to my port 5432 for database access
+      # map container port 5432 to my port 5432 for database access
       - "5432:5432"
     volumes:
       # persistent storage for database files (stays local)
       - postgis_data:/var/lib/postgresql/data
-      # mount your risk study folder as read-only for data access
+      # mount risk study folder as read-only for data access
       - /Volumes/jjcurtin/studydata/risk:/research_data:ro
       # mount initialization scripts that run when database first starts
       - ./init-scripts:/docker-entrypoint-initdb.d

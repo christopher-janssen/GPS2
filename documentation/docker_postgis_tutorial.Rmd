@@ -1,0 +1,399 @@
+---
+title: "Docker/POSTGIS"
+author: "Christopher Janssen"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: show
+    theme: flatly
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE, warning = FALSE, message = FALSE)
+```
+
+# Summary
+
+This document maps the development of GPS2, a privacy-compliant spatial
+analysis system for addiction recovery research. The system processes
+GPS coordinates from study participants to automatically identify venue
+types (bars, healthcare facilities, etc.) without transmitting sensitive
+location data to external services.
+
+**What We Have**: A fully local PostGIS spatial database system that
+maintains data privacy compliance while enabling GPS analysis and venue
+identification through strategic API caching.
+
+# Problem Definition
+
+## Privacy Challenge
+
+Raw GPS coordinates provide limited analytical value, while manual
+location logging creates fatigue. External API services (Google Maps,
+OpenStreetMap) offer venue identification but violate privacy compliance
+by transmitting participant location data to third-party services
+without BAAs.
+
+## Technical Requirements
+
+-   Process GPS coordinates for 100+ participants over multi-month
+    periods
+-   Identify venue types relevant to addiction recovery (bars, treatment
+    centers, routine locations)
+-   Maintain compliance through local data processing
+-   Scale to handle millions of GPS points efficiently
+-   Support complex spatial queries and clustering operations
+
+# Architecture Design
+
+## Core Principles
+
+**Local Processing**: All sensitive GPS data remains within controlled
+infrastructure **Spatial Database**: PostGIS provides enterprise-grade
+spatial analysis capabilities **API Caching**: Local venue cache reduces
+external dependencies while building knowledge base **Privacy by
+Design**: Architectural solutions prevent data exposure rather than
+relying on post-processing privacy techniques
+
+## Technology Stack
+
+-   **Database**: PostgreSQL 15 with PostGIS 3.3 spatial extensions
+-   **Containerization**: Docker for reproducible deployment
+-   **Analysis Environment**: R with spatial analysis packages
+-   **Data Processing**: Custom R functions for GPS filtering and
+    clustering
+-   **Spatial Operations**: PostGIS functions for distance calculations
+    and proximity queries
+
+# Implementation Process
+
+## Phase 1: Infrastructure Setup
+
+### Docker Container Configuration
+
+Created `docker-compose.yml` establishing PostgreSQL + PostGIS
+environment:
+
+``` yaml
+services:
+  postgis:
+    image: postgis/postgis:15-3.3
+    # explicitly specify platform to handle Silicon Mac architecture
+    platform: linux/amd64
+    container_name: gps2_geocoding
+    environment:
+      # database configuration - these create the initial database and user
+      POSTGRES_DB: gps2_geocoding
+      POSTGRES_USER: gps2_researcher  
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_research_password}
+    ports:
+      # map container port 5432 to my port 5432 for database access
+      - "5432:5432"
+    volumes:
+      # persistent storage for database files (stays local)
+      - postgis_data:/var/lib/postgresql/data
+      # mount risk study folder as read-only for data access
+      - /Volumes/jjcurtin/studydata/risk:/research_data:ro
+      # mount initialization scripts that run when database first starts
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    # use healthcheck to ensure database is ready before declaring success
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gps2_researcher -d gps2_geocoding"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# volume definitions - creates persistent storage that survives container restarts
+volumes:
+  postgis_data: {}
+```
+
+**Key Decision**: Read-only mount of research data directory ensures
+container access without compromising data security.
+
+### Database Initialization
+
+Automated PostGIS setup through `init-scripts/01-setup-postgis.sql`:
+
+``` sql
+-- Enable spatial extensions
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS postgis_topology;
+CREATE EXTENSION IF NOT EXISTS postgis_tiger_geocoder;
+
+-- Create research schema
+CREATE SCHEMA IF NOT EXISTS gps2;
+
+-- Test spatial functionality
+CREATE TABLE gps2.connection_test (
+    id SERIAL PRIMARY KEY,
+    location_name VARCHAR(100),
+    test_point GEOMETRY(POINT, 4326),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Validation**: Madison, WI test locations verify spatial distance
+calculations and coordinate system handling.
+
+## Phase 2: Database Connection Infrastructure
+
+### R-PostGIS Bridge
+
+Developed `postgis_connection.R` providing robust database connectivity:
+
+``` r
+connect_to_gps2_db <- function() {
+  tryCatch({
+    con <- dbConnect(
+      RPostgres::Postgres(),
+      host = "localhost",
+      port = 5432,
+      dbname = "gps2_geocoding",
+      user = "gps2_researcher",
+      password = Sys.getenv("GPS2_DB_PASSWORD", "secure_research_password")
+    )
+    
+    # Verify PostGIS functionality
+    postgis_version <- dbGetQuery(con, "SELECT PostGIS_Version();")
+    cat("Successfully connected to GPS2 PostGIS database\n")
+    
+    return(con)
+  }, error = function(e) {
+    # Comprehensive error handling with troubleshooting guidance
+    stop("Database connection error: ", e$message)
+  })
+}
+```
+
+**Testing Framework**: Comprehensive spatial function validation ensures
+geometric operations, coordinate system handling, and index performance.
+
+### Management Utilities
+
+Created `connect_db.sh` for direct database access:
+
+``` bash
+#!/bin/bash
+# Auto-start container if not running
+if ! docker ps | grep -q "gps2_geocoding"; then
+    cd docker-postgis && docker-compose up -d
+    sleep 10
+fi
+docker exec -it gps2_geocoding psql -U gps2_researcher -d gps2_geocoding
+```
+
+## Phase 3: GPS Data Schema Design
+
+### Production Table Structure
+
+Designed tables matching existing R analysis workflows:
+
+``` sql
+-- Raw GPS points table
+CREATE TABLE gps2.gps_raw_points (
+    id SERIAL PRIMARY KEY,
+    subid INTEGER NOT NULL,
+    location GEOMETRY(POINT, 4326) NOT NULL,
+    lat DOUBLE PRECISION NOT NULL,
+    lon DOUBLE PRECISION NOT NULL,
+    dttm_obs TIMESTAMP NOT NULL,
+    dist DOUBLE PRECISION,
+    duration DOUBLE PRECISION,
+    speed DOUBLE PRECISION,
+    movement_state VARCHAR(15),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Spatial indexes for performance
+CREATE INDEX idx_gps_raw_points_geom ON gps2.gps_raw_points USING GIST (location);
+CREATE INDEX idx_gps_raw_points_subid ON gps2.gps_raw_points (subid);
+```
+
+**Design Decisions**: - GEOMETRY(POINT, 4326) ensures proper spatial
+indexing and calculations - Dual storage (lat/lon + geometry) optimizes
+both R integration and spatial queries - Participant-based indexing
+supports individual analysis workflows - Timestamp indexing enables
+temporal analysis
+
+### Clustering Results Storage
+
+``` sql
+CREATE TABLE gps2.location_clusters (
+    id SERIAL PRIMARY KEY,
+    cluster_id INTEGER NOT NULL,
+    subid INTEGER NOT NULL,
+    location GEOMETRY(POINT, 4326) NOT NULL,
+    n_points INTEGER NOT NULL,
+    first_visit TIMESTAMP NOT NULL,
+    last_visit TIMESTAMP NOT NULL,
+    total_visits INTEGER NOT NULL,
+    total_duration_hours DOUBLE PRECISION NOT NULL,
+    unique_days INTEGER NOT NULL,
+    UNIQUE(subid, cluster_id)
+);
+```
+
+**Integration**: Table structure directly supports output from existing
+`duration_cluster.R` algorithm.
+
+## Phase 4: Data Transfer Pipeline
+
+### GPS Data Integration
+
+Developed `gps_data_transfer.R` for CSV-to-PostGIS migration:
+
+``` r
+insert_stationary_points <- function(stationary_data, clear_existing = FALSE) {
+  con <- connect_to_gps2_db()
+  
+  # Batch processing for efficiency
+  batch_size <- 1000
+  for (i in seq(1, nrow(gps_prepared), batch_size)) {
+    batch <- gps_prepared[i:min(i + batch_size - 1, nrow(gps_prepared)), ]
+    
+    # PostGIS geometry creation
+    insert_sql <- "
+    INSERT INTO gps2.gps_stationary_points 
+      (subid, location, lat, lon, dttm_obs, dist, duration, speed, movement_state, date_observed)
+    VALUES ($1, ST_SetSRID(ST_MakePoint($3, $2), 4326), $2, $3, $4, $5, $6, $7, $8, $9)
+    "
+    
+    dbExecute(con, insert_sql, batch_list)
+  }
+}
+```
+
+**Performance**: Batch processing handles large datasets efficiently
+while maintaining data integrity through transaction management.
+
+### Validation Framework
+
+Implemented comprehensive testing of spatial operations on real data:
+
+``` r
+test_spatial_data <- function() {
+  con <- connect_to_gps2_db()
+  
+  # Geographic extent verification
+  extent_check <- dbGetQuery(con, "
+    SELECT 
+      ROUND(ST_XMin(ST_Extent(location))::numeric, 4) as min_lon,
+      ROUND(ST_YMin(ST_Extent(location))::numeric, 4) as min_lat,
+      ROUND(ST_XMax(ST_Extent(location))::numeric, 4) as max_lon,
+      ROUND(ST_YMax(ST_Extent(location))::numeric, 4) as max_lat
+    FROM gps2.gps_stationary_points;
+  ")
+  
+  # Sample spatial distance calculations
+  distance_test <- dbGetQuery(con, "
+    SELECT ROUND(ST_Distance(a.location::geography, b.location::geography)) as distance_meters
+    FROM gps2.gps_stationary_points a, gps2.gps_stationary_points b
+    WHERE a.id < b.id AND a.subid = b.subid
+    ORDER BY distance_meters DESC LIMIT 3;
+  ")
+}
+```
+
+## Phase 5: Workflow Integration
+
+### Streamlined Environment Setup
+
+Created `postgis_setup.qmd` providing one-command environment
+initialization:
+
+``` r
+# Auto-start container and verify connectivity
+container_check <- system("docker ps | grep gps2_geocoding", ignore.stdout = TRUE)
+if (container_check != 0) {
+  system("cd docker-postgis && docker-compose up -d", ignore.stdout = TRUE)
+  Sys.sleep(15)
+}
+
+# Load all analysis functions
+source("scripts/r/postgis_connection.R")
+source("scripts/r/gps_data_transfer.R")
+source("scripts/r/duration_cluster.R")
+
+# Convenience functions for immediate productivity
+get_participant_data <- function(participant_id) {
+  con <- quick_connect()
+  data <- dbGetQuery(con, paste0("
+    SELECT subid, lat, lon, dttm_obs, dist, duration, speed, movement_state
+    FROM gps2.gps_stationary_points WHERE subid = ", participant_id, "
+    ORDER BY dttm_obs;"))
+  dbDisconnect(con)
+  return(data)
+}
+```
+
+# Technical Achievements
+
+## Data Integration Results
+
+Successfully migrated **588,658 GPS points** from **167 participants**
+spanning March 2017 to December 2019. Geographic extent covers
+continental United States with proper coordinate system handling and
+spatial indexing.
+
+# Methodological Contributions
+
+## Privacy-by-Design Architecture
+
+**Local Processing**: All GPS analysis occurs within controlled
+infrastructure, eliminating privacy vulnerabilities associated with
+third-party API transmission.
+
+**Spatial Database Foundation**: PostGIS provides enterprise-grade
+spatial capabilities without external dependencies, enabling
+sophisticated analysis while maintaining data sovereignty.
+
+**Containerized Deployment**: Docker ensures reproducible environments
+across research teams while isolating sensitive data processing.
+
+## Research Workflow Integration
+
+**R Integration**: Database functions integrate naturally with existing
+R analysis workflows, maintaining familiar interfaces while adding
+spatial database capabilities.
+
+**Automated Environment Setup**: Single-command initialization reduces
+technical barriers.
+
+**Flexible Analysis Patterns**: System supports both individual
+participant analysis and population-level spatial queries through
+optimized indexing strategies.
+
+## Scalability Architecture
+
+**Batch Processing**: Efficient data loading handles large participant
+cohorts without memory constraints.
+
+**Spatial Indexing**: GIST indexes enable complex spatial queries across
+millions of GPS points.
+
+**Modular Design**: Separate functions for connection management, data
+transfer, and analysis support independent testing and maintenance.
+
+# Decisions
+
+## Notes
+
+**Database Connection Management**: RPostgres driver proved more
+reliable than RPostgreSQL for sustained connections. Connection pooling
+and proper cleanup prevent resource exhaustion.
+
+**Spatial Data Types**: Dual storage (lat/lon + geometry) optimizes both
+R compatibility and PostGIS performance. Explicit SRID specification
+(4326) essential for proper spatial operations.
+
+**Docker Configuration**: Platform specification (linux/amd64) critical
+for Apple Silicon compatibility. Read-only data mounts provide security
+without sacrificing accessibility.
