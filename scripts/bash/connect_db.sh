@@ -11,14 +11,14 @@ if ! docker ps | grep -q "gps2_geocoding"; then
     echo "Starting container..."
     cd docker-postgis
     docker-compose up -d
-    echo "⏳ Waiting for database to initialize..."
+    echo "Waiting for database to initialize..."
     sleep 10
     cd ..
 fi
 
 echo "✅ Container running"
-echo "🔐 Password: secure_research_password"
-echo "📝 Useful commands once connected:"
+echo "Password: secure_research_password"
+echo "Useful commands once connected:"
 echo "   \\l          - list databases"
 echo "   \\dt gps2.*  - list tables in gps2 schema"  
 echo "   \\d gps2.table_name - describe table structure"

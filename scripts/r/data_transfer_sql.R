@@ -7,14 +7,14 @@ source("scripts/r/postgis_connection.R")
 
 # function to insert stationary GPS points into PostGIS
 insert_stationary_points <- function(stationary_data, clear_existing = FALSE) {
-  cat("📥 Transferring stationary GPS data to PostGIS...\n")
+  cat("Transferring stationary GPS data to PostGIS...\n")
   
   con <- connect_to_gps2_db()
   
   tryCatch({
     # optional: clear existing data for fresh start
     if (clear_existing) {
-      cat("🗑️  Clearing existing stationary points...\n")
+      cat("Clearing existing stationary points...\n")
       dbExecute(con, "DELETE FROM gps2.gps_stationary_points;")
     }
     
@@ -30,7 +30,7 @@ insert_stationary_points <- function(stationary_data, clear_existing = FALSE) {
       select(subid, lat, lon, dttm_obs, dist, duration, speed, transit, 
              movement_state, date_observed)
     
-    cat("📊 Preparing", nrow(gps_prepared), "stationary points for", 
+    cat("Preparing", nrow(gps_prepared), "stationary points for", 
         length(unique(gps_prepared$subid)), "participants\n")
     
     # insert data in batches (more efficient for large datasets)
@@ -93,13 +93,13 @@ insert_stationary_points <- function(stationary_data, clear_existing = FALSE) {
 
 # function to insert cluster results into PostGIS
 insert_cluster_data <- function(cluster_data, clear_existing = FALSE) {
-  cat("📥 Transferring cluster data to PostGIS...\n")
+  cat("Transferring cluster data to PostGIS...\n")
   
   con <- connect_to_gps2_db()
   
   tryCatch({
     if (clear_existing) {
-      cat("🗑️  Clearing existing clusters...\n")
+      cat("Clearing existing clusters...\n")
       dbExecute(con, "DELETE FROM gps2.location_clusters;")
     }
     
@@ -108,7 +108,7 @@ insert_cluster_data <- function(cluster_data, clear_existing = FALSE) {
       select(cluster_id = cluster, subid, lat, lon, n_points, first_visit, 
              last_visit, total_visits, total_duration_hours, unique_days)
     
-    cat("📊 Preparing", nrow(clusters_prepared), "clusters for", 
+    cat("Preparing", nrow(clusters_prepared), "clusters for", 
         length(unique(clusters_prepared$subid)), "participants\n")
     
     # insert cluster data
@@ -142,7 +142,7 @@ insert_cluster_data <- function(cluster_data, clear_existing = FALSE) {
       ORDER BY subid;
     ")
     
-    cat("📈 Cluster summary by participant:\n")
+    cat("Cluster summary by participant:\n")
     print(cluster_summary)
     
   }, error = function(e) {
