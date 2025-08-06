@@ -55,11 +55,16 @@ without BAAs.
 ## Core Principles
 
 **Local Processing**: All sensitive GPS data remains within controlled
-infrastructure **Spatial Database**: PostGIS provides enterprise-grade
-spatial analysis capabilities **API Caching**: Local venue cache reduces
-external dependencies while building knowledge base **Privacy by
-Design**: Architectural solutions prevent data exposure rather than
-relying on post-processing privacy techniques
+infrastructure **Spatial**
+
+**Database**: PostGIS provides enterprise-grade spatial analysis
+capabilities
+
+**API Caching**: Local venue cache reduces external dependencies while
+building knowledge base
+
+**Privacy by Design**: Architectural solutions prevent data exposure
+rather than relying on post-processing privacy techniques
 
 ## Technology Stack
 
