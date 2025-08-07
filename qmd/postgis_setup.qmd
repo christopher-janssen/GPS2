@@ -103,7 +103,7 @@ get_participant_clusters <- function(participant_id) {
            total_visits, total_duration_hours, unique_days
     FROM gps2.location_clusters 
     WHERE subid = ", participant_id, "
-    ORDER BY cluster_id;
+    ORDER BY total_duration_hours DESC, total_visits DESC, cluster_id;
   "))
   dbDisconnect(con)
   return(clusters)

@@ -269,7 +269,7 @@ reverse_geocode_clusters_nominatim <- function(participant_ids = NULL, update_ex
       FROM gps2.cluster_geocoding cg
       JOIN gps2.location_clusters lc ON cg.subid = lc.subid AND cg.cluster_id = lc.cluster_id
       WHERE cg.display_name IS NOT NULL AND cg.display_name != 'No address found'
-      ORDER BY lc.total_visits DESC
+      ORDER BY lc.total_duration_hours DESC, lc.total_visits DESC
       LIMIT 10;
     ")
     
@@ -311,7 +311,7 @@ get_geocoded_clusters <- function(participant_ids = NULL, include_failed = FALSE
         lc.lat,
         lc.lon,
         cg.display_name,
-        cg.street_name,
+        cg.road,
         cg.city,
         cg.state,
         cg.postcode,
@@ -325,7 +325,7 @@ get_geocoded_clusters <- function(participant_ids = NULL, include_failed = FALSE
       FROM gps2.cluster_geocoding cg
       JOIN gps2.location_clusters lc ON cg.subid = lc.subid AND cg.cluster_id = lc.cluster_id
       WHERE 1=1 ", participant_filter, " ", failed_filter, "
-      ORDER BY cg.subid, lc.total_visits DESC;
+      ORDER BY cg.subid, lc.total_duration_hours DESC, lc.total_visits DESC;
     ")
     
     results <- dbGetQuery(con, query)
