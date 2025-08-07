@@ -96,14 +96,14 @@ source("scripts/r/gps_processing.R")
 source("scripts/r/data_operations.R")
 
 # Example: Load sample data
-gps_raw <- read_csv("GPS/data/tracks.csv")
+gps_raw <- read_csv("GPS2/data/sample_data.csv")
 
 # Process GPS data (filters noise, calculates speeds, identifies stationary points)
 gps_processed <- process_gps(gps_raw)
 stationary_data <- get_stationary(gps_processed)
 
 # Load directly into PostGIS database
-load_gps_data_to_postgis("GPS/data/tracks.csv", clear_existing = TRUE)
+load_gps_data_to_postgis("GPS2/data/sample_data.csv", clear_existing = TRUE)
 ```
 
 ### Step 2: Cluster Analysis
@@ -358,7 +358,7 @@ GPS2/
 │   ├── gps_processing.R             # GPS filtering
 │   └── global_setup.R               # Path configuration
 ├── GPS/data/
-│   └── tracks.csv                   # Sample GPS data
+│   └── sample_data.csv                   # Sample GPS data
 └── maps/                            # Generated visualizations
 ```
 
