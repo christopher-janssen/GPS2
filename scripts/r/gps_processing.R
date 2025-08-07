@@ -1,4 +1,4 @@
-# gps_filtering.R
+# gps_processing.R
 # GPS data processing for location clustering
 # Adapted from lab approach (thanks claire and john)
 
