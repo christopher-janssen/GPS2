@@ -99,8 +99,7 @@ GPS2 addresses privacy challenges identified in spatial epidemiology research by
 
 - **Local Processing**: No GPS coordinates transmitted to external services
 - **Container Isolation**: Docker provides process and data isolation
-- **Business Associate Agreement (BAA) Compliance**: Eliminates need for external API agreements
-- **Audit Trail**: All operations logged within controlled environment
+- **Product Documentation**: All operations logged within controlled environment
 
 ## 🗂️ Project Structure
 
