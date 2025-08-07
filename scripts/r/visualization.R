@@ -292,8 +292,10 @@ map_cluster_representatives <- function(cluster_data, participant_id = NULL) {
       position = "topright"
     )
   
-  # Add markers for each location type separately
-  location_types <- unique(clustered_data$location_type)
+  # Add markers for each location type separately (in logical order)
+  location_types <- c("routine", "frequent", "occasional", "rare")
+  # Filter to only include types that exist in the data
+  location_types <- location_types[location_types %in% unique(clustered_data$location_type)]
   
   for (type in location_types) {
     type_data <- clustered_data |> filter(location_type == type)
@@ -392,11 +394,33 @@ map_participant_clusters <- function(participant_id) {
   return(map_cluster_representatives(cluster_data, participant_id))
 }
 
+# Convenience function to map geocoded clusters directly from database
+map_participant_geocoded <- function(participant_id, show_failed = FALSE) {
+  
+  # This automatically gets geocoded data from PostGIS and maps it
+  return(map_geocoded_clusters(participant_id, show_failed = show_failed))
+}
+
+# Convenience function to map GPS points directly from database
+map_participant_gps <- function(participant_id, show_all_days = FALSE) {
+  
+  # Get GPS data from database
+  gps_data <- get_participant_data(participant_id)
+  
+  if (nrow(gps_data) == 0) {
+    cat("No GPS data found for participant", participant_id, "\n")
+    return(leaflet() |> addTiles() |> setView(lng = -89.384373, lat = 43.074713, zoom = 10))
+  }
+  
+  # Create and return the map
+  return(map_gps(gps_data, participant_id = participant_id, show_all_days = show_all_days))
+}
+
 # ==============================================================================
 # GEOCODED LOCATION MAPPING
 # ==============================================================================
 
-# Map geocoded clusters with address information
+# Map geocoded clusters with enhanced info box and legend
 map_geocoded_clusters <- function(participant_id, show_failed = FALSE) {
   
   # Get geocoded cluster data
@@ -422,7 +446,8 @@ map_geocoded_clusters <- function(participant_id, show_failed = FALSE) {
         location_type == "occasional" ~ "#91bfdb",
         location_type == "rare" ~ "#999999"
       ),
-      marker_size = pmax(4, pmin(12, 6 + scale(total_visits)[,1] * 2))
+      importance_score = scale(total_visits)[,1] + scale(total_duration_hours)[,1],
+      marker_size = pmax(4, pmin(12, 6 + importance_score * 2))
     )
   
   # Create base map
@@ -430,22 +455,45 @@ map_geocoded_clusters <- function(participant_id, show_failed = FALSE) {
     addTiles() |>
     setView(lng = mean(geocoded_data$lon), lat = mean(geocoded_data$lat), zoom = 12)
   
-  # Add summary info
+  # Calculate summary statistics including geocoding info
+  start_date <- min(geocoded_data$first_visit)
+  end_date <- max(geocoded_data$last_visit)
+  total_days <- as.numeric(difftime(end_date, start_date, units = "days")) + 1
+  
+  # Count different address types
+  address_stats <- geocoded_data |>
+    summarise(
+      total_locations = n(),
+      with_addresses = sum(!is.na(display_name) & display_name != "Unknown Location"),
+      with_roads = sum(!is.na(road)),
+      with_cities = sum(!is.na(city))
+    )
+  
+  # Add enhanced summary info box
   map <- map |>
     addControl(
       html = paste0(
         "<div style='background: rgba(255,255,255,0.95); padding: 12px; ",
         "border-radius: 8px; border: 2px solid #333; font-family: Arial;'>",
-        "<strong>Participant ", participant_id, " - Geocoded Locations</strong><br>",
-        "<strong>", nrow(geocoded_data), "</strong> geocoded locations<br>",
+        "<strong>Participant ", participant_id, " - Location Data</strong><br>",
+        "<strong>", nrow(geocoded_data), "</strong> meaningful locations<br>",
         "<strong>", sum(geocoded_data$total_visits), "</strong> total visits<br>",
+        "<strong>", round(sum(geocoded_data$total_duration_hours), 1), "</strong> hours tracked<br>",
+        "<strong>Timeframe:</strong> [", format(start_date, "%m-%d-%Y"), " to ", 
+        format(end_date, "%m-%d-%Y"), "]<br><br>",
+        "<strong>Geocoding Results:</strong><br>",
+        "- Complete addresses: ", address_stats$with_addresses, "<br>",
+        "- Street addresses: ", address_stats$with_roads, "<br>",
+        "- City identified: ", address_stats$with_cities, "<br>",
+        "<em>Marker size = visit importance</em>",
         "</div>"
       ),
       position = "topright"
     )
   
-  # Add markers with geocoded information
-  location_types <- unique(geocoded_data$location_type)
+  # Add markers with enhanced geocoded information (in logical order)
+  ordered_types <- c("routine", "frequent", "occasional", "rare")
+  location_types <- ordered_types[ordered_types %in% unique(geocoded_data$location_type)]
   
   for (type in location_types) {
     type_data <- geocoded_data |> filter(location_type == type)
@@ -462,30 +510,73 @@ map_geocoded_clusters <- function(participant_id, show_failed = FALSE) {
         stroke = TRUE, 
         weight = 1,
         popup = ~paste0(
-          "<strong>", if_else(is.na(display_name), "Unknown Location", display_name), "</strong><br>",
+          "<strong>Location Cluster ", cluster_id, "</strong><br>",
+          "<strong>", if_else(is.na(display_name) | display_name == "", "Unknown Location", display_name), "</strong><br>",
           "<em>", stringr::str_to_title(location_type), " location</em><br><br>",
           "<strong>Address:</strong><br>",
-          if_else(is.na(road), "", paste0(road, "<br>")),
-          if_else(is.na(city), "", paste0(city, ", ")),
-          if_else(is.na(state), "", state), " ",
-          if_else(is.na(postcode), "", postcode), "<br><br>",
+          if_else(is.na(road) | road == "", "Street not identified<br>", paste0(road, "<br>")),
+          if_else(is.na(city) | city == "", "City not identified", city),
+          if_else(is.na(state) | state == "", "", paste0(", ", state)),
+          if_else(is.na(postcode) | postcode == "", "", paste0(" ", postcode)), "<br><br>",
           "<strong>Visit Pattern:</strong><br>",
           "• Total visits: ", total_visits, "<br>",
           "• Days visited: ", unique_days, "<br>",
-          "• Total time: ", round(total_duration_hours, 1), " hours<br><br>",
-          "<strong>Geocoding:</strong><br>",
-          "• Method: ", geocoding_method, "<br>",
-          "• Confidence: ", round(geocoding_confidence, 2)
+          "• Total time: ", round(total_duration_hours, 1), " hours<br>",
+          "• GPS points: ", if_else(is.na(cluster_id), "N/A", "Multiple"), "<br><br>",
+          "<strong>Timeline:</strong><br>",
+          "• First visit: ", format(first_visit, "%m/%d/%Y %H:%M"), "<br>",
+          "• Last visit: ", format(last_visit, "%m/%d/%Y %H:%M"), "<br><br>",
+          "<strong>Geocoding Info:</strong><br>",
+          "• Method: ", if_else(is.na(geocoding_method), "Unknown", geocoding_method), "<br>",
+          "• Confidence: ", if_else(is.na(geocoding_confidence), "N/A", as.character(round(geocoding_confidence, 2))), "<br>",
+          "<strong>Coordinates:</strong><br>",
+          round(lat, 4), ", ", round(lon, 4)
         ),
+        label = ~paste0("Cluster ", cluster_id, ": ", 
+                        if_else(is.na(display_name) | display_name == "", "Unknown", 
+                                if_else(nchar(display_name) > 30, 
+                                        paste0(substr(display_name, 1, 30), "..."), 
+                                        display_name))),
         group = stringr::str_to_title(type)
       )
   }
   
-  # Add layer control and legend
+  # Add layer control
   map <- map |>
     addLayersControl(
       overlayGroups = stringr::str_to_title(location_types),
       options = layersControlOptions(collapsed = FALSE)
+    )
+  
+  # Create enhanced legend with location type counts (in logical order)
+  legend_colors <- c()
+  legend_labels <- c()
+  
+  # Ensure consistent ordering: routine -> frequent -> occasional -> rare
+  ordered_types <- c("routine", "frequent", "occasional", "rare")
+  existing_types <- ordered_types[ordered_types %in% unique(geocoded_data$location_type)]
+  
+  for (type in existing_types) {
+    type_color <- case_when(
+      type == "routine" ~ "#d73027",
+      type == "frequent" ~ "#fc8d59", 
+      type == "occasional" ~ "#91bfdb",
+      type == "rare" ~ "#999999"
+    )
+    type_count <- sum(geocoded_data$location_type == type)
+    
+    legend_colors <- c(legend_colors, type_color)
+    legend_labels <- c(legend_labels, paste0(stringr::str_to_title(type), " (", type_count, ")"))
+  }
+  
+  # Add legend
+  map <- map |>
+    addLegend(
+      position = "bottomleft",
+      colors = legend_colors,
+      labels = legend_labels,
+      title = paste0("Location Types<br><small>", nrow(geocoded_data), " geocoded locations</small>"),
+      opacity = 0.8
     )
   
   return(map)

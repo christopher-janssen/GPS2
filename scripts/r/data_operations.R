@@ -3,7 +3,7 @@
 # NO table creation logic here - tables should exist from bootstrap
 
 source("scripts/r/database.R")
-source("scripts/r/gps_filtering.R")
+source("scripts/r/gps_processing.R")
 
 # ==============================================================================
 # DATA INSERTION
