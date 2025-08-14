@@ -1,11 +1,12 @@
 # scripts/r/visualization.R
-# GPS data visualization and mapping functions
-# Consolidates map_gps.R and cluster mapping functions
+# Complete GPS2 visualization functions with zoning integration
+# Includes maps for GPS data, clusters, geocoding, and zoning analysis
 
 library(leaflet)
 library(dplyr)
 library(lubridate)
 library(htmlwidgets)
+library(sf)
 
 source("scripts/r/database.R")
 
@@ -13,49 +14,38 @@ source("scripts/r/database.R")
 # GPS POINT MAPPING
 # ==============================================================================
 
-# Create overview map showing all participants
+# Create GPS overview map for all participants
 map_gps_overview <- function(gps_data, show_paths = FALSE) {
   
   participants <- unique(gps_data$subid)
   colors <- c("#fbb4ae", "#b3cde3", "#ccebc5", "#decbe4", 
               "#fed9a6", "#ffffcc", "#e5d8bd", "#fddaec")
   
-  # Prepare data with date information
   gps_data <- gps_data |>
     mutate(date = as.Date(dttm_obs)) |>
     arrange(subid, dttm_obs)
   
-  # Create base map centered on data
   map <- leaflet() |>
     addTiles() |>
     setView(lng = mean(gps_data$lon), lat = mean(gps_data$lat), zoom = 11)
   
-  # Add points and paths for each participant
   for (i in seq_along(participants)) {
     participant <- participants[i]
     participant_data <- gps_data |> filter(subid == participant)
     color <- colors[((i - 1) %% length(colors)) + 1]
     
-    # Add circle markers
     map <- map |>
       addCircleMarkers(
         data = participant_data,
-        lng = ~lon, 
-        lat = ~lat,
-        color = "#000",
-        fillColor = color,
-        radius = 2,
-        fillOpacity = 1,
-        stroke = TRUE,
-        weight = 1,
+        lng = ~lon, lat = ~lat,
+        color = "#000", fillColor = color,
+        radius = 2, fillOpacity = 1, stroke = TRUE, weight = 1,
         popup = ~paste0("<strong>Participant ", subid, "</strong><br>",
                         "Date: ", format(date, "%Y-%m-%d"), "<br>",
-                        "Time: ", format(dttm_obs, "%H:%M:%S"), "<br>",
-                        "Coordinates: ", round(lat, 4), ", ", round(lon, 4)),
+                        "Time: ", format(dttm_obs, "%H:%M:%S")),
         group = paste("Participant", participant)
       )
     
-    # Add movement paths if requested
     if (show_paths && nrow(participant_data) > 1) {
       dates <- unique(participant_data$date)
       for (date in dates) {
@@ -63,12 +53,8 @@ map_gps_overview <- function(gps_data, show_paths = FALSE) {
         if (nrow(day_data) > 1) {
           map <- map |>
             addPolylines(
-              data = day_data,
-              lng = ~lon,
-              lat = ~lat,
-              color = color,
-              weight = 1,
-              opacity = 0.5,
+              data = day_data, lng = ~lon, lat = ~lat,
+              color = color, weight = 1, opacity = 0.5,
               group = paste("Participant", participant)
             )
         }
@@ -76,7 +62,6 @@ map_gps_overview <- function(gps_data, show_paths = FALSE) {
     }
   }
   
-  # Add layer controls
   if (length(participants) > 1) {
     map <- map |>
       addLayersControl(
@@ -85,26 +70,12 @@ map_gps_overview <- function(gps_data, show_paths = FALSE) {
       )
   }
   
-  # Add summary info box
-  map <- map |>
-    addControl(
-      html = paste0("<div style='background: rgba(255,255,255,0.9); padding: 10px; ",
-                    "border-radius: 5px; border: 1px solid #ccc;'>",
-                    "<strong>GPS Data Overview</strong><br>",
-                    "Participants: ", length(participants), "<br>",
-                    "Total points: ", nrow(gps_data), "<br>",
-                    "Date range: ", min(gps_data$date), " to ", max(gps_data$date),
-                    "</div>"),
-      position = "bottomright"
-    )
-  
   return(map)
 }
 
-# Create individual participant map with day-by-day control
+# Create individual participant GPS map
 map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) {
   
-  # Filter for specific participant
   participant_data <- gps_data |>
     filter(subid == participant_id) |>
     mutate(date = as.Date(dttm_obs)) |>
@@ -114,67 +85,43 @@ map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) 
     stop(paste("No data found for participant", participant_id))
   }
   
-  # Get unique dates
   unique_dates <- sort(unique(participant_data$date))
+  colors <- c("#fbb4ae", "#b3cde3", "#ccebc5", "#decbe4", "#fed9a6", "#ffffcc")
   
-  # Color palette for days
-  colors <- c("#fbb4ae", "#b3cde3", "#ccebc5", "#decbe4", 
-              "#fed9a6", "#ffffcc", "#e5d8bd", "#fddaec")
-  
-  # Create base map
   map <- leaflet() |>
     addTiles() |>
     setView(lng = mean(participant_data$lon), lat = mean(participant_data$lat), zoom = 13)
   
-  # Add each day as a separate layer
   for (i in seq_along(unique_dates)) {
     date <- unique_dates[i]
     day_data <- participant_data |> filter(date == !!date)
-    
-    # Color based on day
     day_color <- colors[((i - 1) %% length(colors)) + 1]
     date_str <- format(date, "%Y-%m-%d (%A)")
-    
-    # Enhanced popup with details
-    popup_text <- ~paste0("<strong>", date_str, "</strong><br>",
-                          "Time: ", format(dttm_obs, "%H:%M:%S"), "<br>",
-                          if("movement_state" %in% names(day_data)) 
-                            paste0("Movement: ", movement_state, "<br>") else "",
-                          if("speed" %in% names(day_data)) 
-                            paste0("Speed: ", round(speed, 2), " mph<br>") else "",
-                          "Coordinates: ", round(lat, 4), ", ", round(lon, 4))
     
     map <- map |>
       addCircleMarkers(
         data = day_data,
-        lng = ~lon, 
-        lat = ~lat,
-        color = "#000",
-        fillColor = day_color,
-        radius = 3,
-        fillOpacity = 1,
-        stroke = TRUE,
-        weight = 1,
-        popup = popup_text,
+        lng = ~lon, lat = ~lat,
+        color = "#000", fillColor = day_color,
+        radius = 3, fillOpacity = 1, stroke = TRUE, weight = 1,
+        popup = ~paste0("<strong>", date_str, "</strong><br>",
+                        "Time: ", format(dttm_obs, "%H:%M:%S"), "<br>",
+                        if("movement_state" %in% names(day_data)) 
+                          paste0("Movement: ", movement_state, "<br>") else "",
+                        "Coordinates: ", round(lat, 4), ", ", round(lon, 4)),
         group = if(show_all_days) "All Days" else date_str
       )
     
-    # Add movement paths
     if (nrow(day_data) > 1) {
       map <- map |>
         addPolylines(
-          data = day_data,
-          lng = ~lon,
-          lat = ~lat,
-          color = "#000",
-          weight = 1,
-          opacity = 0.4,
+          data = day_data, lng = ~lon, lat = ~lat,
+          color = "#000", weight = 1, opacity = 0.4,
           group = if(show_all_days) "All Days" else date_str
         )
     }
   }
   
-  # Add layer control unless showing all days
   if (!show_all_days && length(unique_dates) > 1) {
     map <- map |>
       addLayersControl(
@@ -183,30 +130,14 @@ map_gps_individual <- function(gps_data, participant_id, show_all_days = FALSE) 
       )
   }
   
-  # Add participant info box
-  map <- map |>
-    addControl(
-      html = paste0("<div style='background: rgba(255,255,255,0.9); padding: 10px; ",
-                    "border-radius: 5px; border: 1px solid #ccc;'>",
-                    "<strong>Participant ", participant_id, "</strong><br>",
-                    "Days tracked: ", length(unique_dates), "<br>",
-                    "Total points: ", nrow(participant_data), "<br>",
-                    "Date range: ", min(unique_dates), " to ", max(unique_dates),
-                    "</div>"),
-      position = "bottomright"
-    )
-  
   return(map)
 }
 
-# Main GPS mapping function with flexible options
+# Main GPS mapping function
 map_gps <- function(gps_data, participant_id = NULL, show_paths = FALSE, show_all_days = FALSE) {
-  
   if (is.null(participant_id)) {
-    # Overview mode - all participants
     return(map_gps_overview(gps_data, show_paths = show_paths))
   } else {
-    # Individual mode - specific participant
     return(map_gps_individual(gps_data, participant_id, show_all_days = show_all_days))
   }
 }
@@ -222,167 +153,329 @@ map_cluster_representatives <- function(cluster_data, participant_id = NULL) {
     return(leaflet() |> addTiles() |> setView(lng = -89.384373, lat = 43.074713, zoom = 10))
   }
   
-  # Determine participant ID if not provided
   if (is.null(participant_id)) {
     participant_id <- cluster_data$subid[1]
   }
   
-  # Map column names if coming from PostGIS
+  # Handle different column naming conventions
   if ("cluster_id" %in% names(cluster_data)) {
     cluster_data <- cluster_data |> rename(cluster = cluster_id)
   }
-  
-  # Add participant ID if missing
   if (!"subid" %in% names(cluster_data)) {
     cluster_data$subid <- participant_id
   }
   
-  # Ensure datetime columns are properly formatted
+  # Ensure datetime columns are proper format
   if ("first_visit" %in% names(cluster_data)) {
     cluster_data$first_visit <- as.POSIXct(cluster_data$first_visit)
     cluster_data$last_visit <- as.POSIXct(cluster_data$last_visit)
   }
   
-  # Classify locations based on visit patterns
+  # Classify locations by visit patterns
   clustered_data <- cluster_data |>
     mutate(
       location_type = case_when(
-        unique_days >= 5 & total_visits >= 8 ~ "routine",           # Daily routine (work, home)
-        unique_days >= 3 & total_visits >= 5 ~ "frequent",          # Regular spots (gym, store)
-        unique_days >= 2 ~ "occasional",                            # Sometimes visited
-        TRUE ~ "rare"                                               # One-off visits
+        unique_days >= 5 & total_visits >= 8 ~ "routine",
+        unique_days >= 3 & total_visits >= 5 ~ "frequent", 
+        unique_days >= 2 ~ "occasional",
+        TRUE ~ "rare"
       ),
-      # Assign colors directly to avoid named vector issues
       marker_color = case_when(
-        location_type == "routine" ~ "#d73027",     # Red - daily routine locations
-        location_type == "frequent" ~ "#fc8d59",    # Orange - frequent visits  
-        location_type == "occasional" ~ "#91bfdb",  # Light blue - occasional
-        location_type == "rare" ~ "#999999"         # Gray - rare visits
+        location_type == "routine" ~ "#d73027",
+        location_type == "frequent" ~ "#fc8d59",
+        location_type == "occasional" ~ "#91bfdb", 
+        location_type == "rare" ~ "#999999"
       ),
-      # Size based on importance (visits + duration)
       importance_score = scale(total_visits)[,1] + scale(total_duration_hours)[,1],
-      marker_size = pmax(4, pmin(12, 6 + importance_score * 2))    # Size between 4-12
+      marker_size = pmax(4, pmin(12, 6 + importance_score * 2))
     )
   
-  # Create base map
   map <- leaflet(clustered_data) |>
     addTiles() |>
     setView(lng = mean(clustered_data$lon), lat = mean(clustered_data$lat), zoom = 12)
   
-  # Calculate date range and summary statistics
+  # Calculate summary statistics
   start_date <- min(clustered_data$first_visit)
   end_date <- max(clustered_data$last_visit)
-  total_days <- as.numeric(difftime(end_date, start_date, units = "days")) + 1
   
-  # Add summary info box
-  map <- map |>
-    addControl(
-      html = paste0(
-        "<div style='background: rgba(255,255,255,0.95); padding: 12px; ",
-        "border-radius: 8px; border: 2px solid #333; font-family: Arial;'>",
-        "<strong>Participant ", participant_id, " - Location Summary</strong><br>",
-        "<strong>", nrow(clustered_data), "</strong> meaningful locations<br>",
-        "<strong>", sum(clustered_data$total_visits), "</strong> total visits<br>",
-        "<strong>", round(sum(clustered_data$total_duration_hours), 1), "</strong> hours tracked<br>",
-        "<strong>Timeframe:</strong> [", format(start_date, "%m-%d-%Y"), " to ", 
-        format(end_date, "%m-%d-%Y"), "]<br>",
-        "<em>Marker size = visit importance</em>",
-        "</div>"
-      ),
-      position = "topright"
-    )
-  
-  # Add markers for each location type separately (in logical order)
   location_types <- c("routine", "frequent", "occasional", "rare")
-  # Filter to only include types that exist in the data
-  location_types <- location_types[location_types %in% unique(clustered_data$location_type)]
+  existing_types <- location_types[location_types %in% unique(clustered_data$location_type)]
   
-  for (type in location_types) {
+  for (type in existing_types) {
     type_data <- clustered_data |> filter(location_type == type)
     
     map <- map |>
       addCircleMarkers(
         data = type_data,
-        lng = ~lon, 
-        lat = ~lat,
+        lng = ~lon, lat = ~lat,
         radius = ~marker_size,
-        color = "#000", 
-        fillColor = ~marker_color,
-        fillOpacity = 0.8, 
-        stroke = TRUE, 
-        weight = 1,
+        color = "#000", fillColor = ~marker_color,
+        fillOpacity = 0.8, stroke = TRUE, weight = 1,
         popup = ~paste0(
           "<strong>Location Cluster ", cluster, "</strong><br>",
           "<em>", stringr::str_to_title(location_type), " location</em><br><br>",
           "<strong>Visit Pattern:</strong><br>",
           "• Total visits: ", total_visits, "<br>",
-          "• Days visited: ", unique_days, "<br>",
+          "• Days visited: ", unique_days, "<br>", 
           "• Total time: ", round(total_duration_hours, 1), " hours<br>",
-          "• GPS points: ", n_points, "<br><br>",
-          "<strong>Timeline:</strong><br>",
+          if("n_points" %in% names(type_data)) paste0("• GPS points: ", n_points, "<br>") else "",
+          "<br><strong>Timeline:</strong><br>",
           "• First visit: ", format(first_visit, "%m/%d/%Y %H:%M"), "<br>",
           "• Last visit: ", format(last_visit, "%m/%d/%Y %H:%M"), "<br><br>",
           "<strong>Coordinates:</strong><br>",
           round(lat, 4), ", ", round(lon, 4)
         ),
-        label = ~paste0("Cluster ", cluster, ": ", unique_days, " days, ", 
-                        total_visits, " visits"),
         group = stringr::str_to_title(type)
       )
   }
   
-  # Add layer control
   map <- map |>
     addLayersControl(
-      overlayGroups = stringr::str_to_title(location_types),
+      overlayGroups = stringr::str_to_title(existing_types),
       options = layersControlOptions(collapsed = FALSE)
     )
   
-  # Create legend with manual color assignments
-  legend_colors <- c()
-  legend_labels <- c()
-  
-  for (type in location_types) {
-    type_color <- case_when(
-      type == "routine" ~ "#d73027",
-      type == "frequent" ~ "#fc8d59", 
-      type == "occasional" ~ "#91bfdb",
-      type == "rare" ~ "#999999"
-    )
-    type_count <- sum(clustered_data$location_type == type)
-    
-    legend_colors <- c(legend_colors, type_color)
-    legend_labels <- c(legend_labels, paste0(stringr::str_to_title(type), " (", type_count, ")"))
-  }
-  
-  # Add legend
+  # Add summary info box
   map <- map |>
-    addLegend(
-      position = "bottomleft",
-      colors = legend_colors,
-      labels = legend_labels,
-      title = "Location Types",
-      opacity = 0.8
+    addControl(
+      html = paste0(
+        "<div style='background: rgba(255,255,255,0.95); padding: 12px; border-radius: 8px; border: 2px solid #333;'>",
+        "<strong>Participant ", participant_id, " - Location Summary</strong><br>",
+        "<strong>", nrow(clustered_data), "</strong> meaningful locations<br>",
+        "<strong>", sum(clustered_data$total_visits), "</strong> total visits<br>",
+        "<strong>", round(sum(clustered_data$total_duration_hours), 1), "</strong> hours tracked<br>",
+        "<strong>Timeframe:</strong> ", format(start_date, "%m-%d-%Y"), " to ", format(end_date, "%m-%d-%Y"),
+        "</div>"
+      ),
+      position = "topright"
     )
   
   return(map)
 }
 
-# Convenience function to map clusters directly from database
-map_participant_clusters <- function(participant_id) {
+# ==============================================================================
+# ZONING VISUALIZATION - UPDATED
+# ==============================================================================
+
+# Map Madison zoning districts with proper sf handling
+map_zoning_districts <- function(show_categories = NULL, max_zones = 100) {
   
-  # Get cluster data from database
+  cat("Loading Madison zoning districts...\n")
+  
+  # Build category filter
+  category_filter <- ""
+  if (!is.null(show_categories)) {
+    category_list <- paste0("'", show_categories, "'", collapse = ",")
+    category_filter <- paste0("WHERE zone_category IN (", category_list, ")")
+  }
+  
+  # Get zone count
+  count_query <- paste0("
+    SELECT COUNT(*)::integer as count 
+    FROM gps2.zoning_districts 
+    WHERE geometry IS NOT NULL ", 
+                        if (category_filter != "") gsub("WHERE", "AND", category_filter) else ""
+  )
+  total_zones <- as.integer(query_gps2_db(count_query)$count)
+  
+  if (total_zones == 0) {
+    cat("❌ No zoning data found\n")
+    return(leaflet() |> addTiles() |> setView(lng = -89.384373, lat = 43.074713, zoom = 10))
+  }
+  
+  cat("   Found", total_zones, "zone types\n")
+  
+  # Read zoning data using sf
+  zoning_query <- paste0("
+    SELECT zone_code, zone_name, zone_category, geometry,
+           ROUND(area_acres::numeric, 1) as area_acres
+    FROM gps2.zoning_districts 
+    WHERE geometry IS NOT NULL ", category_filter, "
+    ORDER BY area_acres DESC;
+  ")
+  
+  con <- connect_gps2_db()
+  zoning_sf <- tryCatch({
+    st_read(con, query = zoning_query, quiet = TRUE)
+  }, error = function(e) {
+    cat("❌ Error reading zoning data:", e$message, "\n")
+    return(NULL)
+  }, finally = {
+    disconnect_gps2_db(con)
+  })
+  
+  if (is.null(zoning_sf) || nrow(zoning_sf) == 0) {
+    return(leaflet() |> addTiles() |> setView(lng = -89.384373, lat = 43.074713, zoom = 10))
+  }
+  
+  # Ensure proper CRS
+  if (st_crs(zoning_sf)$epsg != 4326) {
+    zoning_sf <- st_transform(zoning_sf, 4326)
+  }
+  
+  # Color scheme for zoning categories
+  zone_colors <- c(
+    "Residential" = "#90EE90", "Commercial" = "#FFB6C1", "Mixed-Use" = "#DDA0DD",
+    "Downtown" = "#FF6347", "Employment" = "#87CEEB", "Industrial" = "#D3D3D3", 
+    "Special" = "#F0E68C", "Historic" = "#DEB887", "Other" = "#DCDCDC"
+  )
+  
+  # Create base map
+  map <- leaflet() |>
+    addTiles() |>
+    setView(lng = -89.384373, lat = 43.074713, zoom = 11)
+  
+  # Add zones by category
+  categories <- unique(zoning_sf$zone_category)
+  
+  for (category in categories) {
+    category_zones <- zoning_sf[zoning_sf$zone_category == category, ]
+    zone_color <- unname(zone_colors[category])  # Remove names to fix JSON issue
+    if (is.na(zone_color)) zone_color <- unname(zone_colors["Other"])
+    
+    map <- map |>
+      addPolygons(
+        data = category_zones,
+        color = "#000", weight = 1, opacity = 0.7,
+        fillColor = zone_color, fillOpacity = 0.5,
+        popup = ~paste0(
+          "<strong>", zone_code, "</strong><br>",
+          zone_name, "<br>",
+          "<em>", zone_category, "</em><br>",
+          "Area: ", area_acres, " acres"
+        ),
+        label = ~paste0(zone_code, " (", zone_category, ")"),
+        group = category
+      )
+  }
+  
+  # Add controls and legend
+  legend_subset <- zone_colors[names(zone_colors) %in% categories]
+  map <- map |>
+    addLayersControl(
+      overlayGroups = categories,
+      options = layersControlOptions(collapsed = FALSE)
+    ) |>
+    addLegend(
+      position = "bottomright",
+      colors = unname(legend_subset),  # Remove names to fix JSON issue
+      labels = names(legend_subset),
+      title = "Zoning Categories",
+      opacity = 0.7
+    )
+  
+  return(map)
+}
+
+# Map participant clusters with zoning context
+map_clusters_with_zoning <- function(participant_id, show_zone_categories = NULL) {
+  
+  # Get cluster data with zoning info
+  cluster_data <- query_gps2_db("
+    SELECT 
+      lc.cluster_id, lc.lat, lc.lon, lc.total_visits, lc.unique_days, 
+      lc.total_duration_hours, cz.zone_code, cz.zone_name, cz.zone_category
+    FROM gps2.location_clusters lc
+    LEFT JOIN gps2.cluster_zoning cz ON lc.subid = cz.subid AND lc.cluster_id = cz.cluster_id
+    WHERE lc.subid = $1
+    ORDER BY lc.total_duration_hours DESC;
+  ", list(participant_id))
+  
+  if (nrow(cluster_data) == 0) {
+    cat("❌ No clusters found for participant", participant_id, "\n")
+    return(leaflet() |> addTiles() |> setView(lng = -89.384373, lat = 43.074713, zoom = 10))
+  }
+  
+  # Start with base cluster map
+  map <- map_participant_clusters(participant_id)
+  
+  # Get zoning overlay for the area
+  bbox_buffer <- 0.01
+  min_lat <- min(cluster_data$lat) - bbox_buffer
+  max_lat <- max(cluster_data$lat) + bbox_buffer
+  min_lon <- min(cluster_data$lon) - bbox_buffer
+  max_lon <- max(cluster_data$lon) + bbox_buffer
+  
+  # Filter by categories if specified
+  category_filter <- ""
+  if (!is.null(show_zone_categories)) {
+    category_list <- paste0("'", show_zone_categories, "'", collapse = ",")
+    category_filter <- paste0("AND zone_category IN (", category_list, ")")
+  }
+  
+  # Get zoning overlay
+  zoning_query <- paste0("
+    SELECT zone_code, zone_name, zone_category, geometry
+    FROM gps2.zoning_districts 
+    WHERE geometry IS NOT NULL 
+    AND ST_Intersects(geometry, ST_MakeEnvelope($1, $2, $3, $4, 4326)) 
+    ", category_filter, ";
+  ")
+  
+  con <- connect_gps2_db()
+  zoning_overlay <- tryCatch({
+    st_read(con, query = zoning_query, 
+            query_parameters = list(min_lon, min_lat, max_lon, max_lat),
+            quiet = TRUE)
+  }, error = function(e) {
+    return(NULL)
+  }, finally = {
+    disconnect_gps2_db(con)
+  })
+  
+  # Add zoning boundaries
+  if (!is.null(zoning_overlay) && nrow(zoning_overlay) > 0) {
+    zone_colors <- c(
+      "Residential" = "#90EE90", "Commercial" = "#FFB6C1", "Mixed-Use" = "#DDA0DD",
+      "Downtown" = "#FF6347", "Employment" = "#87CEEB", "Industrial" = "#D3D3D3",
+      "Special" = "#F0E68C", "Historic" = "#DEB887", "Other" = "#DCDCDC"
+    )
+    
+    if (st_crs(zoning_overlay)$epsg != 4326) {
+      zoning_overlay <- st_transform(zoning_overlay, 4326)
+    }
+    
+    for (category in unique(zoning_overlay$zone_category)) {
+      category_zones <- zoning_overlay[zoning_overlay$zone_category == category, ]
+      zone_color <- unname(zone_colors[category])  # Remove names to fix JSON issue
+      if (is.na(zone_color)) zone_color <- unname(zone_colors["Other"])
+      
+      map <- map |>
+        addPolygons(
+          data = category_zones,
+          color = "#333", weight = 2, opacity = 0.8,
+          fillColor = zone_color, fillOpacity = 0.3,
+          popup = ~paste0("<strong>Zone: ", zone_code, "</strong><br>", zone_category),
+          group = "Zoning Boundaries"
+        )
+    }
+    
+    # Update layer control
+    map <- map |>
+      addLayersControl(
+        overlayGroups = c("Zoning Boundaries", "Routine", "Frequent", "Occasional", "Rare"),
+        options = layersControlOptions(collapsed = FALSE)
+      )
+  }
+  
+  return(map)
+}
+
+# ==============================================================================
+# CONVENIENCE FUNCTIONS FOR DATABASE INTEGRATION
+# ==============================================================================
+
+# Map participant clusters directly from database
+map_participant_clusters <- function(participant_id) {
   cluster_data <- get_participant_clusters(participant_id)
   
-  # Check if any clusters were found
   if (nrow(cluster_data) == 0) {
-    cat("No clusters found for participant", participant_id, "\n")
+    cat("❌ No clusters found for participant", participant_id, "\n")
     return(leaflet() |> 
              addTiles() |> 
              setView(lng = -89.384373, lat = 43.074713, zoom = 10) |>
              addControl(
-               html = paste0("<div style='background: rgba(255,255,255,0.95); padding: 12px; ",
-                             "border-radius: 8px; border: 2px solid #333; font-family: Arial;'>",
+               html = paste0("<div style='background: rgba(255,255,255,0.95); padding: 12px; border-radius: 8px;'>",
                              "<strong>No clusters found for Participant ", participant_id, "</strong><br>",
                              "This participant may not have sufficient stationary GPS data.",
                              "</div>"),
@@ -390,193 +483,101 @@ map_participant_clusters <- function(participant_id) {
              ))
   }
   
-  # Create and return the map
   return(map_cluster_representatives(cluster_data, participant_id))
 }
 
-# Convenience function to map geocoded clusters directly from database
-map_participant_geocoded <- function(participant_id, show_failed = FALSE) {
-  
-  # This automatically gets geocoded data from PostGIS and maps it
-  return(map_geocoded_clusters(participant_id, show_failed = show_failed))
-}
-
-# Convenience function to map GPS points directly from database
+# Map participant GPS points directly from database
 map_participant_gps <- function(participant_id, show_all_days = FALSE) {
-  
-  # Get GPS data from database
   gps_data <- get_participant_data(participant_id)
   
   if (nrow(gps_data) == 0) {
-    cat("No GPS data found for participant", participant_id, "\n")
+    cat("❌ No GPS data found for participant", participant_id, "\n")
     return(leaflet() |> addTiles() |> setView(lng = -89.384373, lat = 43.074713, zoom = 10))
   }
   
-  # Create and return the map
   return(map_gps(gps_data, participant_id = participant_id, show_all_days = show_all_days))
 }
 
 # ==============================================================================
-# GEOCODED LOCATION MAPPING
+# ZONING ANALYSIS MAPS
 # ==============================================================================
 
-# Map geocoded clusters with enhanced info box and legend
-map_geocoded_clusters <- function(participant_id, show_failed = FALSE) {
+# Map all clusters within a specific zoning category
+map_zoning_category_analysis <- function(zone_category, participant_ids = NULL) {
   
-  # Get geocoded cluster data
-  geocoded_data <- get_geocoded_clusters(participant_ids = participant_id, include_failed = show_failed)
+  # Build participant filter
+  participant_filter <- ""
+  if (!is.null(participant_ids)) {
+    participant_list <- paste(participant_ids, collapse = ",")
+    participant_filter <- paste0("AND lc.subid IN (", participant_list, ")")
+  }
   
-  if (nrow(geocoded_data) == 0) {
-    cat("No geocoded clusters found for participant", participant_id, "\n")
+  # Get clusters in specified zoning category
+  cluster_analysis <- query_gps2_db(paste0("
+    SELECT 
+      lc.subid, lc.cluster_id, lc.lat, lc.lon,
+      lc.total_visits, lc.unique_days, lc.total_duration_hours,
+      cz.zone_code, cz.zone_name, cz.zone_category
+    FROM gps2.location_clusters lc
+    JOIN gps2.cluster_zoning cz ON lc.subid = cz.subid AND lc.cluster_id = cz.cluster_id
+    WHERE cz.zone_category = $1 ", participant_filter, "
+    ORDER BY lc.total_duration_hours DESC;
+  "), list(zone_category))
+  
+  if (nrow(cluster_analysis) == 0) {
+    cat("❌ No clusters found in", zone_category, "zones\n")
     return(leaflet() |> addTiles() |> setView(lng = -89.384373, lat = 43.074713, zoom = 10))
   }
   
-  # Classify locations and add colors
-  geocoded_data <- geocoded_data |>
-    mutate(
-      location_type = case_when(
-        unique_days >= 5 & total_visits >= 8 ~ "routine",
-        unique_days >= 3 & total_visits >= 5 ~ "frequent",
-        unique_days >= 2 ~ "occasional",
-        TRUE ~ "rare"
-      ),
-      marker_color = case_when(
-        location_type == "routine" ~ "#d73027",
-        location_type == "frequent" ~ "#fc8d59",
-        location_type == "occasional" ~ "#91bfdb",
-        location_type == "rare" ~ "#999999"
-      ),
-      importance_score = scale(total_visits)[,1] + scale(total_duration_hours)[,1],
-      marker_size = pmax(4, pmin(12, 6 + importance_score * 2))
-    )
+  cat("✅ Found", nrow(cluster_analysis), "clusters in", zone_category, "zones from", 
+      length(unique(cluster_analysis$subid)), "participants\n")
   
-  # Create base map
-  map <- leaflet(geocoded_data) |>
+  # Create map
+  map <- leaflet() |>
     addTiles() |>
-    setView(lng = mean(geocoded_data$lon), lat = mean(geocoded_data$lat), zoom = 12)
+    setView(lng = mean(cluster_analysis$lon), lat = mean(cluster_analysis$lat), zoom = 12)
   
-  # Calculate summary statistics including geocoding info
-  start_date <- min(geocoded_data$first_visit)
-  end_date <- max(geocoded_data$last_visit)
-  total_days <- as.numeric(difftime(end_date, start_date, units = "days")) + 1
+  # Color by participant
+  participants <- unique(cluster_analysis$subid)
+  colors <- rainbow(length(participants))
+  names(colors) <- participants
   
-  # Count different address types
-  address_stats <- geocoded_data |>
-    summarise(
-      total_locations = n(),
-      with_addresses = sum(!is.na(display_name) & display_name != "Unknown Location"),
-      with_roads = sum(!is.na(road)),
-      with_cities = sum(!is.na(city))
-    )
-  
-  # Add enhanced summary info box
-  map <- map |>
-    addControl(
-      html = paste0(
-        "<div style='background: rgba(255,255,255,0.95); padding: 12px; ",
-        "border-radius: 8px; border: 2px solid #333; font-family: Arial;'>",
-        "<strong>Participant ", participant_id, " - Location Data</strong><br>",
-        "<strong>", nrow(geocoded_data), "</strong> meaningful locations<br>",
-        "<strong>", sum(geocoded_data$total_visits), "</strong> total visits<br>",
-        "<strong>", round(sum(geocoded_data$total_duration_hours), 1), "</strong> hours tracked<br>",
-        "<strong>Timeframe:</strong> [", format(start_date, "%m-%d-%Y"), " to ", 
-        format(end_date, "%m-%d-%Y"), "]<br><br>",
-        "<strong>Geocoding Results:</strong><br>",
-        "- Complete addresses: ", address_stats$with_addresses, "<br>",
-        "- Street addresses: ", address_stats$with_roads, "<br>",
-        "- City identified: ", address_stats$with_cities, "<br>",
-        "<em>Marker size = visit importance</em>",
-        "</div>"
-      ),
-      position = "topright"
-    )
-  
-  # Add markers with enhanced geocoded information (in logical order)
-  ordered_types <- c("routine", "frequent", "occasional", "rare")
-  location_types <- ordered_types[ordered_types %in% unique(geocoded_data$location_type)]
-  
-  for (type in location_types) {
-    type_data <- geocoded_data |> filter(location_type == type)
+  for (participant in participants) {
+    participant_clusters <- cluster_analysis[cluster_analysis$subid == participant, ]
     
     map <- map |>
       addCircleMarkers(
-        data = type_data,
-        lng = ~lon, 
-        lat = ~lat,
-        radius = ~marker_size,
-        color = "#000", 
-        fillColor = ~marker_color,
-        fillOpacity = 0.8, 
-        stroke = TRUE, 
-        weight = 1,
+        data = participant_clusters,
+        lng = ~lon, lat = ~lat,
+        radius = ~pmax(4, pmin(15, total_visits / 2)),
+        color = "#000", fillColor = colors[as.character(participant)],
+        fillOpacity = 0.8, weight = 1,
         popup = ~paste0(
-          "<strong>Location Cluster ", cluster_id, "</strong><br>",
-          "<strong>", if_else(is.na(display_name) | display_name == "", "Unknown Location", display_name), "</strong><br>",
-          "<em>", stringr::str_to_title(location_type), " location</em><br><br>",
-          "<strong>Address:</strong><br>",
-          if_else(is.na(road) | road == "", "Street not identified<br>", paste0(road, "<br>")),
-          if_else(is.na(city) | city == "", "City not identified", city),
-          if_else(is.na(state) | state == "", "", paste0(", ", state)),
-          if_else(is.na(postcode) | postcode == "", "", paste0(" ", postcode)), "<br><br>",
-          "<strong>Visit Pattern:</strong><br>",
-          "• Total visits: ", total_visits, "<br>",
-          "• Days visited: ", unique_days, "<br>",
-          "• Total time: ", round(total_duration_hours, 1), " hours<br>",
-          "• GPS points: ", if_else(is.na(cluster_id), "N/A", "Multiple"), "<br><br>",
-          "<strong>Timeline:</strong><br>",
-          "• First visit: ", format(first_visit, "%m/%d/%Y %H:%M"), "<br>",
-          "• Last visit: ", format(last_visit, "%m/%d/%Y %H:%M"), "<br><br>",
-          "<strong>Geocoding Info:</strong><br>",
-          "• Method: ", if_else(is.na(geocoding_method), "Unknown", geocoding_method), "<br>",
-          "• Confidence: ", if_else(is.na(geocoding_confidence), "N/A", as.character(round(geocoding_confidence, 2))), "<br>",
-          "<strong>Coordinates:</strong><br>",
-          round(lat, 4), ", ", round(lon, 4)
+          "<strong>Participant ", subid, " - Cluster ", cluster_id, "</strong><br>",
+          "Zone: ", zone_code, " (", zone_category, ")<br>",
+          "Visits: ", total_visits, " | Days: ", unique_days, "<br>",
+          "Duration: ", round(total_duration_hours, 1), " hours"
         ),
-        label = ~paste0("Cluster ", cluster_id, ": ", 
-                        if_else(is.na(display_name) | display_name == "", "Unknown", 
-                                if_else(nchar(display_name) > 30, 
-                                        paste0(substr(display_name, 1, 30), "..."), 
-                                        display_name))),
-        group = stringr::str_to_title(type)
+        group = paste("Participant", participant)
       )
   }
   
-  # Add layer control
+  # Add controls and summary
   map <- map |>
     addLayersControl(
-      overlayGroups = stringr::str_to_title(location_types),
+      overlayGroups = paste("Participant", participants),
       options = layersControlOptions(collapsed = FALSE)
-    )
-  
-  # Create enhanced legend with location type counts (in logical order)
-  legend_colors <- c()
-  legend_labels <- c()
-  
-  # Ensure consistent ordering: routine -> frequent -> occasional -> rare
-  ordered_types <- c("routine", "frequent", "occasional", "rare")
-  existing_types <- ordered_types[ordered_types %in% unique(geocoded_data$location_type)]
-  
-  for (type in existing_types) {
-    type_color <- case_when(
-      type == "routine" ~ "#d73027",
-      type == "frequent" ~ "#fc8d59", 
-      type == "occasional" ~ "#91bfdb",
-      type == "rare" ~ "#999999"
-    )
-    type_count <- sum(geocoded_data$location_type == type)
-    
-    legend_colors <- c(legend_colors, type_color)
-    legend_labels <- c(legend_labels, paste0(stringr::str_to_title(type), " (", type_count, ")"))
-  }
-  
-  # Add legend
-  map <- map |>
-    addLegend(
-      position = "bottomleft",
-      colors = legend_colors,
-      labels = legend_labels,
-      title = paste0("Location Types<br><small>", nrow(geocoded_data), " geocoded locations</small>"),
-      opacity = 0.8
+    ) |>
+    addControl(
+      html = paste0(
+        "<div style='background: rgba(255,255,255,0.9); padding: 10px; border-radius: 5px;'>",
+        "<strong>", zone_category, " Zone Analysis</strong><br>",
+        "Clusters: ", nrow(cluster_analysis), "<br>",
+        "Participants: ", length(participants), "<br>",
+        "Total visits: ", sum(cluster_analysis$total_visits),
+        "</div>"
+      ),
+      position = "topright"
     )
   
   return(map)
@@ -589,61 +590,91 @@ map_geocoded_clusters <- function(participant_id, show_failed = FALSE) {
 # Save leaflet map to HTML file
 save_map <- function(map, filename, folder = "maps") {
   
-  # Ensure filename has .html extension
   if (!grepl("\\.html$", filename)) {
     filename <- paste0(filename, ".html")
   }
   
-  # Create folder if it doesn't exist
   if (!dir.exists(folder)) {
     dir.create(folder, recursive = TRUE)
   }
   
-  # Create full path
   filepath <- file.path(folder, filename)
-  
-  # Save the map
   saveWidget(map, file = filepath, selfcontained = TRUE)
   
-  # Confirmation
   cat("Map saved to:", filepath, "\n")
   return(filepath)
 }
 
-# Generate maps for multiple participants
-generate_participant_maps <- function(participant_ids, map_type = "clusters", save_maps = TRUE) {
+# Generate comprehensive maps for participants
+generate_participant_maps <- function(participant_ids, map_types = c("clusters", "zoning"), save_maps = TRUE) {
   
   maps_created <- list()
   
   for (participant_id in participant_ids) {
-    cat("Creating", map_type, "map for participant", participant_id, "...\n")
+    cat(" Creating maps for participant", participant_id, "...\n")
     
-    tryCatch({
-      if (map_type == "clusters") {
-        map <- map_participant_clusters(participant_id)
-        filename <- paste0("clusters_participant_", participant_id)
-      } else if (map_type == "geocoded") {
-        map <- map_geocoded_clusters(participant_id)
-        filename <- paste0("geocoded_participant_", participant_id)
-      } else if (map_type == "gps") {
-        gps_data <- get_participant_data(participant_id)
-        map <- map_gps(gps_data, participant_id = participant_id)
-        filename <- paste0("gps_participant_", participant_id)
-      } else {
-        stop("Invalid map_type. Use 'clusters', 'geocoded', or 'gps'")
-      }
-      
-      if (save_maps) {
-        save_map(map, filename)
-      }
-      
-      maps_created[[as.character(participant_id)]] <- map
-      
-    }, error = function(e) {
-      cat("Error creating map for participant", participant_id, ":", e$message, "\n")
-    })
+    for (map_type in map_types) {
+      tryCatch({
+        if (map_type == "clusters") {
+          map <- map_participant_clusters(participant_id)
+          filename <- paste0("clusters_participant_", participant_id)
+        } else if (map_type == "zoning") {
+          map <- map_clusters_with_zoning(participant_id)
+          filename <- paste0("zoning_participant_", participant_id)
+        } else if (map_type == "gps") {
+          map <- map_participant_gps(participant_id)
+          filename <- paste0("gps_participant_", participant_id)
+        } else {
+          next
+        }
+        
+        if (save_maps) {
+          save_map(map, filename)
+        }
+        
+        maps_created[[paste0(participant_id, "_", map_type)]] <- map
+        
+      }, error = function(e) {
+        cat("❌ Error creating", map_type, "map for participant", participant_id, ":", e$message, "\n")
+      })
+    }
   }
   
   cat("✅ Created", length(maps_created), "maps\n")
+  return(maps_created)
+}
+
+# Generate comprehensive zoning analysis maps
+generate_zoning_analysis <- function(save_maps = TRUE) {
+  
+  cat("Generating comprehensive zoning analysis...\n")
+  maps_created <- list()
+  
+  # Overall zoning map
+  overall_map <- map_zoning_districts()
+  if (save_maps) save_map(overall_map, "madison_zoning_overview")
+  maps_created[["overview"]] <- overall_map
+  
+  # Maps by major categories
+  major_categories <- c("Residential", "Commercial", "Mixed-Use", "Downtown", "Employment")
+  
+  for (category in major_categories) {
+    tryCatch({
+      # Category zoning map
+      category_map <- map_zoning_districts(show_categories = category)
+      if (save_maps) save_map(category_map, paste0("zoning_", tolower(category)))
+      maps_created[[paste0(tolower(category), "_zones")]] <- category_map
+      
+      # Cluster analysis for this category
+      cluster_map <- map_zoning_category_analysis(category)
+      if (save_maps) save_map(cluster_map, paste0("clusters_in_", tolower(category)))
+      maps_created[[paste0(tolower(category), "_clusters")]] <- cluster_map
+      
+    }, error = function(e) {
+      cat("❌ Error creating", category, "maps:", e$message, "\n")
+    })
+  }
+  
+  cat("✅ Created", length(maps_created), "zoning analysis maps\n")
   return(maps_created)
 }
