@@ -1,6 +1,6 @@
 # scripts/r/analysis.R
 # GPS clustering and geocoding analysis functions
-# Consolidates duration_cluster.R and nominatim_geocoding.R
+# Remade with env/db pattern
 
 library(dplyr)
 library(geosphere)
@@ -11,19 +11,26 @@ library(jsonlite, exclude = "flatten")
 source("scripts/r/database.R")
 
 # ==============================================================================
-# CLUSTERING ANALYSIS
+# CLUSTERING ANALYSIS - ENVIRONMENT FUNCTIONS
 # ==============================================================================
 
-# Duration-based clustering algorithm for GPS data
-cluster_stationary_gps <- function(gps_data, participant_id, eps = 20) {
+#' Duration-based clustering algorithm for GPS data (environment version)
+#' 
+#' @param gps_data GPS data frame already loaded in R
+#' @param subid Participant ID to analyze
+#' @param eps Radius in meters for clustering (default 50)
+#' 
+#' @return Data frame with cluster representatives
+
+cluster_stationary_gps_env <- function(gps_data, subid, eps = 50) {
   
   # eps represents radius in meters, min duration threshold for meaningful stops
   radius_m <- eps
-  min_duration_min <- 30  # Minimum duration for a meaningful stop within a day
+  min_duration_min <- 30  # minimum duration for a meaningful stop within a day
   
   # Filter for specific participant and stationary points only
   participant_data <- gps_data |>
-    filter(subid == participant_id, movement_state == "stationary") |>
+    filter(subid == !!subid, movement_state == "stationary") |>
     mutate(date = as.Date(dttm_obs)) |>
     arrange(dttm_obs)
   
@@ -150,13 +157,65 @@ cluster_stationary_gps <- function(gps_data, participant_id, eps = 20) {
   return(representatives)
 }
 
-# Run clustering analysis for all participants
-analyze_all_participants <- function(eps = 50, participant_ids = NULL) {
+# ==============================================================================
+# CLUSTERING ANALYSIS - DATABASE FUNCTIONS
+# ==============================================================================
+
+#' Duration-based clustering algorithm for GPS data
+#' 
+#' @param subid Participant ID to analyze
+#' @param eps Radius in meters for clustering (default 20)
+#' 
+#' @return Data frame with cluster representatives
+
+cluster_stationary_gps_db <- function(subid, eps = 50) {
+  
+  # Get participant GPS data from database
+  gps_data <- query_gps2_db("
+    SELECT subid, lat, lon, dttm_obs, dist, duration, speed, movement_state
+    FROM gps2.gps_stationary_points 
+    WHERE subid = $1 AND movement_state = 'stationary'
+    ORDER BY dttm_obs;
+  ", list(subid))
+  
+  if (nrow(gps_data) == 0) {
+    cat("No GPS data found for participant", subid, "\n")
+    return(data.frame(
+      subid = numeric(0), 
+      lat = numeric(0), 
+      lon = numeric(0), 
+      n_points = integer(0), 
+      first_visit = as.POSIXct(character(0)), 
+      last_visit = as.POSIXct(character(0)), 
+      cluster = integer(0),
+      total_visits = integer(0), 
+      total_duration_hours = numeric(0), 
+      unique_days = integer(0)
+    ))
+  }
+  
+  # Use environment version to do the actual clustering
+  return(cluster_stationary_gps_env(gps_data, subid, eps))
+}
+
+#' Run clustering analysis for all participants (database version)
+#' 
+#' @param eps Radius in meters for clustering (default 50)
+#' @param participant_ids Optional list of participant IDs to analyze
+#' 
+#' @return Data frame with all clusters
+
+cluster_all_participants_db <- function(eps = 50, participant_ids = NULL) {
   cat("Starting clustering analysis...\n")
   
   # Get participants to analyze
   if (is.null(participant_ids)) {
-    participants <- query_gps2_db("SELECT DISTINCT subid FROM gps2.gps_stationary_points WHERE subid != 999 ORDER BY subid;")$subid
+    participants <- query_gps2_db(
+      "SELECT DISTINCT subid 
+      FROM gps2.gps_stationary_points 
+      WHERE subid != 999 
+      ORDER BY subid;"
+      )$subid
   } else {
     participants <- participant_ids
   }
@@ -165,26 +224,16 @@ analyze_all_participants <- function(eps = 50, participant_ids = NULL) {
   
   all_clusters <- data.frame()
   
-  for (participant_id in participants) {
+  for (subid in participants) {
     tryCatch({
-      # Get participant GPS data
-      gps_data <- query_gps2_db("
-        SELECT subid, lat, lon, dttm_obs, dist, duration, speed, movement_state
-        FROM gps2.gps_stationary_points 
-        WHERE subid = $1 AND movement_state = 'stationary'
-        ORDER BY dttm_obs;
-      ", list(participant_id))
-      
-      if (nrow(gps_data) > 0) {
-        clusters <- cluster_stationary_gps(gps_data, participant_id, eps)
-        if (nrow(clusters) > 0) {
-          all_clusters <- bind_rows(all_clusters, clusters)
-          cat("Participant", participant_id, ":", nrow(clusters), "clusters\n")
-        }
+      clusters <- cluster_stationary_gps_db(subid, eps)
+      if (nrow(clusters) > 0) {
+        all_clusters <- bind_rows(all_clusters, clusters)
+        cat("Participant", subid, ":", nrow(clusters), "clusters\n")
       }
       
     }, error = function(e) {
-      cat("Error clustering participant", participant_id, ":", e$message, "\n")
+      cat("Error clustering participant", subid, ":", e$message, "\n")
     })
   }
   
@@ -192,11 +241,53 @@ analyze_all_participants <- function(eps = 50, participant_ids = NULL) {
   return(all_clusters)
 }
 
+#' Get geocoded cluster results (database version)
+#' 
+#' @param participant_ids Optional participant filter
+#' @param include_failed Include failed geocoding attempts
+#' 
+#' @return Data frame with cluster and geocoding info
+
+get_geocoded_clusters_db <- function(participant_ids = NULL, include_failed = FALSE) {
+  
+  participant_filter <- ""
+  if (!is.null(participant_ids)) {
+    participant_list <- paste(participant_ids, collapse = ",")
+    participant_filter <- paste0("AND cg.subid IN (", participant_list, ")")
+  }
+  
+  failed_filter <- ""
+  if (!include_failed) {
+    failed_filter <- "AND cg.display_name IS NOT NULL AND cg.display_name != 'No address found'"
+  }
+  
+  query <- paste0("
+    SELECT 
+      cg.subid, cg.cluster_id, lc.lat, lc.lon,
+      cg.display_name, cg.road, cg.city, cg.state, cg.postcode,
+      cg.geocoding_confidence, cg.geocoding_method,
+      lc.total_visits, lc.unique_days, lc.total_duration_hours,
+      lc.first_visit, lc.last_visit
+    FROM gps2.cluster_geocoding cg
+    JOIN gps2.location_clusters lc ON cg.subid = lc.subid AND cg.cluster_id = lc.cluster_id
+    WHERE 1=1 ", participant_filter, " ", failed_filter, "
+    ORDER BY cg.subid, lc.total_duration_hours DESC, lc.total_visits DESC;
+  ")
+  
+  return(query_gps2_db(query))
+}
+
 # ==============================================================================
-# GEOCODING ANALYSIS
+# GEOCODING ANALYSIS - DATABASE FUNCTIONS ONLY
+# (These require Docker/Nominatim infrastructure and database persistence)
 # ==============================================================================
 
-# Test Nominatim service availability
+#' Test Nominatim service availability
+#' 
+#' @param nominatim_url URL of local Nominatim service
+#' 
+#' @return Boolean indicating service availability
+
 test_nominatim_connection <- function(nominatim_url = "http://localhost:8080") {
   cat("Testing Nominatim geocoding service...\n")
   
@@ -233,10 +324,19 @@ test_nominatim_connection <- function(nominatim_url = "http://localhost:8080") {
   })
 }
 
-# Execute reverse geocoding for location clusters
-reverse_geocode_clusters <- function(participant_ids = NULL, update_existing = FALSE, 
-                                     nominatim_url = "http://localhost:8080",
-                                     batch_size = 10, delay_seconds = 0.1) {
+#' Execute reverse geocoding for location clusters
+#' 
+#' @param participant_ids Optional participant filter
+#' @param update_existing Whether to update existing geocoding results
+#' @param nominatim_url URL of local Nominatim service
+#' @param batch_size Number of requests to process before status update
+#' @param delay_seconds Delay between requests for rate limiting
+#' 
+#' @return Nothing (side effect: updates database)
+
+reverse_geocode_clusters_db <- function(participant_ids = NULL, update_existing = FALSE, 
+                                        nominatim_url = "http://localhost:8080",
+                                        batch_size = 10, delay_seconds = 0.1) {
   
   cat("Starting reverse geocoding using local Nominatim service...\n")
   
@@ -378,38 +478,11 @@ reverse_geocode_clusters <- function(participant_ids = NULL, update_existing = F
   cat("✅ Geocoding complete - Success:", successful_geocodes, "Failed:", failed_geocodes, "\n")
 }
 
-# Get geocoded cluster results
-get_geocoded_clusters <- function(participant_ids = NULL, include_failed = FALSE) {
-  
-  participant_filter <- ""
-  if (!is.null(participant_ids)) {
-    participant_list <- paste(participant_ids, collapse = ",")
-    participant_filter <- paste0("AND cg.subid IN (", participant_list, ")")
-  }
-  
-  failed_filter <- ""
-  if (!include_failed) {
-    failed_filter <- "AND cg.display_name IS NOT NULL AND cg.display_name != 'No address found'"
-  }
-  
-  query <- paste0("
-    SELECT 
-      cg.subid, cg.cluster_id, lc.lat, lc.lon,
-      cg.display_name, cg.road, cg.city, cg.state, cg.postcode,
-      cg.geocoding_confidence, cg.geocoding_method,
-      lc.total_visits, lc.unique_days, lc.total_duration_hours,
-      lc.first_visit, lc.last_visit
-    FROM gps2.cluster_geocoding cg
-    JOIN gps2.location_clusters lc ON cg.subid = lc.subid AND cg.cluster_id = lc.cluster_id
-    WHERE 1=1 ", participant_filter, " ", failed_filter, "
-    ORDER BY cg.subid, lc.total_duration_hours DESC, lc.total_visits DESC;
-  ")
-  
-  return(query_gps2_db(query))
-}
+#' Analyze geocoding success rates
+#' 
+#' @return List with overall and participant-level statistics
 
-# Analyze geocoding success rates
-analyze_geocoding_coverage <- function() {
+analyze_geocoding_coverage_db <- function() {
   
   cat("Geocoding Coverage Analysis\n")
   cat("===========================\n")
@@ -433,7 +506,7 @@ analyze_geocoding_coverage <- function() {
   cat("Successfully geocoded:", overall_stats$geocoded_clusters, "\n")
   cat("Success rate:", overall_stats$success_rate_percent, "%\n\n")
   
-  # Participant-level analysis
+  # participant-level analysis
   participant_stats <- query_gps2_db("
     SELECT 
       lc.subid,
