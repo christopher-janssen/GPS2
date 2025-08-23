@@ -134,7 +134,9 @@ insert_zone_data <- function(zone_data) {
 
 # Get zone count with proper integer casting
 get_zone_count <- function() {
-  result <- query_gps2_db("SELECT COUNT(*)::integer as count FROM gps2.zoning_districts WHERE geometry IS NOT NULL;")
+  result <- query_gps2_db("SELECT COUNT(*)::integer as count 
+                          FROM gps2.zoning_districts 
+                          WHERE geometry IS NOT NULL;")
   return(as.integer(result$count))
 }
 
@@ -208,11 +210,15 @@ add_zoning_to_clusters <- function() {
   
   # Create cluster-zoning lookup table
   execute_gps2_db("DROP TABLE IF EXISTS gps2.cluster_zoning;")
-  execute_gps2_db("CREATE TABLE gps2.cluster_zoning AS SELECT * FROM gps2.get_zoning_for_clusters();")
+  execute_gps2_db("CREATE TABLE gps2.cluster_zoning 
+                  AS SELECT * 
+                  FROM gps2.get_zoning_for_clusters();")
   
   # Add indexes for performance
-  execute_gps2_db("CREATE INDEX idx_cluster_zoning_subid_cluster ON gps2.cluster_zoning (subid, cluster_id);")
-  execute_gps2_db("CREATE INDEX idx_cluster_zoning_category ON gps2.cluster_zoning (zone_category);")
+  execute_gps2_db("CREATE INDEX idx_cluster_zoning_subid_cluster 
+                  ON gps2.cluster_zoning (subid, cluster_id);")
+  execute_gps2_db("CREATE INDEX idx_cluster_zoning_category 
+                  ON gps2.cluster_zoning (zone_category);")
   
   # Get summary
   summary <- query_gps2_db("
@@ -234,11 +240,11 @@ add_zoning_to_clusters <- function() {
 }
 
 # Show comprehensive zoning distribution for participants
-show_zoning_summary <- function(participant_ids = NULL) {
+show_zoning_summary <- function(subids = NULL) {
   
   participant_filter <- ""
-  if (!is.null(participant_ids)) {
-    participant_list <- paste(participant_ids, collapse = ",")
+  if (!is.null(subids)) {
+    participant_list <- paste(subids, collapse = ",")
     participant_filter <- paste0("AND lc.subid IN (", participant_list, ")")
   }
   
@@ -259,7 +265,6 @@ show_zoning_summary <- function(participant_ids = NULL) {
   
   cat("PARTICIPANT ZONING DISTRIBUTION\n")
   cat("===================================\n")
-  print(summary)
   
   return(summary)
 }
