@@ -1,6 +1,6 @@
 # utils/load_utils.R
 #' load all GPS2 utility functions
-library(purrr)
+# purrr loaded via tidyverse in global_setup.R
 load_gps2_utils <- function() {
   utils_dir <- here::here("utils")
   

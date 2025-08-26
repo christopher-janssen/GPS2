@@ -2,8 +2,6 @@
 options(conflicts.policy = "depends.ok")
 library(tidyverse)
 library(here)
-library(stringr)
-library(purrr)
 
 # source `format_path` function
 devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/format_path.R?raw=true")

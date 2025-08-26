@@ -2,10 +2,7 @@
 # GPS2 visualization functions - refactored with utilities
 
 library(leaflet)
-library(dplyr)
-library(lubridate)
-library(htmlwidgets)
-library(sf)
+# htmlwidgets and sf functions used via namespace (::)
 
 source("scripts/r/global_setup.R")
 source("scripts/r/database.R")
@@ -541,7 +538,7 @@ save_map <- function(map, filename) {
   }
   
   # Save the map
-  saveWidget(map, file = filepath, selfcontained = TRUE)
+  htmlwidgets::saveWidget(map, file = filepath, selfcontained = TRUE)
   cat("✓ Map saved to:", filepath, "\n")
 }
 

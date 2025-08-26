@@ -2,9 +2,7 @@
 # GPS clustering and geocoding analysis functions
 # refactored to use utility functions
 
-library(dplyr)
-library(geosphere)
-library(lubridate)
+library(geosphere, include.only = c("distHaversine"))
 library(httr)
 library(jsonlite, exclude = "flatten")
 

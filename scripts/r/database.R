@@ -3,7 +3,6 @@
 
 library(DBI)
 library(RPostgres)
-library(dplyr)
 
 # ==============================================================================
 # CONNECTION MANAGEMENT

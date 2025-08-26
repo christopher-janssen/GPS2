@@ -3,9 +3,7 @@
 # Handles loading, analysis, and spatial queries for Madison zoning districts
 
 library(sf)
-library(dplyr)
-library(DBI)
-library(RPostgres)
+# DBI and RPostgres functions handled via database.R sourcing
 
 source("scripts/r/database.R")
 

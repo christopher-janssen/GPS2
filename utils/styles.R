@@ -1,7 +1,6 @@
 # utils/styles.R
 #' Styling and color management for GPS2 visualizations
-library(purrr)
-library(stringr)
+# purrr and stringr loaded via tidyverse in global_setup.R
 
 GPS2_STYLES <- list(
   location_types = list(

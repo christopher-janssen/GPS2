@@ -1,7 +1,6 @@
 # utils/validation_utils.R
 #' data validation utilities for GPS2
-library(tibble)
-library(stringr)
+# tibble and stringr loaded via tidyverse in global_setup.R
 
 #' Create empty cluster result data frame
 create_empty_cluster_result <- function() {

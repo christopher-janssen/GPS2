@@ -2,9 +2,7 @@
 # GPS data processing for location clustering
 # Adapted from lab approach (thanks claire and john)
 
-library(dplyr)
-library(geosphere)
-library(lubridate)
+library(geosphere, include.only = c("distHaversine"))
 
 process_gps <- function(gps_data,
                         speed_threshold_mph = 100,
