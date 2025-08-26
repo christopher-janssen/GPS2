@@ -13,14 +13,50 @@ source("scripts/r/database.R")
 # CLUSTERING ANALYSIS - ENVIRONMENT FUNCTIONS
 # ==============================================================================
 
-#' Duration-based clustering algorithm for GPS data (environment version)
+#' Duration-based clustering algorithm for GPS stationary points
+#'
+#' @description
+#' Performs spatial clustering of GPS stationary points using duration weighting.
+#' Processes data day-by-day then aggregates across time periods to identify
+#' significant locations where participants spend time.
+#'
+#' @param gps_data Data frame containing GPS data with columns:
+#'   subid, lat, lon, dttm_obs, movement_state, duration
+#' @param subid Numeric participant ID to analyze
+#' @param eps Numeric clustering radius in meters. If NULL, uses configuration
+#'   default (typically 50m)
+#'
+#' @return Data frame with cluster analysis results containing:
+#'   - cluster: Cluster identifier
+#'   - subid: Participant ID
+#'   - lat/lon: Cluster centroid coordinates
+#'   - n_points: Number of GPS points in cluster
+#'   - first_visit/last_visit: Temporal span of visits
+#'   - total_visits: Number of separate visits
+#'   - total_duration_hours: Total time spent at location
+#'   - unique_days: Number of different days visited
+#'
+#' @details
+#' Algorithm steps:
+#' 1. Filters to stationary points only
+#' 2. Groups data by date
+#' 3. Performs daily clustering using distance and duration criteria
+#' 4. Aggregates daily clusters into overall location patterns
+#' 5. Calculates visit statistics and duration summaries
+#'
+#' Uses duration weighting so longer stays have more influence on cluster
+#' centroids than brief stops.
+#'
+#' @examples
+#' \dontrun{
+#' # Cluster participant 19 with default settings
+#' clusters <- cluster_stationary_gps_env(gps_data, 19)
 #' 
-#' @param gps_data GPS data frame already loaded in R
-#' @param subid Participant ID to analyze
-#' @param eps Radius in meters for clustering (default from config)
-#' 
-#' @return Data frame with cluster representatives
-
+#' # Use custom clustering radius
+#' clusters <- cluster_stationary_gps_env(gps_data, 19, eps = 100)
+#' }
+#'
+#' @export
 cluster_stationary_gps_env <- function(gps_data, subid, eps = NULL) {
   
   # Use config defaults if not specified
@@ -54,6 +90,19 @@ cluster_stationary_gps_env <- function(gps_data, subid, eps = NULL) {
 }
 
 #' Helper: Cluster GPS points within each day
+#' Process daily GPS clustering
+#'
+#' @description
+#' Groups GPS data by date and performs clustering analysis for each day
+#' separately. Prevents clusters from spanning multiple days.
+#'
+#' @param participant_data Filtered GPS data for a single participant
+#' @param eps Clustering radius in meters
+#' @param min_duration_min Minimum duration threshold in minutes
+#'
+#' @return Combined results from daily clustering
+#'
+#' @keywords internal
 cluster_by_day <- function(participant_data, eps, min_duration_min) {
   participant_data |>
     group_by(date) |>
@@ -195,6 +244,24 @@ assign_final_clusters <- function(daily_locations, eps) {
 #' 
 #' @return Data frame with cluster representatives
 
+#' Database-based GPS clustering for single participant
+#'
+#' @description
+#' Performs clustering analysis by fetching participant data directly from
+#' PostGIS database. Wrapper around cluster_stationary_gps_env().
+#'
+#' @param subid Numeric participant identifier
+#' @param eps Optional clustering radius in meters. Uses config default if NULL
+#'
+#' @return Clustering results data frame or empty result if no data found
+#'
+#' @examples
+#' \dontrun{
+#' # Cluster participant from database
+#' clusters <- cluster_stationary_gps_db(19)
+#' }
+#'
+#' @export
 cluster_stationary_gps_db <- function(subid, eps = NULL) {
   
   # Use config defaults if not specified
@@ -224,6 +291,28 @@ cluster_stationary_gps_db <- function(subid, eps = NULL) {
 #' 
 #' @return Data frame with all clusters
 
+#' Database-based clustering for multiple participants
+#'
+#' @description
+#' Runs clustering analysis for multiple participants by fetching data
+#' directly from database. Auto-discovers participants if not specified.
+#'
+#' @param eps Optional clustering radius in meters. Uses config default if NULL
+#' @param participant_ids Optional numeric vector of participant IDs.
+#'   If NULL, processes all participants found in database
+#'
+#' @return Combined clustering results across all processed participants
+#'
+#' @examples
+#' \dontrun{
+#' # Cluster all participants
+#' all_clusters <- cluster_all_participants_db()
+#' 
+#' # Cluster specific participants
+#' some_clusters <- cluster_all_participants_db(participant_ids = c(19, 20, 21))
+#' }
+#'
+#' @export
 cluster_all_participants_db <- function(eps = NULL, participant_ids = NULL) {
   cat("Starting clustering analysis...\n")
   
@@ -271,13 +360,34 @@ process_participants_for_clustering <- function(participants, eps) {
   return(all_clusters)
 }
 
-#' Get geocoded cluster results (database version)
+#' Retrieve geocoded cluster data from database
+#'
+#' @description
+#' Fetches location clusters with their geocoding results from PostGIS database.
+#' Includes address information and location type classification.
+#'
+#' @param participant_ids Optional numeric vector of participant IDs to filter.
+#'   If NULL, returns data for all participants
+#' @param include_failed Logical whether to include clusters where geocoding
+#'   failed (no address found). Default: FALSE
+#'
+#' @return Data frame with cluster information and geocoding results:
+#'   cluster_id, subid, lat, lon, visit statistics, address components,
+#'   location_type, etc.
+#'
+#' @examples
+#' \dontrun{
+#' # Get all successfully geocoded clusters
+#' geocoded <- get_geocoded_clusters_db()
 #' 
-#' @param participant_ids Optional participant filter
-#' @param include_failed Include failed geocoding attempts
+#' # Include failed geocoding attempts
+#' all_clusters <- get_geocoded_clusters_db(include_failed = TRUE)
 #' 
-#' @return Data frame with cluster and geocoding info
-
+#' # Get clusters for specific participants
+#' participant_clusters <- get_geocoded_clusters_db(participant_ids = c(19, 20))
+#' }
+#'
+#' @export
 get_geocoded_clusters_db <- function(participant_ids = NULL, include_failed = FALSE) {
   
   # Build query using utility
@@ -303,6 +413,39 @@ get_geocoded_clusters_db <- function(participant_ids = NULL, include_failed = FA
 #' 
 #' @return Nothing (side effect: updates database)
 
+#' Reverse geocode location clusters using local Nominatim
+#'
+#' @description
+#' Performs reverse geocoding on location clusters using local Nominatim server.
+#' Processes in batches with rate limiting and progress reporting.
+#'
+#' @param participant_ids Optional numeric vector of participant IDs.
+#'   If NULL, processes clusters for all participants
+#' @param update_existing Logical whether to re-geocode clusters that already
+#'   have geocoding results. Default: FALSE
+#' @param batch_size Integer batch size for processing. Default: 10
+#'
+#' @return Invisible NULL. Results stored directly in database.
+#'   Progress and summary printed to console.
+#'
+#' @details
+#' Uses local Nominatim server (http://localhost:8080) for privacy compliance.
+#' Includes delay between requests to respect rate limiting.
+#' Failed geocoding attempts are recorded with NULL results.
+#'
+#' @examples
+#' \dontrun{
+#' # Geocode all new clusters
+#' reverse_geocode_clusters_db()
+#' 
+#' # Re-geocode existing results
+#' reverse_geocode_clusters_db(update_existing = TRUE)
+#' 
+#' # Process specific participants
+#' reverse_geocode_clusters_db(participant_ids = c(19, 20))
+#' }
+#'
+#' @export
 reverse_geocode_clusters_db <- function(participant_ids = NULL, update_existing = FALSE, 
                                         batch_size = 10) {
   
@@ -431,6 +574,31 @@ insert_geocoding_result <- function(cluster, processed) {
 #' 
 #' @return List with overall and participant-level statistics
 
+#' Analyze geocoding coverage and success rates
+#'
+#' @description
+#' Provides comprehensive analysis of geocoding results including success rates,
+#' failure patterns, and location type distributions.
+#'
+#' @return Named list with geocoding statistics:
+#'   - total_clusters: Total clusters in database
+#'   - geocoded_clusters: Successfully geocoded clusters
+#'   - failed_geocoding: Failed geocoding attempts
+#'   - success_rate: Percentage of successful geocoding
+#'   - location_types: Distribution of identified location types
+#'
+#' @details
+#' Useful for assessing geocoding quality and identifying areas needing
+#' improvement in the local Nominatim database or geocoding logic.
+#'
+#' @examples
+#' \dontrun{
+#' # Analyze geocoding performance
+#' coverage <- analyze_geocoding_coverage_db()
+#' cat("Success rate:", coverage$success_rate, "%\n")
+#' }
+#'
+#' @export
 analyze_geocoding_coverage_db <- function() {
   
   cat("Geocoding Coverage Analysis\n")

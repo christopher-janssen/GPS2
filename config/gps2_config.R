@@ -36,7 +36,30 @@ GPS2_CONFIG <- list(
   )
 )
 
-# Helper function to get config values
+#' Get GPS2 configuration values by nested keys
+#'
+#' @description
+#' Retrieves configuration values from the GPS2_CONFIG list using dot notation.
+#' Supports nested access to configuration sections and values.
+#'
+#' @param ... Character strings representing the nested keys to access
+#'   (e.g., "clustering", "default_eps" for GPS2_CONFIG$clustering$default_eps)
+#'
+#' @return The configuration value at the specified path, or NULL if not found
+#'
+#' @examples
+#' \dontrun{
+#' # Get default clustering eps value
+#' eps <- get_config("clustering", "default_eps")
+#'
+#' # Get entire clustering section
+#' clustering_config <- get_config("clustering")
+#'
+#' # Get database batch size
+#' batch_size <- get_config("database", "batch_size")
+#' }
+#'
+#' @export
 get_config <- function(...) {
   keys <- list(...)
   result <- GPS2_CONFIG
@@ -44,5 +67,5 @@ get_config <- function(...) {
     result <- result[[key]]
     if (is.null(result)) return(NULL)
   }
-  return(result)
+  result
 }

@@ -4,6 +4,53 @@
 
 library(geosphere, include.only = c("distHaversine"))
 
+#' Process raw GPS data with filtering and movement classification
+#'
+#' @description
+#' Comprehensive GPS data processing pipeline that converts timestamps,
+#' calculates distances and speeds, applies lab filtering rules, and
+#' classifies movement states. Adapted from lab methodology.
+#'
+#' @param gps_data A data frame with columns: subid, lat, lon, time
+#' @param speed_threshold_mph Numeric maximum realistic speed in mph.
+#'   Records exceeding this are filtered out. Default: 100
+#' @param stationary_threshold_mph Numeric speed threshold in mph below which
+#'   points are classified as stationary. Default: 4
+#'
+#' @return A processed data frame with additional columns:
+#'   - dttm_obs: POSIXct timestamps in America/Chicago timezone
+#'   - dist_m: Distance to previous point in meters (Haversine)
+#'   - dist: Distance to previous point in miles
+#'   - duration: Time elapsed since previous point in minutes
+#'   - speed: Calculated speed in mph
+#'   - movement_state: "stationary" or "transition"
+#'   - transit: "yes" or "no" based on movement state
+#'
+#' @details
+#' Processing steps:
+#' 1. Convert timestamps to POSIXct with proper timezone handling
+#' 2. Calculate Haversine distances between consecutive points
+#' 3. Compute durations and speeds
+#' 4. Apply lab filtering rules for data quality
+#' 5. Classify movement states based on speed thresholds
+#'
+#' Filtering rules remove records where:
+#' - Speed exceeds realistic maximum (default 100 mph)
+#' - Duration/distance relationships are inconsistent
+#' - Very short durations with significant distances
+#'
+#' @examples
+#' \dontrun{
+#' # Process GPS data with default settings
+#' processed <- process_gps(raw_gps_data)
+#' 
+#' # Use custom thresholds
+#' processed <- process_gps(raw_gps_data, 
+#'                          speed_threshold_mph = 80,
+#'                          stationary_threshold_mph = 3)
+#' }
+#'
+#' @export
 process_gps <- function(gps_data,
                         speed_threshold_mph = 100,
                         stationary_threshold_mph = 4) {
@@ -56,6 +103,45 @@ process_gps <- function(gps_data,
 # Additional functions for processing FollowMe GPS data
 # To be added to gps_filtering.R
 
+#' Process FollowMe GPS data format
+#'
+#' @description
+#' Specialized GPS processing for FollowMe app data format. Maps FollowMe
+#' column names to standard format, creates participant IDs starting from 501,
+#' then applies the same processing pipeline as process_gps().
+#'
+#' @param followmee_data A data frame with FollowMe format columns:
+#'   Name, Date, Lat, Lng
+#' @param speed_threshold_mph Numeric maximum realistic speed in mph.
+#'   Default: 100
+#' @param stationary_threshold_mph Numeric speed threshold in mph for
+#'   stationary classification. Default: 4
+#'
+#' @return Processed data frame with same structure as process_gps() output
+#'   plus original_name column preserving FollowMe participant names
+#'
+#' @details
+#' Column mapping:
+#' - Name -> original_name (preserved) + subid (numeric starting at 501)
+#' - Date -> time
+#' - Lat -> lat
+#' - Lng -> lon
+#' 
+#' Handles multiple date formats automatically:
+#' - ISO format with T: "YYYY-MM-DDTHH:MM:SSZ"
+#' - US format with /: "MM/DD/YYYY HH:MM:SS"
+#' - Other formats attempt automatic parsing
+#'
+#' @examples
+#' \dontrun{
+#' # Process FollowMe GPS export
+#' followme_processed <- process_followmee_gps(followme_data)
+#' 
+#' # Check participant mapping
+#' unique(followme_processed[c("original_name", "subid")])
+#' }
+#'
+#' @export
 process_followmee_gps <- function(followmee_data,
                                   speed_threshold_mph = 100,
                                   stationary_threshold_mph = 4) {
@@ -128,7 +214,40 @@ process_followmee_gps <- function(followmee_data,
   return(gps_classified)
 }
 
-# Updated get_stationary function with optional file writing
+#' Extract stationary GPS points from processed data
+#'
+#' @description
+#' Filters processed GPS data to return only stationary points (movement_state
+#' == "stationary"). Optionally writes results to CSV file for external use.
+#'
+#' @param processed_data A data frame from process_gps() or process_followmee_gps()
+#' @param write_file Logical whether to write results to CSV file. Default: FALSE
+#' @param output_path Optional character string for output file path.
+#'   If NULL and write_file = TRUE, uses default path in path_processed
+#'
+#' @return A data frame containing only stationary GPS points with columns:
+#'   subid, lat, lon, dttm_obs, dist, duration, speed, transit, movement_state
+#'
+#' @details
+#' Stationary points are GPS records where calculated speed is at or below
+#' the stationary threshold (typically 4 mph). These represent locations where
+#' participants spent time rather than just passing through.
+#'
+#' @examples
+#' \dontrun{
+#' # Extract stationary points only
+#' stationary <- get_stationary(processed_gps)
+#' 
+#' # Extract and save to file
+#' stationary <- get_stationary(processed_gps, write_file = TRUE)
+#' 
+#' # Save to custom location
+#' stationary <- get_stationary(processed_gps, 
+#'                              write_file = TRUE,
+#'                              output_path = "data/my_stationary.csv")
+#' }
+#'
+#' @export
 get_stationary <- function(processed_data, write_file = FALSE, output_path = NULL) {
   stationary_points <- processed_data |>
     filter(movement_state == "stationary") |>

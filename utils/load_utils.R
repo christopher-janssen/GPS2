@@ -1,6 +1,25 @@
 # utils/load_utils.R
-#' load all GPS2 utility functions
-# purrr loaded via tidyverse in global_setup.R
+#' Load all GPS2 utility functions
+#'
+#' @description
+#' Sources all utility files in the utils/ directory except this loader file.
+#' Uses purrr::walk() for functional iteration with error handling.
+#' Provides console feedback on loading success/failure.
+#'
+#' @details
+#' This function automatically discovers and loads all .R files in the utils/
+#' directory. It excludes itself (load_utils.R) to prevent circular loading.
+#' Loading failures are caught and reported but don't stop the process.
+#'
+#' @return Invisible NULL. Called for side effects (sourcing files).
+#'
+#' @examples
+#' \dontrun{
+#' # Load all GPS2 utilities
+#' load_gps2_utils()
+#' }
+#'
+#' @export
 load_gps2_utils <- function() {
   utils_dir <- here::here("utils")
   
