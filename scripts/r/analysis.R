@@ -61,7 +61,8 @@ cluster_by_day <- function(participant_data, eps, min_duration_min) {
     group_by(date) |>
     group_modify(~ {
       day_data <- .x
-      day_data$daily_cluster <- assign_daily_clusters(day_data, eps, min_duration_min)
+      day_data <- day_data |>
+        mutate(daily_cluster = assign_daily_clusters(pick(everything()), eps, min_duration_min))
       return(day_data |> filter(daily_cluster != 0))
     }) |>
     ungroup()
@@ -69,7 +70,8 @@ cluster_by_day <- function(participant_data, eps, min_duration_min) {
 
 #' Helper: Assign cluster IDs within a single day
 assign_daily_clusters <- function(day_data, eps, min_duration_min) {
-  day_data$daily_cluster <- 0
+  day_data <- day_data |>
+    mutate(daily_cluster = 0)
   cluster_id <- 1
   
   for (i in 1:nrow(day_data)) {
@@ -96,7 +98,7 @@ find_nearby_points <- function(day_data, current_idx, eps) {
   remaining_points <- day_data[current_idx:nrow(day_data), ] |>
     filter(daily_cluster == 0)
   
-  if (nrow(remaining_points) == 0) return(data.frame())
+  if (nrow(remaining_points) == 0) return(tibble())
   
   distances <- distHaversine(
     p1 = c(current_point$lon, current_point$lat),
@@ -253,7 +255,7 @@ cluster_all_participants_db <- function(eps = NULL, participant_ids = NULL) {
 
 #' Helper: Process all participants for clustering
 process_participants_for_clustering <- function(participants, eps) {
-  all_clusters <- data.frame()
+  all_clusters <- tibble()
   
   for (subid in participants) {
     tryCatch({

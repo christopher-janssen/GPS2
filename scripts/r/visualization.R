@@ -39,7 +39,7 @@ visualize_gps_env <- function(data,
   participant_data <- validate_participant_exists(data, subid)
   
   if (nrow(participant_data) == 0) {
-    stop(paste("No data found for participant", subid))
+    stop(str_c("No data found for participant ", subid))
   }
   
   # Create appropriate visualization
@@ -93,7 +93,7 @@ create_raw_gps_map_from_db <- function(subid, show_paths, show_all_days) {
   data <- query_gps2_db(query)
   
   if (nrow(data) == 0) {
-    stop(paste("No GPS data found for participant", subid))
+    stop(str_c("No GPS data found for participant ", subid))
   }
   
   return(create_raw_gps_map(data, subid, show_paths, show_all_days))
@@ -164,9 +164,10 @@ add_gps_points_by_day <- function(map, data, show_paths, show_all_days) {
 add_daily_gps_markers <- function(map, day_data, date_str, color, show_all_days) {
   
   # Create popups using utility
-  day_data$popup_content <- sapply(1:nrow(day_data), function(i) {
-    create_gps_popup(day_data[i, ], date_str)
-  })
+  day_data <- day_data |>
+    rowwise() |>
+    mutate(popup_content = create_gps_popup(pick(everything()), date_str)) |>
+    ungroup()
   
   map |>
     addCircleMarkers(
@@ -190,7 +191,7 @@ add_daily_gps_paths <- function(map, day_data, date_str, show_all_days) {
       data = day_data,
       lng = ~lon, lat = ~lat,
       color = "#000", weight = 2, opacity = 0.5,
-      group = if(show_all_days) "Paths" else paste(date_str, "Path")
+      group = if(show_all_days) "Paths" else str_c(date_str, " Path")
     )
 }
 
@@ -199,7 +200,7 @@ add_raw_gps_info_box <- function(map, data, subid) {
   
   unique_dates <- unique(data$date)
   
-  info_html <- paste0(
+  info_html <- str_c(
     "<div style='background: rgba(255,255,255,0.9); padding: 10px; border-radius: 5px; border: 1px solid #ccc;'>",
     "<strong>Participant ", subid, " - Raw GPS</strong><br>",
     "<strong>", nrow(data), "</strong> GPS points<br>",
@@ -256,7 +257,7 @@ create_cluster_map_from_db <- function(subid) {
   data <- query_gps2_db(query)
   
   if (nrow(data) == 0) {
-    stop(paste("No clusters found for participant", subid))
+    stop(str_c("No clusters found for participant ", subid))
   }
   
   return(create_cluster_map_with_geocoding(data, NULL, subid))
@@ -281,10 +282,14 @@ create_cluster_map_with_geocoding <- function(cluster_data, geocoded_data, subid
   data <- apply_location_styling(data)
   
   # Create popups using utility
-  data$popup_content <- sapply(1:nrow(data), function(i) create_cluster_popup(data[i, ]))
+  data <- data |>
+    rowwise() |>
+    mutate(popup_content = create_cluster_popup(pick(everything()))) |>
+    ungroup()
   
   # Create short address labels using utility
-  data$short_address <- create_short_address_labels(data)
+  data <- data |>
+    mutate(short_address = create_short_address_labels(pick(everything())))
   
   # Build map
   map <- create_base_leaflet_map(data)
@@ -321,7 +326,7 @@ create_short_address_labels <- function(data) {
     has_city <- "city" %in% names(row) && !is.na(row$city) && row$city != ""
     
     if (has_road && has_city) {
-      return(paste0(row$road, ", ", row$city))
+      return(str_c(row$road, ", ", row$city))
     } else if (has_road) {
       return(row$road)
     } else if (has_city) {
@@ -329,7 +334,7 @@ create_short_address_labels <- function(data) {
     } else if (has_display_name) {
       return(substr(row$display_name, 1, 50))
     } else {
-      return(paste0("Location ", row$cluster))
+      return(str_c("Location ", row$cluster))
     }
   })
 }

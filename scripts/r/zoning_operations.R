@@ -293,7 +293,7 @@ get_point_zoning <- function(lat, lon) {
     if (nrow(nearest) > 0) {
       cat("Point not in any zone. Nearest zone: ", nearest$zone_code, " (", nearest$distance_m, "m away)\n")
     }
-    return(data.frame())
+    return(tibble())
   }
   
   return(result)

@@ -1,5 +1,7 @@
 # utils/styles.R
 #' Styling and color management for GPS2 visualizations
+library(purrr)
+library(stringr)
 
 GPS2_STYLES <- list(
   location_types = list(
@@ -76,8 +78,8 @@ apply_location_styling <- function(data) {
   # Add styling columns - ensure no names
   data |>
     mutate(
-      marker_color = unname(sapply(location_type, get_location_color)),
-      marker_size = unname(sapply(location_type, get_location_size)),
+      marker_color = map_chr(location_type, get_location_color),
+      marker_size = map_dbl(location_type, get_location_size),
       # Importance scoring for dynamic sizing
       importance_score = scale(total_visits)[,1] + scale(total_duration_hours)[,1],
       marker_size_dynamic = pmax(4, pmin(12, 6 + importance_score * 2))
@@ -90,8 +92,8 @@ create_location_legend_data <- function(data) {
     arrange(match(location_type, c("Routine", "Frequent", "Occasional", "Rare")))
   
   # Create UNNAMED vectors for leaflet
-  colors_vec <- unname(sapply(type_counts$location_type, get_location_color))
-  labels_vec <- paste0(type_counts$location_type, " (", type_counts$n, ")")
+  colors_vec <- map_chr(type_counts$location_type, get_location_color)
+  labels_vec <- str_c(type_counts$location_type, " (", type_counts$n, ")")
   
   list(
     colors = colors_vec,  # Already unnamed

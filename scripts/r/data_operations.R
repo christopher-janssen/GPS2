@@ -201,7 +201,7 @@ cluster_all_participants <- function(eps = NULL, update_existing = FALSE) {
 
 #' Helper: Process all participants for clustering
 process_all_participants_clustering <- function(participants, eps) {
-  all_clusters <- data.frame()
+  all_clusters <- tibble()
   
   for (participant_id in participants) {
     tryCatch({

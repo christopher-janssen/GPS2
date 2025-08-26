@@ -1,28 +1,29 @@
 # utils/popup_builders.R
 #' HTML popup building utilities for GPS2 visualizations
+library(stringr)
 
 #' Create a formatted popup section with title and items
 create_popup_section <- function(title, items = NULL, style = "strong") {
   if (is.null(items) || length(items) == 0) return("")
   
-  content <- paste0("<", style, ">", title, ":</", style, "><br>")
+  content <- str_c("<", style, ">", title, ":</", style, "><br>")
   
   # Handle different item types
   if (is.list(items)) {
     for (name in names(items)) {
       if (!is.na(items[[name]]) && items[[name]] != "") {
-        content <- paste0(content, "• ", name, ": ", items[[name]], "<br>")
+        content <- str_c(content, "• ", name, ": ", items[[name]], "<br>")
       }
     }
   } else {
     for (item in items) {
       if (!is.na(item) && item != "") {
-        content <- paste0(content, "• ", item, "<br>")
+        content <- str_c(content, "• ", item, "<br>")
       }
     }
   }
   
-  return(paste0(content, "<br>"))
+  return(str_c(content, "<br>"))
 }
 
 #' Create address section for cluster popup
@@ -46,11 +47,11 @@ create_address_section <- function(row) {
   }
   
   if (length(city_parts) > 0) {
-    address_items[["City"]] <- paste(city_parts, collapse = ", ")
+    address_items[["City"]] <- str_c(city_parts, collapse = ", ")
   }
   
   if (length(address_items) == 0) {
-    address_items[["Location"]] <- paste0("Cluster ", row$cluster)
+    address_items[["Location"]] <- str_c("Cluster ", row$cluster)
   }
   
   return(create_popup_section("Address", address_items))
@@ -61,7 +62,7 @@ create_visit_pattern_section <- function(row) {
   visit_items <- list(
     "Total visits" = row$total_visits,
     "Days visited" = row$unique_days,
-    "Total time" = paste0(round(row$total_duration_hours, 1), " hours")
+    "Total time" = str_c(round(row$total_duration_hours, 1), " hours")
   )
   
   if ("n_points" %in% names(row)) {
@@ -91,7 +92,7 @@ create_geocoding_section <- function(row) {
   
   if ("geocoding_confidence" %in% names(row) && !is.na(row$geocoding_confidence)) {
     conf_pct <- round(as.numeric(row$geocoding_confidence) * 100)
-    geocoding_items[["Confidence"]] <- paste0(conf_pct, "%")
+    geocoding_items[["Confidence"]] <- str_c(conf_pct, "%")
   }
   
   if ("place_type" %in% names(row) && !is.na(row$place_type)) {
@@ -105,14 +106,14 @@ create_geocoding_section <- function(row) {
 
 #' Create coordinates section
 create_coordinates_section <- function(row) {
-  coords <- paste0(round(row$lat, 4), ", ", round(row$lon, 4))
+  coords <- str_c(round(row$lat, 4), ", ", round(row$lon, 4))
   return(create_popup_section("Coordinates", coords))
 }
 
 #' Main function to create complete cluster popup
 create_cluster_popup <- function(row) {
   # Header
-  header <- paste0(
+  header <- str_c(
     "<strong>Location Cluster ", row$cluster, "</strong><br>",
     "<em>", row$location_type, " location</em><br><br>"
   )
@@ -124,7 +125,7 @@ create_cluster_popup <- function(row) {
   geocoding <- create_geocoding_section(row)
   coords <- create_coordinates_section(row)
   
-  return(paste0(header, address, visits, timeline, geocoding, coords))
+  return(str_c(header, address, visits, timeline, geocoding, coords))
 }
 
 #' Create popup for raw GPS points
@@ -136,18 +137,18 @@ create_gps_popup <- function(row, date_str) {
   )
   
   if ("speed" %in% names(row) && !is.na(row$speed)) {
-    popup_items[["Speed"]] <- paste0(round(row$speed, 1), " mph")
+    popup_items[["Speed"]] <- str_c(round(row$speed, 1), " mph")
   }
   
   if ("duration" %in% names(row) && !is.na(row$duration)) {
-    popup_items[["Duration"]] <- paste0(round(row$duration, 1), " min")
+    popup_items[["Duration"]] <- str_c(round(row$duration, 1), " min")
   }
   
-  popup_items[["Location"]] <- paste0(round(row$lat, 5), ", ", round(row$lon, 5))
+  popup_items[["Location"]] <- str_c(round(row$lat, 5), ", ", round(row$lon, 5))
   
-  content <- paste0("<strong>GPS Point</strong><br>")
+  content <- str_c("<strong>GPS Point</strong><br>")
   for (name in names(popup_items)) {
-    content <- paste0(content, name, ": ", popup_items[[name]], "<br>")
+    content <- str_c(content, name, ": ", popup_items[[name]], "<br>")
   }
   
   return(content)

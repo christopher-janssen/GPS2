@@ -1,9 +1,11 @@
 # utils/validation_utils.R
 #' data validation utilities for GPS2
+library(tibble)
+library(stringr)
 
 #' Create empty cluster result data frame
 create_empty_cluster_result <- function() {
-  data.frame(
+  tibble(
     subid = numeric(0), 
     lat = numeric(0), 
     lon = numeric(0), 
@@ -25,7 +27,7 @@ validate_gps_data <- function(data, required_cols = c("subid", "lat", "lon")) {
   
   missing_cols <- setdiff(required_cols, names(data))
   if (length(missing_cols) > 0) {
-    stop("Missing required columns: ", paste(missing_cols, collapse = ", "))
+    stop("Missing required columns: ", str_c(missing_cols, collapse = ", "))
   }
   
   # Coordinate validation
