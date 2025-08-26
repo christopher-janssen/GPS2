@@ -92,3 +92,6 @@ db_test_output.txt
 **/geocoding_cache/
 **/venue_cache/
 cached_venues.csv
+
+# Claude-Relevant Files
+CLAUDE.md
