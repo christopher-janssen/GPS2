@@ -14,7 +14,7 @@ services:
       - "5432:5432"
     volumes:
       - postgis_data:/var/lib/postgresql/data
-      - /Volumes/jjcurtin/studydata/risk:/research_data:ro
+      - ${RESEARCH_DATA_PATH:-/Volumes/jjcurtin/studydata/risk}:/research_data:ro
       - ./init-scripts:/docker-entrypoint-initdb.d
     restart: unless-stopped
     healthcheck:
