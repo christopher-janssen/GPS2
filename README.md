@@ -19,25 +19,45 @@ A comprehensive spatial analysis system for addiction recovery research that pro
 
 ### Installation
 
-```r
-# Install required R packages
-install.packages(c("tidyverse", "DBI", "RPostgres", "leaflet", "geosphere", "lubridate"))
+```bash
+# First-time setup: Copy and configure environment file
+cp .env.example .env
+# Edit .env to set RESEARCH_DATA_PATH for your operating system
+```
 
-# Bootstrap the GPS2 environment
+```r
+# Bootstrap the entire GPS2 environment (installs packages + sets up containers)
 source("scripts/r/bootstrap.R")
 bootstrap_gps2_environment()
 ```
 
-### Basic Usage
+### Docker Database Management
+
+```bash
+# Start PostGIS and Nominatim containers
+cd docker-postgis && docker-compose up -d
+
+# Connect to database directly
+./scripts/bash/connect_db.sh  # Mac/Linux
+# Windows: Use Docker Desktop GUI or docker exec
+
+# Stop containers when finished
+cd docker-postgis && docker-compose down
+```
+
+### Core Workflow
 
 ```r
-# Load and process GPS data
+# Load GPS data
 source("scripts/r/data_operations.R")
-load_gps_data_to_postgis("GPS/data/tracks.csv")
+load_gps_data_to_postgis("path/to/tracks.csv")
 
 # Run clustering analysis
 source("scripts/r/analysis.R")
-clusters <- analyze_all_participants(eps = 50)
+clusters <- cluster_all_participants_db(eps = 50)
+# Alternative: Use data operations workflow
+source("scripts/r/data_operations.R")
+cluster_all_participants(eps = 50)
 
 # Create visualizations
 source("scripts/r/visualization.R")
@@ -66,24 +86,24 @@ Compliant    Fast Queries        Location ID      Data Only   Classification
 ## Core Components
 
 ### Database Layer (`scripts/r/database.R`)
-- PostGIS spatial database with Docker containerization
-- Automated connection management and health checks
-- Optimized spatial indexes for fast geographic queries
+- Single connection point: `connect_gps2_db()` and `query_gps2_db()`
+- Transaction management with `with_gps2_transaction()`
+- Connection credentials: host=localhost:5432, user=gps2_researcher, db=gps2_geocoding
 
-### Data Processing (`scripts/r/gps_processing.R`, `scripts/r/data_operations.R`)
-- GPS noise filtering and movement classification
-- Batch data insertion with transaction integrity
-- Stationary point identification using speed thresholds
+### Data Processing (`scripts/r/data_operations.R`, `scripts/r/gps_processing.R`) 
+- Main entry point: `load_gps_data_to_postgis()` for CSV import
+- Core function: `process_gps()` for noise filtering and movement classification
+- Batch processing: `insert_gps_batch()` and `insert_cluster_data()`
 
 ### Analysis Engine (`scripts/r/analysis.R`)
-- Duration-based clustering algorithm for meaningful location identification
-- Local Nominatim reverse geocoding for address resolution
-- Scalable processing for large participant cohorts
+- Duration-based clustering: `cluster_stationary_gps_env()` and `cluster_stationary_gps_db()`
+- Cross-day aggregation: `aggregate_daily_clusters()` and `assign_final_clusters()`
+- Batch geocoding: `reverse_geocode_clusters_db()` and `batch_process_geocoding()`
 
 ### Visualization Suite (`scripts/r/visualization.R`)
-- Interactive Leaflet maps with behavioral pattern classification
-- Location type categorization (routine, frequent, occasional, rare)
-- Geocoded address overlays with confidence metrics
+- Main functions: `visualize_gps_db()` and `visualize_gps_env()` for database and environment data
+- Convenience functions: `map_participant_clusters()`, `map_participant_gps()`, `map_participant_geocoded()`
+- Batch processing: `generate_participant_maps()` and `save_map()`
 
 ## Sample Output
 
@@ -99,7 +119,8 @@ GPS2 addresses privacy challenges identified in spatial epidemiology research by
 
 - **Local Processing**: No GPS coordinates transmitted to external services
 - **Container Isolation**: Docker provides process and data isolation
-- **Product Documentation**: All operations logged within controlled environment
+- **Volume Mount Security**: Data accessed via `/research_data` mount (configured via RESEARCH_DATA_PATH in .env)
+- **Wisconsin-Only OSM Data**: Local Nominatim contains only Wisconsin geographic data
 
 ## 🗂️ Project Structure
 
@@ -115,6 +136,11 @@ GPS2/
 │   ├── analysis.R           # Clustering & geocoding
 │   ├── visualization.R      # Mapping functions
 │   └── gps_processing.R     # GPS filtering
+├── scripts/bash/            # Shell utilities
+│   └── connect_db.sh        # Database connection script
+├── utils/                   # Modular utility functions
+├── config/                  # Configuration files
+│   └── gps2_config.R        # Centralized settings
 ├── GPS/data/               # Sample and input data
 ├── documentation/          # Comprehensive guides
 └── maps/                   # Generated visualizations

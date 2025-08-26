@@ -46,18 +46,12 @@ GPS2 is a privacy-compliant spatial analysis system for addiction recovery resea
 
 ## Initial Setup
 
-### 1. Clone Repository and Install Dependencies
+### 1. Environment Configuration
 
-``` r
-# Install required R packages
-install.packages(c(
-  "tidyverse", "DBI", "RPostgres", "leaflet", 
-  "geosphere", "lubridate", "httr", "jsonlite",
-  "htmlwidgets", "here"
-))
-
-# Navigate to GPS2 project directory
-setwd("/path/to/GPS2")
+``` bash
+# First-time setup: Copy and configure environment file
+cp .env.example .env
+# Edit .env to set RESEARCH_DATA_PATH for your operating system
 ```
 
 ### 2. Docker Setup
@@ -73,50 +67,60 @@ docker-compose --version
 ### 3. Environment Bootstrap
 
 ``` r
-# Load and run the bootstrap script
+# Bootstrap the entire GPS2 environment (installs packages + sets up containers)
 source("scripts/r/bootstrap.R")
-
-# This will:
-# - Start Docker containers
-# - Initialize PostGIS database
-# - Create all necessary tables
-# - Verify system functionality
 bootstrap_gps2_environment()
 ```
+
+This single command will:
+
+-   Install all required R packages automatically
+-   Start Docker containers (PostGIS and Nominatim)
+-   Initialize PostGIS database with proper schema
+-   Create all necessary tables
+-   Verify system functionality
 
 The bootstrap process takes 2-3 minutes on first run as Docker downloads images and initializes the spatial database.
 
 ## Data Processing Workflow
 
-### Step 1: Load GPS Data
+### Step 1: Docker Database Management
 
-``` r
-# Load core processing functions
-source("scripts/r/gps_processing.R")
-source("scripts/r/data_operations.R")
+``` bash
+# Start PostGIS and Nominatim containers
+cd docker-postgis && docker-compose up -d
 
-# Example: Load sample data
-gps_raw <- read_csv("GPS2/data/sample_data.csv")
+# Connect to database directly
+./scripts/bash/connect_db.sh  # Mac/Linux
+# Windows: Use Docker Desktop GUI or docker exec -it gps2_geocoding psql -U gps2_researcher -d gps2_geocoding
 
-# Process GPS data (filters noise, calculates speeds, identifies stationary points)
-gps_processed <- process_gps(gps_raw)
-stationary_data <- get_stationary(gps_processed)
-
-# Load directly into PostGIS database
-load_gps_data_to_postgis("GPS2/data/sample_data.csv", clear_existing = TRUE)
+# Stop containers when finished
+cd docker-postgis && docker-compose down
 ```
 
-### Step 2: Cluster Analysis
+### Step 2: Load GPS Data
+
+``` r
+# Load GPS data using main entry point
+source("scripts/r/data_operations.R")
+load_gps_data_to_postgis("data/sample_data.csv")
+
+# Alternative: Complete workflow with clustering and geocoding
+process_gps_data_complete("data/sample_data.csv", run_clustering = TRUE, run_geocoding = TRUE)
+```
+
+### Step 3: Cluster Analysis
 
 ``` r
 # Load analysis functions
 source("scripts/r/analysis.R")
 
 # Run clustering for all participants (eps = radius in meters)
-all_clusters <- analyze_all_participants(eps = 50)
+all_clusters <- cluster_all_participants_db(eps = 50)
 
-# Insert cluster results into database
-insert_cluster_data(all_clusters, clear_existing = TRUE)
+# Alternative: Use data operations workflow (includes database insertion)
+source("scripts/r/data_operations.R")
+cluster_all_participants(eps = 50)
 
 # Check clustering results
 source("scripts/r/database.R")
@@ -124,22 +128,22 @@ summary <- get_database_summary()
 print(summary)
 ```
 
-### Step 3: Reverse Geocoding (Optional)
+### Step 4: Reverse Geocoding (Optional)
 
 The system includes local geocoding capabilities that convert GPS coordinates to addresses without transmitting data to external services.
 
 ``` r
 # Wait for Nominatim service to be ready (first run takes 10-15 minutes)
-test_nominatim_connection()
+test_nominatim_with_retry()
 
 # Run reverse geocoding for all clusters
-reverse_geocode_clusters()
+reverse_geocode_clusters_db()
 
 # Check geocoding success rates
-coverage <- analyze_geocoding_coverage()
+coverage <- analyze_geocoding_coverage_db()
 ```
 
-### Step 4: Visualization and Analysis
+### Step 5: Visualization and Analysis
 
 ``` r
 # Load visualization functions
@@ -168,28 +172,37 @@ generate_participant_maps(
 ``` r
 source("scripts/r/database.R")
 
-# Basic connectivity
-check_gps2_system()                    # System health check
-con <- connect_gps2_db()               # Manual connection
-disconnect_gps2_db(con)                # Safe disconnect
+# Single connection point
+con <- connect_gps2_db()               # Main connection function
+result <- query_gps2_db("SELECT * FROM gps2.participants LIMIT 5")
 
-# Data retrieval
-get_participant_data(19)               # GPS points for participant
-get_participant_clusters(19)           # Cluster results for participant
-get_database_summary()                 # Overall system statistics
+# Transaction management
+with_gps2_transaction({
+  # Multiple database operations here
+  insert_gps_batch(gps_data)
+  insert_cluster_data(cluster_results)
+})
+
+# System health checks
+check_gps2_system()                    # Verify containers and connections
 ```
 
 ### Data Processing
 
 ``` r
+source("scripts/r/data_operations.R")
 source("scripts/r/gps_processing.R")
 
-# GPS filtering and classification
-process_gps(gps_data, 
-           speed_threshold_mph = 100,    # Remove GPS errors
-           stationary_threshold_mph = 4)  # Define stationary vs moving
+# Main entry point for CSV import
+load_gps_data_to_postgis("path/to/tracks.csv")
 
+# Core GPS processing function
+process_gps(gps_data)                  # Noise filtering and movement classification
 get_stationary(processed_data)         # Extract stationary points
+
+# Batch processing functions
+insert_gps_batch(gps_data)            # Efficient batch insertion
+insert_cluster_data(cluster_results)   # Insert clustering results
 ```
 
 ### Analysis Functions
@@ -197,14 +210,18 @@ get_stationary(processed_data)         # Extract stationary points
 ``` r
 source("scripts/r/analysis.R")
 
-# Clustering
-cluster_stationary_gps(gps_data, participant_id, eps = 50)
-analyze_all_participants(eps = 50, participant_ids = c(19, 56))
+# Duration-based clustering (environment version - data already loaded)
+cluster_stationary_gps_env(gps_data, participant_id, eps = 50)
+
+# Duration-based clustering (database version - queries database)
+cluster_stationary_gps_db(participant_id, eps = 50)
+cluster_all_participants_db(eps = 50)  # Process all participants
 
 # Geocoding
-test_nominatim_connection()
-reverse_geocode_clusters(participant_ids = c(19, 56))
-get_geocoded_clusters(participant_ids = 19)
+test_nominatim_with_retry()            # Test with retry logic
+reverse_geocode_clusters_db(participant_ids = c(19, 56))
+get_geocoded_clusters_db(participant_ids = 19)
+analyze_geocoding_coverage_db()        # Success rate analysis
 ```
 
 ### Visualization
@@ -212,26 +229,58 @@ get_geocoded_clusters(participant_ids = 19)
 ``` r
 source("scripts/r/visualization.R")
 
-# Direct PostGIS mapping (recommended)
-map_participant_clusters(19)           # Cluster map from database
-map_participant_geocoded(19)           # Geocoded location map
-map_participant_gps(19)                # Raw GPS point map
+# Main visualization functions
+visualize_gps_db(19, "clusters")       # Database version - clusters
+visualize_gps_db(19, "raw")            # Database version - raw GPS
+visualize_gps_env(data, 19, "clusters") # Environment version - from loaded data
 
-# Manual data + mapping
-cluster_data <- get_participant_clusters(19)
-map_cluster_representatives(cluster_data, participant_id = 19)
+# Convenience functions
+map_participant_clusters(19)           # Quick cluster map
+map_participant_gps(19)                # Quick GPS map  
+map_participant_geocoded(19)           # Same as clusters (geocoding included)
+
+# Batch processing
+generate_participant_maps(c(19, 56), "clusters", save_maps = TRUE)
+
+# Utilities
+get_participant_summary(19)            # Statistics summary
+save_map(map_object, "filename")       # Save to HTML file
 ```
 
 ## Advanced Usage
 
+### Configuration System
+
+All settings are centralized in `config/gps2_config.R`:
+
+``` r
+source("config/gps2_config.R")
+config <- get_config()
+
+# View current configuration
+print(config$clustering)  # eps=50, min_duration=30min
+print(config$speed)       # stationary=4mph, max=100mph
+print(config$database)    # batch sizes and timeouts
+```
+
 ### Custom Clustering Parameters
 
 ``` r
-# More restrictive clustering (smaller radius, longer duration requirement)
-clusters_strict <- analyze_all_participants(eps = 25)
+# More restrictive clustering (smaller radius)
+clusters_strict <- cluster_all_participants_db(eps = 25)
 
 # More permissive clustering (larger radius)
-clusters_loose <- analyze_all_participants(eps = 100)
+clusters_loose <- cluster_all_participants_db(eps = 100)
+```
+
+### Utility Functions
+
+``` r
+# Load all utilities at once
+source("utils/load_all_utils.R")
+load_gps2_utils()  # Auto-sources all utility files
+
+# Individual utility modules available in utils/ directory
 ```
 
 ### Custom Database Queries
@@ -271,8 +320,9 @@ for (file in gps_files) {
 ### Data Protection Features
 
 -   **Local processing**: All GPS coordinates remain within your controlled infrastructure
--   **No external transmissions**: Geocoding uses local OpenStreetMap data
+-   **No external transmissions**: Geocoding uses local OpenStreetMap data (Wisconsin-only)
 -   **Isolated environment**: Docker containers provide process isolation
+-   **Volume mount security**: Data accessed via `/research_data` mount (configured via RESEARCH_DATA_PATH in .env)
 -   **Audit trail**: All database operations are logged
 
 ### For External Collaborators
@@ -292,10 +342,10 @@ If sharing this system with external collaborators:
 
 ``` bash
 # Check Docker status
+cd docker-postgis
 docker-compose ps
 
 # Restart services
-cd docker-postgis
 docker-compose down -v
 docker-compose up -d
 ```
@@ -306,15 +356,16 @@ docker-compose up -d
 # Verify system status
 check_gps2_system()
 
-# Manual connection test
-test_connection()
+# Test connection directly
+con <- connect_gps2_db()
+DBI::dbGetInfo(con)
 ```
 
 **Nominatim geocoding failures:**
 
 ``` r
 # Test service availability
-test_nominatim_connection()
+test_nominatim_with_retry()  # Tests with automatic retry logic
 
 # Check container logs
 # In terminal: docker-compose logs nominatim
@@ -326,7 +377,7 @@ test_nominatim_connection()
 # Process data in smaller batches
 participant_batches <- split(participant_ids, ceiling(seq_along(participant_ids)/10))
 for (batch in participant_batches) {
-  analyze_all_participants(participant_ids = batch)
+  cluster_all_participants_db(participant_ids = batch)
 }
 ```
 
@@ -337,8 +388,8 @@ for (batch in participant_batches) {
 **For faster geocoding:**
 
 ``` r
-# Reduce delays for local service (be careful not to overwhelm system)
-reverse_geocode_clusters(delay_seconds = 0.01, batch_size = 50)
+# Adjust batch processing (be careful not to overwhelm system)
+reverse_geocode_clusters_db(batch_size = 50)  # Larger batches for faster processing
 ```
 
 ## Project Structure
@@ -355,10 +406,17 @@ GPS2/
 │   ├── data_operations.R            # Data insertion/updates
 │   ├── analysis.R                   # Clustering & geocoding
 │   ├── visualization.R              # Mapping functions
-│   ├── gps_processing.R             # GPS filtering
-│   └── global_setup.R               # Path configuration
+│   └── gps_processing.R             # GPS filtering
+├── scripts/bash/
+│   └── connect_db.sh                # Database connection script
+├── utils/                           # Modular utility functions
+│   └── load_all_utils.R             # Auto-loader for utilities
+├── config/
+│   └── gps2_config.R                # Centralized configuration
 ├── GPS/data/
-│   └── sample_data.csv                   # Sample GPS data
+│   └── sample_data.csv              # Sample GPS data
+├── documentation/
+│   └── gps2_guide.qmd               # This comprehensive guide
 └── maps/                            # Generated visualizations
 ```
 
