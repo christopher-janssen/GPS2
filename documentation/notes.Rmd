@@ -77,3 +77,37 @@ to do:
 - successfully tested with Madison WI test data (downtown, campus, capitol locations)
 - established R ↔ PostGIS bridge for future GPS data integration
 - next: move CSV-based analysis workflows into secure local database for API caching system
+
+## 8/7/2025
+
+- huge organization overhaul, verified new function organization and workflow setup
+- added usage and setup guide for project
+- updated/cleaned sample data for tutorial 
+- deleted old QMD files, moved api_documentation to documentation folder
+- update file paths in gps2_guide.qmd
+
+## 8/13/2025
+
+- added zoning_operations.R and added zoning visualizations
+
+## 8/19/2025
+
+- improved visualization functions and display
+- similar improvement to analysis script
+
+## 8/22/2025
+
+- added /utils folder to shorten functions + clean scripts
+
+## 8/25/2025
+
+- updated code for tidyverse compliance
+
+## 8/26/2025
+
+- tested function validity and security, moved testing scripts to archive
+- added testing scripts + documentation --> moved to archive
+- updated docker yaml to receive an environment path that can be set through also newly created env file for handling of robust filepath naming that is OS based
+- updated documentation to reflect updated code
+- updated package loading to be lab/tidyverse best practices
+- updated function documentation to roxygen standards (eventual package creation?)
