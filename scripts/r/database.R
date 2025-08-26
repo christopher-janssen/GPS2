@@ -344,14 +344,14 @@ check_gps2_system <- function() {
     
     # Schema check
     tables <- dbGetQuery(con, "SELECT COUNT(*) as count FROM information_schema.tables WHERE table_schema = 'gps2';")
-    cat("GPS2 schema tables:", tables$count, "\n")
+    cat("GPS2 schema tables:", as.integer(tables$count), "\n")
     
     # Data summary
     summary <- get_database_summary()
-    cat("GPS points:", format(summary$total_points, big.mark = ","), "\n")
-    cat("Participants:", summary$participants, "\n")
-    cat("Clusters:", summary$clusters, "\n")
-    cat("Geocoded:", summary$geocoded, "\n")
+    cat("GPS points:", format(as.integer(summary$total_points), big.mark = ","), "\n")
+    cat("Participants:", as.integer(summary$participants), "\n")
+    cat("Clusters:", as.integer(summary$clusters), "\n")
+    cat("Geocoded:", as.integer(summary$geocoded), "\n")
     
     disconnect_gps2_db(con)
     cat("System status: ✅ All systems operational\n")

@@ -12,7 +12,8 @@ editor:
 
 ## Introduction
 
-This QMD is designed to orient one to our decision in setting the stationary threshold at 4mph.
+This QMD is designed to orient one to our decision in setting the
+stationary threshold at 4mph.
 
 ## Source Scripts
 
@@ -20,61 +21,94 @@ This QMD is designed to orient one to our decision in setting the stationary thr
 #| message: false
 #| warning: false
 
-options(conflicts.policy = "depends.ok") 
-library(tidyverse)
-library(scales, exclude = c("discard", "col_factor"))
-library(datasets, exclude = "penguins")
+source("scripts/r/global_setup.R")
 library(htmlwidgets)
 
-source("scripts/r/global_setup.R")
-source("scripts/r/gps_filtering.R")
-source("scripts/r/map_gps.R")
+ggplot2::theme_set(theme_bw()) 
+
+# Bootstrap GPS2 environment with modern functions
+source("scripts/r/bootstrap.R")
+bootstrap_gps2_environment()
+source("scripts/r/gps_processing.R")
 ```
 
-```{r load-data-splice}
-gps_splice <- read_csv(here::here(path_processed, "gps2_splice.csv"), show_col_types = FALSE)
+```{r load-raw-data}
+# Load raw GPS data from research drive
+raw_gps <- read_csv(here::here(path_shared, "gps.csv"), show_col_types = FALSE)
 ```
 
-```{r 2mph}
-stationary_2mph <- process_gps(gps_data = gps_splice,
-                                 speed_threshold_mph = 100,
-                                 stationary_threshold_mph = 2) |> 
-  get_stationary()
+```{r}
+mph_2 <- process_gps(gps_data = raw_gps,
+                    stationary_threshold_mph = 2)
+
+mph_4 <- process_gps(gps_data = raw_gps)
+
+mph_6 <- process_gps(gps_data = raw_gps,
+                    stationary_threshold_mph = 6)
 ```
 
-```{r 4mph}
-stationary_4mph <- process_gps(gps_data = gps_splice,
-                                 speed_threshold_mph = 100,
-                                 stationary_threshold_mph = 4) |> 
-  get_stationary()
+## Visualization of Stationary Parameter Differences
+
+```{r visualize-differences}
+# Compare stationary points counts
+stationary_counts <- data.frame(
+  threshold = c("2 mph", "4 mph", "6 mph"),
+  count = c(
+    sum(mph_2$movement_state == "stationary", na.rm = TRUE),
+    sum(mph_4$movement_state == "stationary", na.rm = TRUE), 
+    sum(mph_6$movement_state == "stationary", na.rm = TRUE)
+  )
+)
+
+# Summary table
+knitr::kable(stationary_counts, 
+             caption = "Stationary Points Count by Speed Threshold")
 ```
 
-```{r compare-cutoffs}
-map_gps(stationary_2mph)
+## Speed Distribution Analysis
 
-map_gps(stationary_4mph)
+```{r speed-distributions}
+# Combine all datasets with threshold labels
+speed_data <- bind_rows(
+  mph_2 |> mutate(threshold = "2 mph"),
+  mph_4 |> mutate(threshold = "4 mph"), 
+  mph_6 |> mutate(threshold = "6 mph")
+) |>
+  filter(speed <= 10) # Focus on lower speeds for better visualization
+
+# Create histogram with cutoff lines
+ggplot(speed_data, aes(x = speed)) +
+  geom_histogram(aes(fill = movement_state), bins = 50, alpha = 0.7) +
+  geom_vline(data = data.frame(threshold = c("2 mph", "4 mph", "6 mph"), 
+                              cutoff = c(2, 4, 6)),
+            aes(xintercept = cutoff), 
+            color = "red", linetype = "dashed", size = 1) +
+  facet_wrap(~threshold, ncol = 1) +
+  scale_fill_manual(values = c("stationary" = "steelblue", "transition" = "orange")) +
+  labs(title = "Speed Distributions with Stationary Cutoff Points",
+       subtitle = "Red dashed lines show stationary thresholds",
+       x = "Speed (mph)",
+       y = "Count",
+       fill = "Movement State") +
+  theme(legend.position = "bottom")
 ```
 
-```{r save-maps-func}
-save_leaflet_map <- function(map, filename) {
-  # ensure filename has .html extension
-  if (!grepl("\\.html$", filename)) {
-    filename <- paste0(filename, ".html")
-  }
-  
-  # create full path to maps folder
-  filepath <- file.path("maps", filename)
-  
-  # save the map
-  saveWidget(map, file = filepath, selfcontained = TRUE)
-  
-  # confirmation
-  cat("Map saved to:", filepath, "\n")
-}
+```{r density-plots}
+# Density plots for better distribution visualization
+ggplot(speed_data, aes(x = speed, fill = movement_state)) +
+  geom_density(alpha = 0.6) +
+  geom_vline(data = data.frame(threshold = c("2 mph", "4 mph", "6 mph"), 
+                              cutoff = c(2, 4, 6)),
+            aes(xintercept = cutoff), 
+            color = "red", linetype = "dashed", size = 1) +
+  facet_wrap(~threshold, ncol = 1) +
+  scale_fill_manual(values = c("stationary" = "blue", "transition" = "orange")) +
+  labs(title = "Speed Density Distributions with Stationary Cutoff Points",
+       subtitle = "Red dashed lines show stationary thresholds",
+       x = "Speed (mph)",
+       y = "Density",
+       fill = "Movement State") +
+  theme(legend.position = "bottom")
 ```
 
-```{r save-maps}
-map_gps(stationary_2mph) |> save_leaflet_map("2mph")
-map_gps(stationary_4mph) |> save_leaflet_map("4mph")
-```
 
