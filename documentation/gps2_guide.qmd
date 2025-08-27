@@ -277,10 +277,10 @@ clusters_loose <- cluster_all_participants_db(eps = 100)
 
 ``` r
 # Load all utilities at once
-source("utils/load_all_utils.R")
+source("scripts/utils/load_utils.R")
 load_gps2_utils()  # Auto-sources all utility files
 
-# Individual utility modules available in utils/ directory
+# Individual utility modules available in scripts/utils/ directory
 ```
 
 ### Custom Database Queries

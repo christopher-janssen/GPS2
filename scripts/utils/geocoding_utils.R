@@ -1,4 +1,4 @@
-# utils/geocoding_utils.R
+# scripts/utils/geocoding_utils.R
 #' geocoding response processing utilities
 
 #' Extract address component with fallback options

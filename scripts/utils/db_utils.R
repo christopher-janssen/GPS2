@@ -1,4 +1,4 @@
-# utils/db_utils.R
+# scripts/utils/db_utils.R
 #' Database utility functions for GPS2
 
 #' Execute function within database transaction with proper error handling

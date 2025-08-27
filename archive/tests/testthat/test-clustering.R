@@ -13,13 +13,13 @@ if (!file.exists("scripts/r/analysis.R")) {
 # Source the functions being tested (avoid global_setup conflicts)
 source("config/gps2_config.R")
 source("scripts/r/database.R")
-source("utils/validation_utils.R")
+source("scripts/utils/validation_utils.R")
 source("scripts/r/gps_processing.R")
 
 # Load utils manually
-source("utils/db_utils.R")
-source("utils/geocoding_utils.R") 
-source("utils/query_builders.R")
+source("scripts/utils/db_utils.R")
+source("scripts/utils/geocoding_utils.R") 
+source("scripts/utils/query_builders.R")
 
 # Load analysis functions with conflict suppression
 suppressMessages({

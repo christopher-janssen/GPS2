@@ -1,13 +1,15 @@
-# utils/load_utils.R
+# scripts/utils/load_utils.R
 #' Load all GPS2 utility functions
 #'
 #' @description
-#' Sources all utility files in the utils/ directory except this loader file.
+#' Sources all utility files in the scripts/utils/ directory except this
+#' loader file.
 #' Uses purrr::walk() for functional iteration with error handling.
 #' Provides console feedback on loading success/failure.
 #'
 #' @details
-#' This function automatically discovers and loads all .R files in the utils/
+#' This function automatically discovers and loads all .R files in the
+#' scripts/utils/
 #' directory. It excludes itself (load_utils.R) to prevent circular loading.
 #' Loading failures are caught and reported but don't stop the process.
 #'
@@ -21,7 +23,7 @@
 #'
 #' @export
 load_gps2_utils <- function() {
-  utils_dir <- here::here("utils")
+  utils_dir <- here::here("scripts", "utils")
   
   # Source all utility files except this loader
   util_files <- list.files(utils_dir, pattern = "*.R", full.names = TRUE)

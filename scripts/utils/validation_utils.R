@@ -1,4 +1,4 @@
-# utils/validation_utils.R
+# scripts/utils/validation_utils.R
 #' data validation utilities for GPS2
 # tibble and stringr loaded via tidyverse in global_setup.R
 

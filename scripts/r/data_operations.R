@@ -420,6 +420,78 @@ load_multiple_gps_files <- function(file_pattern = "*.csv", data_directory = "da
   return(total_inserted)
 }
 
+#' Load raw GPS data from dataframe to PostGIS database
+#'
+#' @description
+#' Loads unprocessed GPS data directly from a dataframe into the gps_raw_points table.
+#' Does not apply any filtering, processing, or movement classification.
+#'
+#' @param gps_dataframe Data frame containing raw GPS data with columns:
+#'   subid, lat, lon, time, sgmnt_type
+#' @param clear_existing Logical whether to clear existing raw data
+#'   before loading new data. Default: FALSE
+#'
+#' @return Integer number of raw GPS points successfully inserted
+#'
+#' @examples
+#' \dontrun{
+#' # Load raw GPS data from dataframe
+#' points_loaded <- load_raw_gps_from_df(raw_gps)
+#' 
+#' # Replace existing raw data
+#' points_loaded <- load_raw_gps_from_df(raw_gps, clear_existing = TRUE)
+#' }
+#'
+#' @export
+load_raw_gps_from_df <- function(gps_dataframe, clear_existing = FALSE) {
+  cat("Loading", nrow(gps_dataframe), "raw GPS points from dataframe...\n")
+  
+  # Validate required columns
+  validate_gps_data(gps_dataframe, c("subid", "lat", "lon", "time", "sgmnt_type"))
+  
+  # Clear existing if requested
+  if (clear_existing) {
+    cat("Clearing existing raw data...\n")
+    execute_gps2_db("DELETE FROM gps2.gps_raw_points WHERE subid != 999;")
+  }
+  
+  # Prepare for insertion (no processing)
+  gps_prepared <- gps_dataframe |>
+    select(subid, lat, lon, time, sgmnt_type)
+  
+  # Insert using batch processing
+  total_inserted <- batch_insert_with_progress(
+    gps_prepared,
+    insert_raw_gps_batch,
+    operation_name = "Inserting raw GPS points"
+  )
+  
+  cat("✅ Successfully inserted", total_inserted, "raw GPS points\n")
+  return(total_inserted)
+}
+
+#' Helper: Insert raw GPS batch to database
+insert_raw_gps_batch <- function(con, batch) {
+  
+  # Create vectorized insert values
+  batch_values <- paste0(
+    "(", batch$subid, ", ",
+    "ST_SetSRID(ST_MakePoint(", batch$lon, ", ", batch$lat, "), 4326), ",
+    batch$lat, ", ", batch$lon, ", ",
+    "'", batch$time, "', ",
+    "'", batch$sgmnt_type, "')"
+  )
+  
+  insert_sql <- paste0(
+    "INSERT INTO gps2.gps_raw_points ",
+    "(subid, location, lat, lon, time, sgmnt_type) VALUES ",
+    paste(batch_values, collapse = ", "), 
+    " ON CONFLICT (subid, time, lat, lon) DO NOTHING;"
+  )
+  
+  dbExecute(con, insert_sql)
+}
+
 #' Complete end-to-end GPS processing workflow
 #'
 #' @description

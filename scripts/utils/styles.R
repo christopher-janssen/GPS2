@@ -1,4 +1,4 @@
-# utils/styles.R
+# scripts/utils/styles.R
 #' Styling and color management for GPS2 visualizations
 # purrr and stringr loaded via tidyverse in global_setup.R
 

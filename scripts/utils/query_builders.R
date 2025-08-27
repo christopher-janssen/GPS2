@@ -1,4 +1,4 @@
-# utils/query_builders.R
+# scripts/utils/query_builders.R
 #' SQL query building utilities for GPS2
 
 #' Build participant filter clause

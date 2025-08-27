@@ -5,12 +5,12 @@ library(testthat)
 library(dplyr)
 
 # Set working directory for tests
-if (!file.exists("utils/validation_utils.R")) {
+if (!file.exists("scripts/utils/validation_utils.R")) {
   setwd(here::here())
 }
 
 # Source the functions being tested
-source("utils/validation_utils.R")
+source("scripts/utils/validation_utils.R")
 
 test_that("validate_gps_data handles malicious input", {
   # SQL injection attempts in column names (hypothetical attack)

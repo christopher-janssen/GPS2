@@ -1,4 +1,4 @@
-# utils/popup_builders.R
+# scripts/utils/popup_builders.R
 #' HTML popup building utilities for GPS2 visualizations
 # stringr loaded via tidyverse in global_setup.R
 

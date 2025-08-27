@@ -7,7 +7,7 @@ library(lubridate)
 
 # Source the functions being tested
 source(here::here("scripts/r/gps_processing.R"))
-source(here::here("utils/validation_utils.R"))
+source(here::here("scripts/utils/validation_utils.R"))
 
 test_that("process_gps handles valid GPS data", {
   test_data <- create_test_gps_data(n_points = 5)

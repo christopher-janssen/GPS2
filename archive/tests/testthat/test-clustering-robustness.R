@@ -12,7 +12,7 @@ if (!file.exists("scripts/r/analysis.R")) {
 
 # Load only essential functions for clustering tests
 source("config/gps2_config.R")
-source("utils/validation_utils.R")
+source("scripts/utils/validation_utils.R")
 
 # Load clustering functions manually (skip global_setup.R)
 library(httr, quietly = TRUE)

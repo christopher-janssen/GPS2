@@ -284,8 +284,9 @@ get_nearby_points <- function(lat, lon, radius_meters = 100) {
 #' @export
 get_database_summary <- function() {
   list(
-    total_points = query_gps2_db("SELECT COUNT(*) as count FROM gps2.gps_stationary_points;")$count,
-    participants = query_gps2_db("SELECT COUNT(DISTINCT subid) as count FROM gps2.gps_stationary_points;")$count,
+    raw_points = query_gps2_db("SELECT COUNT(*) as count FROM gps2.gps_raw_points WHERE subid != 999;")$count,
+    total_points = query_gps2_db("SELECT COUNT(*) as count FROM gps2.gps_stationary_points WHERE subid != 999;")$count,
+    participants = query_gps2_db("SELECT COUNT(DISTINCT subid) as count FROM gps2.gps_stationary_points WHERE subid != 999;")$count,
     clusters = query_gps2_db("SELECT COUNT(*) as count FROM gps2.location_clusters;")$count,
     geocoded = query_gps2_db("SELECT COUNT(*) as count FROM gps2.cluster_geocoding WHERE display_name IS NOT NULL;")$count
   )
@@ -348,7 +349,8 @@ check_gps2_system <- function() {
     
     # Data summary
     summary <- get_database_summary()
-    cat("GPS points:", format(as.integer(summary$total_points), big.mark = ","), "\n")
+    cat("Raw GPS points:", format(as.integer(summary$raw_points), big.mark = ","), "\n")
+    cat("Processed GPS points:", format(as.integer(summary$total_points), big.mark = ","), "\n")
     cat("Participants:", as.integer(summary$participants), "\n")
     cat("Clusters:", as.integer(summary$clusters), "\n")
     cat("Geocoded:", as.integer(summary$geocoded), "\n")
