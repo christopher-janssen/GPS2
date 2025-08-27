@@ -59,6 +59,22 @@ CREATE TABLE gps2.location_clusters (
     UNIQUE(subid, cluster_id)
 );
 
+-- Raw GPS data table (unprocessed)
+CREATE TABLE gps2.gps_raw_points (
+    id SERIAL PRIMARY KEY,
+    subid INTEGER NOT NULL,
+    location GEOMETRY(POINT, 4326) NOT NULL,
+    lat NUMERIC(10, 7) NOT NULL,
+    lon NUMERIC(10, 7) NOT NULL,
+    time TIMESTAMP WITH TIME ZONE NOT NULL,
+    sgmnt_type VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    -- Constraints
+    CONSTRAINT valid_raw_coordinates CHECK (lat BETWEEN -90 AND 90 AND lon BETWEEN -180 AND 180),
+    UNIQUE(subid, time, lat, lon)
+);
+
 -- Geocoding results table
 CREATE TABLE gps2.cluster_geocoding (
     id SERIAL PRIMARY KEY,
@@ -90,6 +106,11 @@ CREATE INDEX idx_gps_stationary_location ON gps2.gps_stationary_points USING GIS
 CREATE INDEX idx_gps_stationary_subid_date ON gps2.gps_stationary_points (subid, date_observed);
 CREATE INDEX idx_gps_stationary_dttm ON gps2.gps_stationary_points (dttm_obs);
 CREATE INDEX idx_gps_stationary_subid ON gps2.gps_stationary_points (subid);
+
+CREATE INDEX idx_gps_raw_location ON gps2.gps_raw_points USING GIST (location);
+CREATE INDEX idx_gps_raw_subid ON gps2.gps_raw_points (subid);
+CREATE INDEX idx_gps_raw_time ON gps2.gps_raw_points (time);
+CREATE INDEX idx_gps_raw_sgmnt_type ON gps2.gps_raw_points (sgmnt_type);
 
 CREATE INDEX idx_clusters_location ON gps2.location_clusters USING GIST (location);
 CREATE INDEX idx_clusters_subid ON gps2.location_clusters (subid);
