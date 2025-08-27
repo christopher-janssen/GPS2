@@ -22,14 +22,14 @@ stationary threshold at 4mph.
 #| warning: false
 
 source("scripts/r/global_setup.R")
+source("scripts/r/gps_processing.R")
+source("scripts/r/bootstrap.R")
 library(htmlwidgets)
 
 ggplot2::theme_set(theme_bw()) 
 
-# Bootstrap GPS2 environment with modern functions
-source("scripts/r/bootstrap.R")
+# Bootstrap GPS2 environment
 bootstrap_gps2_environment()
-source("scripts/r/gps_processing.R")
 ```
 
 ```{r load-raw-data}
