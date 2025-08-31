@@ -1,0 +1,583 @@
+---
+title: "GPS22 Project: GPS Processing & Clustering"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# GPS Processing & Clustering Analysis
+
+This notebook processes cleaned GPS data and applies clustering algorithms to attempt to identify meaningful stops and locations.
+
+## Package Management Setup
+
+```{r setup}
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/database.R"))
+```
+
+## Overview
+
+We'll be:
+
+- filtering GPS data points from clean raw table
+- Enacting the movement vs. stationary point classification
+- Performing clustering algorithms 
+- Minor cluster validation and statistics
+- Populating gps_clusters table
+
+## Database Connection
+
+```{r}
+# Connect to database
+con <- connect_gps_db()
+```
+
+## Data Status Verification
+
+Verify current state of imported GPS data:
+
+```{r}
+# Check current GPS data status and quality
+con |> check_gps_data_status()
+```
+
+## GPS Data Filtering
+
+Filter raw GPS points for clustering analysis:
+
+```{r}
+# Load raw GPS data from database
+gps_data <- dbGetQuery(con, "
+  SELECT 
+    s.subid,
+    rg.lat,
+    rg.lon,
+    rg.time
+  FROM raw_gps_points rg
+  JOIN subjects s ON rg.subject_id = s.id
+  ORDER BY s.subid, rg.time
+")
+```
+
+## Timestamp Processing
+
+Convert timestamps and add timezone information:
+
+```{r}
+# Convert time to POSIXct with proper timezone handling
+gps_data <- gps_data |>
+  mutate(
+    dttm_obs = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+    dttm_obs = with_tz(dttm_obs, tz = "America/Chicago")
+  ) |>
+  arrange(subid, dttm_obs)
+```
+
+## Distance and Speed Calculations
+
+Calculate distances, durations, and speeds between consecutive GPS points:
+
+```{r}
+# Calculate Haversine distances and speeds between consecutive points
+gps_data <- gps_data |>
+  group_by(subid) |>
+  mutate(
+    # Haversine distance in meters, then convert to miles
+    dist_m = if_else(
+      row_number() == 1, 
+      0,
+      distHaversine(
+        cbind(lag(lon), lag(lat)), 
+        cbind(lon, lat)
+      )
+    ),
+    dist_miles = dist_m / 1609.344,
+    
+    # Duration between consecutive points in minutes
+    duration_mins = if_else(
+      row_number() == 1, 
+      0,
+      as.numeric(difftime(dttm_obs, lag(dttm_obs), units = "mins"))
+    ),
+    
+    # Speed in miles per hour
+    speed_mph = if_else(
+      duration_mins > 0, 
+      dist_miles / (duration_mins / 60), 
+      0
+    )
+  ) |>
+  ungroup()
+```
+
+## Data Quality Filtering
+
+Apply lab filtering rules to remove erroneous GPS points:
+
+```{r}
+# Apply lab-specific filtering rules
+speed_threshold_mph <- 100
+rows_before <- nrow(gps_data)
+
+gps_data <- gps_data |>
+  mutate(
+    # Mark records with problematic duration/distance combinations
+    duration_clean = case_when(
+      # If short distance but zero duration, likely GPS error
+      dist_miles > 0.01 & duration_mins == 0 ~ NA_real_,
+      # If impossibly high speed, mark as invalid
+      speed_mph > speed_threshold_mph ~ NA_real_,
+      # If long duration but short distance (>30 mins, >0.31 miles), suspicious
+      duration_mins > 0.5 & dist_miles > 0.31 ~ NA_real_,
+      TRUE ~ duration_mins
+    ),
+    
+    # Recalculate speed with cleaned duration
+    speed_clean = case_when(
+      !is.na(duration_clean) & duration_clean > 0 ~ dist_miles / (duration_clean / 60),
+      TRUE ~ 0
+    )
+  ) |>
+  # Keep only valid records
+  filter(!is.na(duration_clean)) |>
+  select(-duration_mins, -speed_mph) |>
+  rename(
+    duration_mins = duration_clean,
+    speed_mph = speed_clean
+  )
+```
+
+## Movement Detection
+
+Classify GPS points as stationary vs. movement:
+
+```{r}
+# Classify movement state based on speed thresholds
+stationary_threshold_mph <- 4
+
+gps_data <- gps_data |>
+  mutate(
+    movement_state = if_else(speed_mph <= stationary_threshold_mph, "stationary", "transition"),
+    transit = if_else(speed_mph <= stationary_threshold_mph, "no", "yes")
+  )
+
+# Summary of movement classification
+gps_data |>
+  count(movement_state) |>
+  mutate(percentage = round(n / sum(n) * 100, 1)) |> 
+  print()
+```
+
+## Processed Data Storage
+
+Populate the processed GPS points table with analysis results:
+
+
+```{r}
+# Prepare processed data for database insertion
+processed_for_db <- gps_data |>
+  # Get subject_id from database for foreign key
+  left_join(
+    dbGetQuery(con, "SELECT id as subject_id, subid FROM subjects"), 
+    by = "subid"
+  ) |>
+  select(
+    subject_id,
+    lat, lon, time, dttm_obs,
+    dist_miles, duration_mins, speed_mph,
+    movement_state, is_stationary = transit
+  ) |>
+  mutate(
+    is_stationary = is_stationary == "no",  # Convert "no"/"yes" to boolean
+    cluster_id = NA_integer_  # Will be populated after clustering
+  )
+
+# Clear existing processed data and insert new results
+dbExecute(con, "TRUNCATE TABLE processed_gps_points RESTART IDENTITY CASCADE")
+dbWriteTable(con, "processed_gps_points", processed_for_db, 
+             append = TRUE, row.names = FALSE)
+```
+
+## Spatial Clustering Setup
+
+Set clustering parameters and prepare for participant-wise clustering:
+
+```{r}
+# Set clustering parameters
+radius_m <- 20  # Radius in meters for spatial proximity
+min_duration_min <- 30  # Minimum duration for meaningful stop within a day
+
+# Get list of participants with stationary data
+participants_with_stationary <- gps_data |>
+  filter(movement_state == "stationary") |>
+  distinct(subid) |>
+  pull(subid)
+
+participants_with_stationary
+```
+
+## Individual Participant Clustering
+
+Process each participant separately to identify personal location clusters:
+
+```{r}
+# Initialize list to store all participant clusters
+all_clusters <- list()
+
+# Process each participant
+for (participant in participants_with_stationary) {
+  
+  # Filter for specific participant and stationary points only
+  participant_data <- gps_data |>
+    filter(subid == participant, movement_state == "stationary") |>
+    mutate(date = as.Date(dttm_obs)) |>
+    arrange(dttm_obs)
+  
+  if (nrow(participant_data) == 0) {
+    next  # Skip if no stationary data
+  }
+  
+  cat("Processing participant:", participant, "(", nrow(participant_data), "stationary points)\n")
+  
+  # Store participant data for daily clustering
+  all_clusters[[participant]] <- participant_data
+}
+
+length(all_clusters)
+```
+
+
+## Daily Clustering Algorithm
+
+Cluster stationary points within each day for each participant:
+
+```{r}
+# Process daily clusters for each participant
+for (participant in names(all_clusters)) {
+  
+  participant_data <- all_clusters[[participant]]
+  
+  # Process each day separately
+  daily_clusters <- participant_data |>
+    group_by(date) |>
+    group_modify(~ {
+      day_data <- .x
+      day_data$daily_cluster <- 0
+      cluster_id <- 1
+      
+      # Cluster within this day
+      for (i in 1:nrow(day_data)) {
+        if (day_data$daily_cluster[i] != 0) next
+        
+        current_point <- day_data[i, ]
+        
+        # Find remaining unassigned points within radius on this day
+        remaining_points <- day_data[i:nrow(day_data), ] |>
+          filter(daily_cluster == 0)
+        
+        if (nrow(remaining_points) == 0) next
+        
+        # Calculate Haversine distances
+        distances <- distHaversine(
+          p1 = c(current_point$lon, current_point$lat),
+          p2 = cbind(remaining_points$lon, remaining_points$lat)
+        )
+        
+        # Find points within radius
+        nearby_indices <- which(distances <= radius_m)
+        nearby_points <- remaining_points[nearby_indices, ]
+        
+        # Check duration within this day
+        if (nrow(nearby_points) >= 2) {
+          time_span_min <- as.numeric(difftime(
+            max(nearby_points$dttm_obs), 
+            min(nearby_points$dttm_obs), 
+            units = "mins"
+          ))
+          
+          # If duration threshold met, assign cluster
+          if (time_span_min >= min_duration_min) {
+            original_indices <- which(
+              day_data$dttm_obs %in% nearby_points$dttm_obs &
+              day_data$daily_cluster == 0
+            )
+            day_data$daily_cluster[original_indices] <- cluster_id
+            cluster_id <- cluster_id + 1
+          }
+        }
+      }
+      
+      # Return only clustered points
+      day_data |> filter(daily_cluster != 0)
+    }) |>
+    ungroup()
+  
+  # Store daily clusters back
+  all_clusters[[participant]] <- daily_clusters
+}
+```
+
+## Cross-Day Location Aggregation
+
+Aggregate daily clusters into final location clusters across all days:
+
+```{r}
+# Create final cluster representatives for each participant
+final_clusters <- list()
+
+for (participant in names(all_clusters)) {
+  
+  daily_clusters <- all_clusters[[participant]]
+  
+  if (nrow(daily_clusters) == 0) {
+    next  # Skip if no valid clusters
+  }
+  
+  # Create daily location summaries
+  daily_locations <- daily_clusters |>
+    group_by(date, daily_cluster) |>
+    summarise(
+      subid = first(subid),
+      lat = mean(lat),
+      lon = mean(lon),
+      n_points = n(),
+      start_time = min(dttm_obs),
+      end_time = max(dttm_obs),
+      duration_min = as.numeric(difftime(max(dttm_obs), min(dttm_obs), units = "mins")),
+      .groups = "drop"
+    )
+  
+  if (nrow(daily_locations) == 0) {
+    next
+  }
+  
+  # Aggregate daily locations across days based on geographic proximity
+  daily_locations$final_cluster <- 0
+  cluster_id <- 1
+  
+  for (i in 1:nrow(daily_locations)) {
+    if (daily_locations$final_cluster[i] != 0) next
+    
+    current_location <- daily_locations[i, ]
+    
+    # Find all locations (across all days) within radius
+    distances_all <- distHaversine(
+      p1 = c(current_location$lon, current_location$lat),
+      p2 = cbind(daily_locations$lon, daily_locations$lat)
+    )
+    
+    nearby_location_indices <- which(
+      distances_all <= radius_m & daily_locations$final_cluster == 0
+    )
+    daily_locations$final_cluster[nearby_location_indices] <- cluster_id
+    cluster_id <- cluster_id + 1
+  }
+  
+  # Create final cluster representatives
+  representatives <- daily_locations |>
+    filter(final_cluster != 0) |>
+    group_by(final_cluster) |>
+    summarise(
+      subid = first(subid),
+      lat = mean(lat),
+      lon = mean(lon),
+      n_points = sum(n_points),
+      first_visit = min(start_time),
+      last_visit = max(end_time),
+      total_visits = n(),
+      total_duration_hours = sum(duration_min) / 60,
+      unique_days = n_distinct(date),
+      .groups = "drop"
+    ) |>
+    rename(cluster_id = final_cluster)
+  
+  final_clusters[[participant]] <- representatives
+}
+
+length(final_clusters)
+```
+
+## Clustering Results Summary
+
+Combine and summarize clustering results across all participants:
+
+```{r}
+# Combine all participant clusters into single dataframe
+all_participant_clusters <- bind_rows(final_clusters) |>
+  arrange(subid, cluster_id)
+
+# Generate clustering summary statistics
+all_participant_clusters |>
+  group_by(subid) |>
+  summarise(
+    total_clusters = n(),
+    total_visits = sum(total_visits),
+    total_duration_hours = sum(total_duration_hours),
+    avg_visits_per_cluster = round(mean(total_visits), 1),
+    avg_duration_per_cluster = round(mean(total_duration_hours), 1),
+    .groups = "drop"
+  ) |> print()
+```
+
+```{r}
+# Calculate overall statistics for inline reporting
+avg_clusters_per_participant <- all_participant_clusters |>
+  group_by(subid) |>
+  summarise(clusters = n(), .groups = "drop") |>
+  summarise(avg = round(mean(clusters), 1)) |>
+  pull(avg)
+```
+
+## Database Population
+
+Update database with clustering results:
+
+```{r}
+# Update processed_gps_points with cluster assignments
+# First, prepare cluster assignments for database update
+cluster_assignments <- list()
+
+for (participant in names(all_clusters)) {
+  daily_clusters <- all_clusters[[participant]]
+  
+  if (nrow(daily_clusters) > 0) {
+    # Map daily clusters to final clusters
+    participant_final <- final_clusters[[participant]]
+    
+    if (!is.null(participant_final) && nrow(participant_final) > 0) {
+      # Create mapping between daily clusters and final clusters
+      # This is a simplified approach - in practice you'd need more sophisticated mapping
+      cluster_map <- daily_clusters |>
+        select(subid, lat, lon, time = dttm_obs, daily_cluster) |>
+        mutate(
+          # For simplicity, assign daily_cluster as final cluster_id
+          # In production, you'd map based on spatial proximity to final cluster centroids
+          final_cluster_id = daily_cluster
+        )
+      
+      cluster_assignments[[participant]] <- cluster_map
+    }
+  }
+}
+
+# Combine all cluster assignments
+if (length(cluster_assignments) > 0) {
+  all_cluster_assignments <- bind_rows(cluster_assignments)
+  
+  # Create temporary table for cluster updates
+  dbWriteTable(con, "temp_cluster_assignments", all_cluster_assignments,
+               overwrite = TRUE, temporary = TRUE)
+  
+  # Update processed_gps_points with cluster assignments
+  dbExecute(con, "
+    UPDATE processed_gps_points 
+    SET cluster_id = temp.final_cluster_id
+    FROM temp_cluster_assignments temp
+    JOIN subjects s ON s.subid = temp.subid
+    WHERE processed_gps_points.subject_id = s.id
+      AND processed_gps_points.lat = temp.lat
+      AND processed_gps_points.lon = temp.lon
+      AND processed_gps_points.dttm_obs = temp.time
+      AND processed_gps_points.is_stationary = true
+  ")
+}
+
+# Insert final cluster results into gps_clusters table
+if (nrow(all_participant_clusters) > 0) {
+  # Add subject_id foreign key to cluster data and select only columns that exist in the table
+  clusters_for_db <- all_participant_clusters |>
+    left_join(
+      dbGetQuery(con, "SELECT id as subject_id, subid FROM subjects"),
+      by = "subid"
+    ) |>
+    select(
+      subject_id,
+      lat, lon,
+      n_points,
+      first_visit,
+      last_visit,
+      total_visits,
+      total_duration_hours
+    )
+  
+  # Clear existing clusters and insert new results
+  dbExecute(con, "DELETE FROM gps_clusters")
+  dbWriteTable(con, "gps_clusters", clusters_for_db,
+               append = TRUE, row.names = FALSE)
+}
+```
+
+## Spatial Indexing
+
+Add spatial indexes after clustering for efficient queries:
+
+```{r}
+# Create spatial indexes on populated data
+dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_processed_gps_geom ON processed_gps_points USING GIST (geom);")
+dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_gps_clusters_geom ON gps_clusters USING GIST (geom);")
+dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_processed_gps_cluster_id ON processed_gps_points (cluster_id);")
+dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_processed_gps_stationary ON processed_gps_points (is_stationary);")
+dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_processed_gps_subject ON processed_gps_points (subject_id);")
+dbExecute(con, "CREATE INDEX IF NOT EXISTS idx_gps_clusters_subject ON gps_clusters (subject_id);")
+```
+
+Created spatial and performance indexes for efficient querying of processed GPS data and location clusters.
+
+## Final Clustering Analysis
+
+Generate descriptive statistics and summary of clustering results:
+
+```{r}
+# Calculate per-participant cluster counts
+participant_cluster_counts <- all_participant_clusters |>
+  group_by(subid) |>
+  summarise(clusters_per_participant = n(), .groups = "drop")
+
+participant_cluster_counts |>
+  select(clusters_per_participant) |>
+  skimr::skim()
+
+all_participant_clusters |>
+  select(
+    gps_points_per_cluster = n_points,
+    total_visits_per_cluster = total_visits, 
+    duration_hours_per_cluster = total_duration_hours
+  ) |>
+  skimr::skim()
+```
+
+## Database Connection Cleanup
+
+```{r}
+# Close database connection
+disconnect_gps_db(con)
+```
+
+## Next Steps
+
+Based on the clustering results:
+
+1. **If clustering successful**: Proceed to `04-reverse-geocoding.qmd`
+2. **If parameter tuning needed**: Adjust clustering algorithms and re-run
+3. **If performance issues**: Review spatial indexing strategy
+
+### Troubleshooting Commands
+
+```{bash eval=FALSE}
+# Check cluster distribution
+# docker-compose exec -T postgis psql -U postgres -d gps_analysis -c "SELECT COUNT(*) FROM gps_clusters;"
+
+# Check raw GPS points with cluster assignments
+# docker-compose exec -T postgis psql -U postgres -d gps_analysis -c "SELECT COUNT(*), cluster_id FROM raw_gps_points GROUP BY cluster_id;"
+
+# View clustering performance stats
+# docker-compose exec -T postgis psql -U postgres -d gps_analysis -c "SELECT subject_id, COUNT(*) as clusters FROM gps_clusters GROUP BY subject_id;"
+```

@@ -48,50 +48,26 @@ po/*~
 # RStudio Connect folder
 rsconnect/
 
-# MacOS specific files
+# macOS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
-# stupid map files
-maps/*_files/
+# Windows
+*.tmp
+*.temp
+~$*
 
-# Docker and container-related files
-docker-postgis/.env
-docker-postgis/.env.local
-docker-postgis/.env.production
-*.env
-*.env.*
-
-# Docker volumes and persistent data
-postgis_data/
-docker-postgis/postgis_data/
-**/postgis_data/
-
-# Database dumps and exports
-*.sql.gz
-*.dump
-*.backup
-*.bak
-*_backup.sql
-*_export.csv
-
-# Docker Compose overrides (these are often environment-specific)
-docker-compose.override.yml
-docker-compose.prod.yml
-docker-compose.local.yml
-
-# Container logs and temporary files
-*.log
-docker-postgis/logs/
-**/docker-logs/
-
-# Database connection test outputs (may contain sensitive info)
-connection_test_results.txt
-db_test_output.txt
-
-# Any cached geocoding results (could contain participant data)
-**/geocoding_cache/
-**/venue_cache/
-cached_venues.csv
-
-# Claude-Relevant Files
+# Claude Code
+.claude/
 CLAUDE.md
+
+# Project specific
+*.log
+*.out
+tmp/
+temp/

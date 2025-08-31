@@ -1,0 +1,243 @@
+---
+title: "GPS22 Project: Spatial Zoning Analysis"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Spatial Zoning Analysis
+
+This notebook performs spatial analysis of GPS clusters against zoning data to classify location types and identify recovery-relevant areas for addiction research.
+
+## Setup
+
+```{r setup}
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/database.R"))
+```
+
+```{r}
+con <- connect_gps_db()
+```
+
+## Data Exploration
+
+Let's start by understanding what we have available:
+
+```{r}
+# Check existing GPS data
+clusters_available <- dbGetQuery(con, "SELECT COUNT(*) as n FROM gps_clusters")[1,1]
+geocoding_available <- dbGetQuery(con, "SELECT COUNT(*) as n FROM reverse_geocode_results")[1,1]
+```
+
+**Available GPS Data:**
+- GPS clusters: `{r} clusters_available`
+- Geocoded addresses: `{r} geocoding_available`
+
+```{r}
+# Check what tables currently exist
+all_tables <- dbListTables(con)
+zoning_tables <- all_tables[grepl("zoning|zone", all_tables, ignore.case = TRUE)]
+```
+
+**Existing tables:** `{r} paste(all_tables, collapse = ", ")`  
+**Zoning-related tables:** `{r} if(length(zoning_tables) > 0) paste(zoning_tables, collapse = ", ") else "None found"`
+
+## Load and Examine Zoning File
+
+```{r}
+# Load and clean zoning data in one pipeline
+zoning_path <- file.path(path_gps, "zoning/madison_zoning_districts.geojson")
+
+if (!file.exists(zoning_path)) {
+  stop("Zoning file not found at: ", zoning_path)
+}
+
+madison_zoning <- st_read(zoning_path, quiet = TRUE) |>
+  st_make_valid() |>
+  # Ensure WGS84 CRS
+  (\(x) if (st_crs(x)$epsg != 4326) st_transform(x, 4326) else x)()
+```
+
+Found `{r} nrow(madison_zoning)` polygons with `{r} ncol(madison_zoning)` columns: `{r} paste(names(madison_zoning), collapse = ", ")`
+
+```{r}
+# Show unique zoning codes
+madison_zoning |> 
+  filter(!is.na(ZONING_CODE), ZONING_CODE != "") |>
+  distinct(ZONING_CODE) |>
+  arrange(ZONING_CODE) |>
+  knitr::kable(caption = "All Unique Zoning Codes Found")
+```
+
+```{r}
+# Sample of the data structure
+madison_zoning |> 
+  select(OBJECTID, ZONING_CODE, ShapeSTArea) |>
+  head(10) |>
+  st_drop_geometry() |>
+  knitr::kable(caption = "Sample Zoning Data")
+```
+
+## Design Zoning Categories
+
+Based on the actual zoning codes found, let's create meaningful categories:
+
+```{r}
+# Define zoning classification based on actual Madison codes
+zoning_categories <- tibble(
+  zone_code = c(
+    # Residential
+    "SR-C1", "SR-C2", "SR-C3", "SR-V1", "SR-V2", "TR-C1", "TR-C2", "TR-C3", "TR-C4", "TR-P", "TR-R", "TR-U1", "TR-U2", "TR-V1", "TR-V2", "DR1", "DR2",
+    # Mixed-Use  
+    "LMX", "NMX", "RMX", "UMX",
+    # Commercial
+    "TSS", "CC", "CC-T",
+    # Downtown/Urban
+    "DC", "UOR", 
+    # Employment/Office
+    "TE", "SE", "SEC", "EC",
+    # Industrial
+    "IL", "IG",
+    # Special/Institutional
+    "A", "AP", "CI", "CN", "PD", "PMHP", "PR", "MC", "THV", "TEMP A", "Temp A"
+  ),
+  zone_category = c(
+    # Residential (17 codes)
+    rep("Residential", 17),
+    # Mixed-Use (4 codes)  
+    rep("Mixed-Use", 4),
+    # Commercial (3 codes)
+    rep("Commercial", 3),
+    # Downtown (2 codes)
+    rep("Downtown", 2),
+    # Employment (4 codes)
+    rep("Employment", 4),
+    # Industrial (2 codes)
+    rep("Industrial", 2),
+    # Special (11 codes)
+    rep("Special", 11)
+  )
+)
+```
+
+**Zoning Category Summary:**
+```{r}
+#| echo: false
+category_summary <- zoning_categories |>
+  count(zone_category, name = "n_codes") |>
+  arrange(desc(n_codes))
+
+knitr::kable(category_summary, caption = "Zoning Categories by Number of Codes")
+```
+
+## Prepare Data for Database
+
+```{r}
+# Check for unmatched zoning codes
+unmatched_check <- madison_zoning |>
+  filter(!is.na(ZONING_CODE), ZONING_CODE != "") |>
+  left_join(zoning_categories, by = c("ZONING_CODE" = "zone_code")) |>
+  filter(is.na(zone_category)) |>
+  distinct(ZONING_CODE)
+
+if(nrow(unmatched_check) > 0) {
+  cat("Unmatched zoning codes:", paste(unmatched_check$ZONING_CODE, collapse = ", "), "\n")
+} else {
+  cat("✓ All zoning codes successfully categorized\n")
+}
+
+# Only assign to variable since we'll use it multiple times in loading
+zoning_for_db <- madison_zoning |>
+  filter(!is.na(ZONING_CODE), ZONING_CODE != "") |>
+  left_join(zoning_categories, by = c("ZONING_CODE" = "zone_code")) |>
+  select(
+    objectid = OBJECTID,
+    zone_code = ZONING_CODE, 
+    zone_category,
+    area_sqm = ShapeSTArea,
+    geometry
+  ) |>
+  mutate(zone_category = coalesce(zone_category, "Other"))
+```
+
+## Load Data into Existing Table
+
+```{r}
+# Check if table already has data
+existing_zones <- dbGetQuery(con, "SELECT COUNT(*) as n FROM madison_zoning_districts")[1,1]
+
+# Force reload if we have the wrong number (should be ~2470, not ~43)
+force_reload <- existing_zones < 100
+
+if (existing_zones == 0 || force_reload) {
+  # Clear existing data first
+  dbExecute(con, "DELETE FROM madison_zoning_districts;")
+  
+  # Convert individual polygons to WKT (keeping them separate!)
+  zoning_wkt <- zoning_for_db |>
+    # Ensure MultiPolygon format for each individual polygon
+    mutate(geometry = st_cast(geometry, "MULTIPOLYGON")) |>
+    # Convert to WKT
+    mutate(geometry_wkt = st_as_text(geometry)) |>
+    st_drop_geometry()
+  
+  # Insert each individual polygon separately
+  insertion_success <- 0
+  safe_insert <- safely(~ dbExecute(con, "
+    INSERT INTO madison_zoning_districts (objectid, zone_code, zone_category, area_sqm, geom)
+    VALUES ($1, $2, $3, $4, ST_SetSRID(ST_GeomFromText($5), 4326));
+  ", list(.x$objectid, .x$zone_code, .x$zone_category, .x$area_sqm, .x$geometry_wkt)))
+  
+  for (i in 1:nrow(zoning_wkt)) {
+    row <- zoning_wkt[i, ]
+    result <- safe_insert(row)
+    
+    if (is.null(result$error)) {
+      insertion_success <- insertion_success + 1
+    } else {
+      warning("Failed to insert objectid ", row$objectid, " (", row$zone_code, "): ", result$error$message)
+    }
+  }
+} else {
+  insertion_success <- existing_zones
+}
+```
+
+## Verify Database Table
+
+```{r}
+# Show final zoning distribution in database
+dbGetQuery(con, "
+  SELECT 
+    zone_category,
+    COUNT(*) as n_districts,
+    ROUND(SUM(area_sqm) / 1000000, 1) as total_area_km2
+  FROM madison_zoning_districts
+  GROUP BY zone_category
+  ORDER BY total_area_km2 DESC
+") |>
+  knitr::kable(caption = "Madison Zoning Districts by Category and Area")
+```
+
+## Database Connection Cleanup
+
+```{r}
+disconnect_gps_db(con)
+```
+
+## Next Steps
+
+Now that we have clean zoning data in the database, we can:
+
+1. **Perform spatial joins** between GPS clusters and zoning districts
+2. **Analyze location patterns** by zoning category  
+3. **Create recovery-relevant classifications** based on zoning + address data
+4. **Generate participant risk profiles** based on location exposure
