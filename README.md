@@ -76,7 +76,7 @@ The project follows a structured notebook-based workflow:
 
 ### Core Tables
 
-#### `subjects` (668 participants)
+#### `subjects` 
 ```sql
 subjects (
   id INTEGER PRIMARY KEY,           -- Auto-increment primary key
@@ -85,7 +85,7 @@ subjects (
 )
 ```
 
-#### `raw_gps_points` (3.6M GPS readings)  
+#### `raw_gps_points`   
 ```sql
 raw_gps_points (
   point_id BIGINT PRIMARY KEY,
@@ -101,7 +101,7 @@ raw_gps_points (
 )
 ```
 
-#### `processed_gps_points` (2.7M processed points)
+#### `processed_gps_points` 
 ```sql
 processed_gps_points (
   processed_id BIGINT PRIMARY KEY,
@@ -122,7 +122,7 @@ processed_gps_points (
 )
 ```
 
-#### `gps_clusters` (25,098 location clusters)
+#### `gps_clusters` 
 ```sql
 gps_clusters (
   cluster_id BIGINT PRIMARY KEY,
@@ -140,7 +140,7 @@ gps_clusters (
 )
 ```
 
-#### `madison_zoning_districts` (2,468 zoning polygons)
+#### `madison_zoning_districts` 
 ```sql
 madison_zoning_districts (
   id INTEGER PRIMARY KEY,
@@ -156,7 +156,7 @@ madison_zoning_districts (
 )
 ```
 
-#### `reverse_geocode_results` (11,244 cached addresses)
+#### `reverse_geocode_results` 
 ```sql
 reverse_geocode_results (
   cluster_id BIGINT PRIMARY KEY REFERENCES gps_clusters(cluster_id),
