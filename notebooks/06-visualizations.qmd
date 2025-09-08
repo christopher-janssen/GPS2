@@ -178,7 +178,7 @@ cat("Loaded", nrow(raw_gps_sample), "GPS points\n")
 movement_map <- raw_gps_sample |>
   plot_gps_points(
     subid = 66,
-    show_paths = TRUE
+    show_paths = FALSE
   )
 
 movement_map

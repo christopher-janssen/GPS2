@@ -11,10 +11,17 @@ plot_gps_points <- function(gps_data, subid = NULL, show_paths = FALSE) {
     subid <- gps_data$subid[1]
   }
   
-  # Prepare data
+  # Prepare data with safe type conversion
   data <- gps_data |>
     mutate(
-      time = as.POSIXct(time),
+      # Safe conversion of time column (handle various input types)
+      time = case_when(
+        is.character(time) ~ as.POSIXct(time, tz = "UTC"),
+        is.numeric(time) ~ as.POSIXct(time, origin = "1970-01-01", tz = "UTC"),
+        inherits(time, "POSIXt") ~ as.POSIXct(time),
+        TRUE ~ as.POSIXct(as.character(time), tz = "UTC")
+      ),
+      # Only create date after successful time conversion
       date = as.Date(time),
       time_str = format(time, "%H:%M:%S"),
       movement_state = if("movement_state" %in% names(gps_data)) {
@@ -25,6 +32,8 @@ plot_gps_points <- function(gps_data, subid = NULL, show_paths = FALSE) {
         "unknown"
       }
     ) |>
+    # Filter out any rows with invalid dates
+    filter(!is.na(time), !is.na(date)) |>
     arrange(time)
   
   # Create base map
@@ -37,7 +46,7 @@ plot_gps_points <- function(gps_data, subid = NULL, show_paths = FALSE) {
   
   for (date in unique_dates) {
     day_data <- data |> filter(date == !!date)
-    date_str <- format(date, "%Y-%m-%d (%A)")
+    date_str <- format(as.Date(date), "%Y-%m-%d (%A)")
     
     # Create popups
     day_data <- day_data |>
@@ -78,7 +87,7 @@ plot_gps_points <- function(gps_data, subid = NULL, show_paths = FALSE) {
   
   # Add layer controls AFTER info box (so they render on top)
   if (length(unique_dates) > 1) {
-    groups <- format(unique_dates, "%Y-%m-%d (%A)")
+    groups <- format(as.Date(unique_dates), "%Y-%m-%d (%A)")
     if (show_paths) {
       groups <- c(groups, paste(groups, "Path"))
     }

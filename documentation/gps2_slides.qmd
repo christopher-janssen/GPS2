@@ -1,0 +1,242 @@
+---
+title: "GPS2"
+author: "Christopher Janssen"
+format: 
+  revealjs:
+    theme: default
+    self-contained: true
+editor: visual
+---
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/database.R"))
+source(here::here("scripts/r/popup_utils.R"))
+source(here::here("scripts/r/visualization.R"))
+```
+
+## Project Context:
+
+Previous ARC studies required participants to manually provide detailed context about each GPS location they visited:
+
+-   relation to location? (family/home/work)
+-   protective/harmful to lapse?
+-   access to alcohol?
+
+This participant-provided information was then used to create predictive features for lapse probability.
+
+## Project Goal:
+
+The GPS2 project investigates whether we can achieve similar predictive utility by extracting features from participants' routine patterns and location metadata, all without requiring any manual contextualization.
+
+This approach would ideally reduce participant burden while also potentially capturing behavioral patterns that participants themselves might not consciously recognize or report.
+
+## Data Pipeline and Workflow
+
+The ideal workflow for GPS data is as follows:
+
+::: incremental
+1.  Classify Movement State
+2.  Group Stationary Points into Representative Clusters
+3.  Enrich Clusters with Useful Metadata
+4.  Derive Predictive Features
+:::
+
+## 1. Movement Classification
+
+-   Distinguish between
+    -   "*stationary*" points (where participants spend time)
+    -   "*in movement*" points (transitional GPS readings)
+-   This allows us to focus on meaningful locations rather than travel paths
+
+## 2. Location Clustering
+
+-   Group nearby stationary GPS points into discrete location representations
+
+    -   Effectively combines any points within a building or radius into a single representative "place"
+
+-   This allows us to create interpretable routine locations from raw coordinate clusters.
+
+## 3. Metadata Enrichment
+
+-   Apply geocoding services to automatically retrieve contextual information about each clustered location
+
+    ::: incremental
+    -   *business type*
+
+    -   *neighborhood characteristics*
+
+    -   *proximity to high-risk venues*
+
+    -   *etc*
+    :::
+
+## 4. Feature Engineering
+
+-   Transform location metadata and visit patterns into predictive features
+
+    ::: incremental
+    -   *time spent at different venue types*
+
+    -   *stability of work/housing*
+
+    -   *exposure to high-risk environments*
+    :::
+
+-   All without requiring participant input!
+
+## ***Things Go Horribly Wrong***
+
+::: incremental
+-   ![](images/ss1.png)
+-   ![](images/ss2.png)
+-   ![](images/ss3.png)
+:::
+
+## The Granularity-Utility Paradigm
+
+-   High granularity data \> sophisticated behavioral analysis \> significant privacy risks
+-   Low granularity data \> protects participant privacy \> limits research capabilities
+-   [Inherent conflict]{.underline} between maximizing research utility and ensuring adequate privacy protection
+
+::: callout-important
+## Question:
+
+*What is the minimum level of location data granularity required to achieve valid research outcomes while maintaining acceptable privacy protection for participants?*
+:::
+
+## Rundle et. al
+
+![](images/ss4.png)
+
+## Rundle et al.
+
+::::: columns
+::: {.column width="50%"}
+![](images/ss5.png)
+:::
+
+::: {.column width="50%"}
+-   Neighborhood health research increasingly uses GPS data + geocoding
+-   Common practice is to send patient addresses to Google Maps, Census Bureau APIs
+-   Each geocoding request = PII + PHI disclosure to third parties
+:::
+:::::
+
+## Recommended Solution
+
+![](images/ss6.png){fig-align="center"}
+
+## GPS2 Infrastructure
+
+``` {.txt style="font-size: 0.9em; overflow-x: auto; white-space: pre; line-height: 1.2;"}
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                         Local Computer                              │
+  │                                                                     │
+  │  ┌─────────────────┐    ┌──────────────────────────────────────┐    │
+  │  │  Research Drive │    │           Docker Environment         │    │
+  │  │                 │    │                                      │    │
+  │  │  /Volumes/      │    │  ┌─────────────┐  ┌───────────────┐  │    │
+  │  │  jjcurtin/      │────┼──│  PostGIS    │  │  Nominatim    │  │    │
+  │  │  studydata/     │    │  │ Container   │  │  Container    │  │    │
+  │  │  risk/          │    │  │             │  │               │  │    │
+  │  │                 │    │  │ Port: 5433  │  │ Port: 8080    │  │    │
+  │  │ • GPS data      │    │  │           <─│──┼>              │  │    │
+  │  │ • Zoning Data   │    │  │ Database:   │  │ Service:      │  │    │
+  │  │ • OSM Data      │    │  │ gps_analysis│  │ Reverse-      │  │    │
+  │  └─────────────────┘    │  │             │  │ geocoding     │  │    │
+  │                         │  │ User:       │  │               │  │    │
+  │                         │  │ postgres    │  └───────────────┘  │    │
+  │                         │  └─────────────┘                     │    │
+  │                         └──────────────────────────────────────┘    │
+  └─────────────────────────────────────────────────────────────────────┘
+```
+
+::: notes
+-   **Docker Environment**: Containerization platform that packages software applications with all dependencies into portable, isolated environments that run consistently across different systems
+-   **PostGIS Container**: Specialized spatial database system built on PostgreSQL that provides robust geographic information system capabilities for storing and analyzing location data
+-   **Nominatim Container**: Open-source reverse geocoding service that converts latitude/longitude coordinates into human-readable addresses and location categories
+:::
+
+## Local Processing Capabilities
+
+-   All GPS data remains stored and processed on the researcher's local machine throughout the entire analytical workflow
+-   PostGIS enables sophisticated spatial operations without any external data transmission
+-   Nominatim provides location metadata by converting coordinates to place names using locally hosted mapping data
+-   Containerized architecture ensures reproducible analytical environments while maintaining complete data isolation from external networks
+
+## Current GPS2 Analytical Workflow
+
+``` {.txt style="font-size: 0.8em; overflow-x: auto; white-space: pre; line-height: 1.2;"}
+  ┌───────────────────────────────┐
+  │        Quarto Notebooks       │
+  │                               │
+  │  01-setup-infrastructure.qmd  │
+  │  02-data-import.qmd           │
+  │  03-gps-processing-clustering │
+  │  04-reverse-geocoding.qmd     │
+  │  05-spatial-zoning-analysis   │
+  │  06-visualizations.qmd        │
+  └───────────────────────────────┘
+                  │
+                  ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │                       Integration                           │
+  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+  │  │      R      │◄─┤     SQL     ├─►│      PostGIS        │  │
+  │  │             │  │             │  │                     │  │
+  │  │ • dplyr     │  │ • Queries   │  │ • Spatial database  │  │
+  │  │ • sf        │  │ • Joins     │  │ • Geographic data   │  │
+  │  │ • leaflet   │  │ • Filtering │  │ • Spatial functions │  │
+  │  │ • analysis  │  │ • Inserts   │  │ • Index operations  │  │
+  │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+  └─────────────────────────────────────────────────────────────┘
+```
+
+## Connect to Database:
+
+```{r}
+#| echo: true
+con <- connect_gps_db()
+```
+
+## R-Database Integration + Visualization:
+
+```{r}
+#| echo: true
+
+data <- pull_db(3, subid = 10)
+data |> plot_cluster_map(color_by = "visits")
+```
+
+## R-Database Integration + Visualization:
+
+```{r}
+#| echo: true
+
+data <- pull_db(3, subid = 10)
+data |> plot_cluster_map(color_by = "duration")
+```
+
+## Zoning Visualization
+
+```{r}
+#| echo: true
+
+pull_db(6) |> plot_zoning_map()
+```
+
+## Database Disconnect
+
+```{r}
+#| echo: true
+disconnect_gps_db(con)
+```
+
+## Future Directions:
+
+1.  Validate processing and clustering methods using statistical analyses
+2.  Deep-dive into zone classification for the purposes of AUD
+3.  Explore additional predictive metadata options from Nominatim
