@@ -39,9 +39,9 @@ The ideal workflow for GPS data is as follows:
 
 ::: incremental
 1.  Classify Movement State
-2.  Group Stationary Points into Representative Clusters
-3.  Enrich Clusters with Useful Metadata
-4.  Derive Predictive Features
+2.  Group Stationary Points into Clusters
+3.  Enrich Clusters with Metadata
+4.  Derive Predictive Features with Metadata
 :::
 
 ## 1. Movement Classification
@@ -49,7 +49,7 @@ The ideal workflow for GPS data is as follows:
 -   Distinguish between
     -   "*stationary*" points (where participants spend time)
     -   "*in movement*" points (transitional GPS readings)
--   This allows us to focus on meaningful locations rather than travel paths
+-   This allows us to focus on meaningful "activity stops" rather than travel paths
 
 ## 2. Location Clustering
 
@@ -86,14 +86,6 @@ The ideal workflow for GPS data is as follows:
     :::
 
 -   All without requiring participant input!
-
-## ***Things Go Horribly Wrong***
-
-::: incremental
--   ![](images/ss1.png)
--   ![](images/ss2.png)
--   ![](images/ss3.png)
-:::
 
 ## The Granularity-Utility Paradigm
 
