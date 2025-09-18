@@ -140,7 +140,8 @@ message("Filtered to ", nrow(gps_data), " rows with valid coordinates")
 
 # Convert subid to subject_id using lookup
 message("Converting subject IDs to normalized foreign keys...")
-subject_lookup <- dbGetQuery(con, "SELECT id, subid FROM subjects")
+subject_lookup <- dbGetQuery(con, "SELECT id, subid FROM subjects") |> 
+  mutate(subid = as.numeric(subid))
 gps_data <- gps_data |>
   left_join(subject_lookup, by = "subid") |>
   select(-subid) |>
