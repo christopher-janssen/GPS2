@@ -73,3 +73,6 @@ tmp/
 temp/
 WIP/
 images/
+
+# Environment configuration
+docker-compose/.env

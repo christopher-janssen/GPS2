@@ -75,7 +75,7 @@ Convert timestamps and add timezone information:
 # Convert time to POSIXct with proper timezone handling
 gps_data <- gps_data |>
   mutate(
-    dttm_obs = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+    #dttm_obs = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
     dttm_obs = with_tz(dttm_obs, tz = "America/Chicago")
   ) |>
   arrange(subid, dttm_obs)

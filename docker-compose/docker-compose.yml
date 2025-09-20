@@ -15,8 +15,10 @@ services:
       - postgis_data:/var/lib/postgresql/data/pgdata
       # Initialization scripts
       - ./init-scripts:/docker-entrypoint-initdb.d:ro
-      # Research data mount (read-only)
+      # Primary research data mount (read-only)
       - ${RESEARCH_DATA_PATH:-/Volumes/jjcurtin/studydata/risk}:/research_data:ro
+      # Restricted research data mount (read-only) - optional
+      - ${RESTRICTED_DATA_PATH:-/Volumes/jjcurtin}:/restricted_data:ro
     ports:
       - "${POSTGIS_PORT:-5433}:5432"
     networks:
