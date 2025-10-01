@@ -19,11 +19,10 @@ CREATE TABLE raw_gps_points (
     
     -- PostGIS geometry column (SRID 4326 = WGS84)
     geom GEOMETRY(POINT, 4326),
-    
-    -- Clustering fields (populated by R analysis)
+
+    -- Movement classification (populated by R analysis)
     is_stationary BOOLEAN DEFAULT NULL,
-    cluster_id BIGINT DEFAULT NULL,
-    
+
     -- Import tracking
     imported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     
@@ -55,7 +54,7 @@ CREATE TABLE processed_gps_points (
     is_stationary BOOLEAN NOT NULL,
     
     -- Clustering results (NULL for transition points)
-    cluster_id INTEGER DEFAULT NULL,
+    cluster_id BIGINT DEFAULT NULL,
     
     -- PostGIS geometry column
     geom GEOMETRY(POINT, 4326),
@@ -143,30 +142,37 @@ CREATE TABLE final_analysis (
     analysis_id BIGSERIAL PRIMARY KEY,
     subject_id INTEGER NOT NULL REFERENCES subjects(id),
     cluster_id BIGINT REFERENCES gps_clusters(cluster_id),
-    zone_id INTEGER REFERENCES zoning_areas(zone_id),
-    
+    zone_id INTEGER REFERENCES madison_zoning_districts(id),
+
     -- Location info
     cluster_lat DOUBLE PRECISION,
     cluster_lon DOUBLE PRECISION,
     address TEXT,
     zone_name TEXT,
     zone_type TEXT,
-    
+
     -- Time metrics
     time_spent_hours DOUBLE PRECISION,
     visit_count INTEGER,
     first_visit TIMESTAMP WITHOUT TIME ZONE,
     last_visit TIMESTAMP WITHOUT TIME ZONE,
-    
+
     -- Analysis timestamp
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Add foreign key constraint for cluster_id in raw_gps_points
--- (Done after gps_clusters table exists)
-ALTER TABLE raw_gps_points 
-ADD CONSTRAINT fk_raw_gps_cluster 
-FOREIGN KEY (cluster_id) REFERENCES gps_clusters(cluster_id);
+-- 8. Daily location entropy table: Shannon's entropy for location patterns
+CREATE TABLE daily_location_entropy (
+    subject_id INTEGER REFERENCES subjects(id),
+    date DATE NOT NULL,
+    location_entropy DOUBLE PRECISION,
+    location_predictability DOUBLE PRECISION,
+    unique_locations INTEGER,
+    total_time_hours DOUBLE PRECISION,
+    total_points INTEGER,
+    calculated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    PRIMARY KEY (subject_id, date)
+);
 
 -- Create trigger to automatically populate geometry columns
 CREATE OR REPLACE FUNCTION update_geom_from_coords()

@@ -465,12 +465,8 @@ if (nrow(all_participant_clusters) > 0) {
     )
 
   # Clear existing clusters and insert new results
-  # Use DELETE instead of TRUNCATE to avoid foreign key constraint issues
-  dbExecute(con, "DELETE FROM reverse_geocode_results")
-  dbExecute(con, "DELETE FROM final_analysis WHERE cluster_id IS NOT NULL")
-  dbExecute(con, "UPDATE raw_gps_points SET cluster_id = NULL WHERE cluster_id IS NOT NULL")
-  dbExecute(con, "DELETE FROM gps_clusters")
-  dbExecute(con, "ALTER SEQUENCE gps_clusters_cluster_id_seq RESTART WITH 1")
+  # Use TRUNCATE CASCADE to clear all dependent tables efficiently
+  dbExecute(con, "TRUNCATE TABLE gps_clusters RESTART IDENTITY CASCADE")
   dbWriteTable(con, "gps_clusters", clusters_for_db,
                append = TRUE, row.names = FALSE)
 

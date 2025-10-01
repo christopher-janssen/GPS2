@@ -74,7 +74,7 @@ calculate_predictability <- function(entropy, n_unique_locations) {
 
 ## Methodology: How Cluster Assignment Enables Daily Entropy
 
-**Key Insight**: Each GPS point in `processed_gps_points` now has a `cluster_id` linking it to a specific location cluster from `gps_clusters`. This enables us to:
+Each GPS point in `processed_gps_points` now has a `cluster_id` linking it to a specific location cluster from `gps_clusters`. This enables us to:
 
 1. **Track daily location patterns**: Group points by subject + date + cluster_id
 2. **Calculate time proportions**: Sum durations within each cluster per day
@@ -334,22 +334,8 @@ cat("  Subjects:", length(unique(export_data$subid)), "\n")
 ## Store Results in Database
 
 ```{r store-results}
-# Create table for daily location entropy
-dbExecute(con, "DROP TABLE IF EXISTS daily_location_entropy CASCADE")
-
-dbExecute(con, "
-  CREATE TABLE daily_location_entropy (
-    subject_id INTEGER REFERENCES subjects(id),
-    date DATE NOT NULL,
-    location_entropy DOUBLE PRECISION,
-    location_predictability DOUBLE PRECISION,
-    unique_locations INTEGER,
-    total_time_hours DOUBLE PRECISION,
-    total_points INTEGER,
-    calculated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    PRIMARY KEY (subject_id, date)
-  )
-")
+# Clear existing entropy results before inserting new data
+dbExecute(con, "TRUNCATE TABLE daily_location_entropy")
 
 # Insert results using database_data (has subject_id for foreign key)
 dbWriteTable(con, "daily_location_entropy", database_data,
@@ -369,19 +355,6 @@ verification <- dbGetQuery(con, "
 
 cat("\nStored daily location entropy results:\n")
 print(verification)
-
-# Create index for efficient queries
-dbExecute(con, "
-  CREATE INDEX IF NOT EXISTS idx_daily_entropy_subject
-  ON daily_location_entropy(subject_id)
-")
-
-dbExecute(con, "
-  CREATE INDEX IF NOT EXISTS idx_daily_entropy_date
-  ON daily_location_entropy(date)
-")
-
-cat("✓ Indexes created for efficient querying\n")
 ```
 
 ```{r cleanup}

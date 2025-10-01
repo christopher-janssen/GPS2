@@ -19,15 +19,14 @@ CREATE INDEX idx_madison_zoning_geom ON madison_zoning_districts USING GIST (geo
 -- ============================================================================
 
 -- Subject-based queries (most common filter)
-CREATE INDEX idx_raw_gps_points_subid ON raw_gps_points (subid);
-CREATE INDEX idx_gps_clusters_subid ON gps_clusters (subid);
+CREATE INDEX idx_raw_gps_points_subject ON raw_gps_points (subject_id);
+CREATE INDEX idx_gps_clusters_subject ON gps_clusters (subject_id);
 
 -- Time-based queries for temporal analysis
 CREATE INDEX idx_raw_gps_points_time ON raw_gps_points (time);
-CREATE INDEX idx_raw_gps_points_subid_time ON raw_gps_points (subid, time);
+CREATE INDEX idx_raw_gps_points_subject_time ON raw_gps_points (subject_id, time);
 
 -- Clustering workflow indexes
-CREATE INDEX idx_raw_gps_points_cluster_id ON raw_gps_points (cluster_id);
 CREATE INDEX idx_raw_gps_points_stationary ON raw_gps_points (is_stationary);
 CREATE INDEX idx_raw_gps_points_sgmnt_type ON raw_gps_points (sgmnt_type);
 
@@ -50,16 +49,16 @@ CREATE INDEX idx_reverse_geocode_city ON reverse_geocode_results (city);
 -- ============================================================================
 
 -- Common query patterns
-CREATE INDEX idx_raw_gps_subid_time_sgmnt ON raw_gps_points (subid, time, sgmnt_type);
-CREATE INDEX idx_clusters_subid_visits ON gps_clusters (subid, total_visits DESC);
-CREATE INDEX idx_final_analysis_subid_zone ON final_analysis (subid, zone_type);
+CREATE INDEX idx_raw_gps_subject_time_sgmnt ON raw_gps_points (subject_id, time, sgmnt_type);
+CREATE INDEX idx_clusters_subject_visits ON gps_clusters (subject_id, total_visits DESC);
+CREATE INDEX idx_final_analysis_subject_zone ON final_analysis (subject_id, zone_type);
 
 -- ============================================================================
 -- PARTIAL INDEXES (Filtered)
 -- ============================================================================
 
--- Only index clustered points (reduces index size)
-CREATE INDEX idx_raw_gps_clustered_points ON raw_gps_points (cluster_id, subid) 
+-- Processed GPS points clustering indexes
+CREATE INDEX idx_processed_gps_cluster_id ON processed_gps_points (cluster_id)
 WHERE cluster_id IS NOT NULL;
 
 -- Only index stationary points
@@ -67,8 +66,12 @@ CREATE INDEX idx_raw_gps_stationary_geom ON raw_gps_points USING GIST (geom)
 WHERE is_stationary = true;
 
 -- Only index "place" segments for clustering analysis
-CREATE INDEX idx_raw_gps_place_segments ON raw_gps_points (subid, time)
+CREATE INDEX idx_raw_gps_place_segments ON raw_gps_points (subject_id, time)
 WHERE sgmnt_type = 'place';
+
+-- Daily location entropy indexes
+CREATE INDEX idx_daily_entropy_subject ON daily_location_entropy(subject_id);
+CREATE INDEX idx_daily_entropy_date ON daily_location_entropy(date);
 
 -- ============================================================================
 -- ANALYZE STATISTICS
@@ -77,7 +80,9 @@ WHERE sgmnt_type = 'place';
 -- Update table statistics for query planning
 ANALYZE subjects;
 ANALYZE raw_gps_points;
+ANALYZE processed_gps_points;
 ANALYZE gps_clusters;
 ANALYZE madison_zoning_districts;
 ANALYZE reverse_geocode_results;
 ANALYZE final_analysis;
+ANALYZE daily_location_entropy;

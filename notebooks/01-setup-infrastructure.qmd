@@ -124,7 +124,7 @@ system("cd docker-compose && docker-compose exec -T postgis ls -l /research_data
 ## Database Schema Check
 
 Let's check to see if all of the tables were properly generated as well,
-as of right now, you should see 11!
+as of right now, you should see 24!
 
 ```{r}
 #| cache: false
