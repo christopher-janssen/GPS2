@@ -103,76 +103,114 @@ beepr::beep()
 Batch import GPS points with progress tracking:
 
 ```{r}
-#| eval: false
 #| cache: false
-#| include: false
 
-# Import GPS data with batch processing using normalized schema
+# Import GPS data with batch processing and error handling
 message("Starting GPS data import from: ", basename(gps_file_path))
-
-# Read data in chunks to manage memory
-chunk_size <- 10000  # Smaller chunks for large datasets
-total_imported <- 0
 
 # Clear existing data (table created in init-scripts)
 dbExecute(con, "TRUNCATE TABLE raw_gps_points CASCADE")
 
-# Read and process data in chunks
-message("Reading GPS data in chunks of ", chunk_size, " rows...")
+tryCatch({
+  # Read data in chunks to manage memory
+  chunk_size <- 10000
+  total_imported <- 0
 
-# Use readr for efficient reading with memory optimization
-gps_data <- readr::read_csv(gps_file_path, 
-                           col_select = c("subid", "lat", "lon", "time", "sgmnt_type"),
-                           show_col_types = FALSE,
-                           lazy = FALSE,
-                           progress = show_progress())
+  message("Reading GPS data file...")
 
-# Convert time column to proper timestamp and filter invalid coordinates
-gps_data <- gps_data |>
-  mutate(time = as.POSIXct(time)) |>
-  filter(
-    !is.na(lat), !is.na(lon),
-    lat >= -90, lat <= 90,
-    lon >= -180, lon <= 180
+  # Read GPS data with explicit column types
+  gps_data <- readr::read_csv(
+    gps_file_path,
+    col_select = c("subid", "lat", "lon", "time", "sgmnt_type"),
+    col_types = cols(
+      subid = col_double(),
+      lat = col_double(),
+      lon = col_double(),
+      time = col_datetime(),
+      sgmnt_type = col_character()
+    ),
+    show_col_types = FALSE,
+    progress = show_progress()
   )
 
-message("Filtered to ", nrow(gps_data), " rows with valid coordinates")
+  message("✓ Read ", nrow(gps_data), " rows from file")
 
-# Convert subid to subject_id using lookup
-message("Converting subject IDs to normalized foreign keys...")
-subject_lookup <- dbGetQuery(con, "SELECT id, subid FROM subjects") |> 
-  mutate(subid = as.numeric(subid))
-gps_data <- gps_data |>
-  left_join(subject_lookup, by = "subid") |>
-  select(-subid) |>
-  rename(subject_id = id)
+  # Filter invalid coordinates
+  gps_data <- gps_data |>
+    filter(
+      !is.na(lat), !is.na(lon),
+      lat >= -90, lat <= 90,
+      lon >= -180, lon <= 180,
+      !is.na(time)
+    )
 
-# Insert data in chunks
-n_rows <- nrow(gps_data)
-n_chunks <- ceiling(n_rows / chunk_size)
+  message("✓ Filtered to ", nrow(gps_data), " rows with valid data")
 
-for (i in 1:n_chunks) {
-  start_idx <- ((i - 1) * chunk_size) + 1
-  end_idx <- min(i * chunk_size, n_rows)
-  
-  chunk_data <- gps_data[start_idx:end_idx, ]
-  
-  # Insert chunk with normalized schema
-  dbWriteTable(con, "raw_gps_points", chunk_data, 
-                    append = TRUE, row.names = FALSE)
-  
-  total_imported <- total_imported + nrow(chunk_data)
-  
-  # Force garbage collection every 10 chunks to manage memory
-  if (i %% 10 == 0) {
-    gc()
-    message("Imported ", total_imported, "/", n_rows, " rows (", 
-            round(100 * total_imported / n_rows, 1), "%)")
+  if (nrow(gps_data) == 0) {
+    stop("No valid GPS data after filtering!")
   }
-}
 
-message("✓ Completed GPS data import - ", total_imported, " points")
-beepr::beep()
+  # Convert subid to subject_id using lookup
+  message("Converting subject IDs to normalized foreign keys...")
+  subject_lookup <- dbGetQuery(con, "SELECT id, subid FROM subjects") |>
+    mutate(subid = as.numeric(subid))
+
+  if (nrow(subject_lookup) == 0) {
+    stop("No subjects found in database! Run subject import first.")
+  }
+
+  gps_data <- gps_data |>
+    left_join(subject_lookup, by = "subid") |>
+    filter(!is.na(id)) |>  # Drop GPS points with no matching subject
+    select(-subid) |>
+    rename(subject_id = id)
+
+  message("✓ Matched ", nrow(gps_data), " GPS points to ",
+          length(unique(gps_data$subject_id)), " subjects")
+
+  # Insert data in chunks
+  n_rows <- nrow(gps_data)
+  n_chunks <- ceiling(n_rows / chunk_size)
+
+  message("Inserting ", n_rows, " rows in ", n_chunks, " chunks...")
+
+  for (i in 1:n_chunks) {
+    start_idx <- ((i - 1) * chunk_size) + 1
+    end_idx <- min(i * chunk_size, n_rows)
+
+    chunk_data <- gps_data[start_idx:end_idx, ]
+
+    # Insert chunk with normalized schema
+    dbWriteTable(con, "raw_gps_points", chunk_data,
+                 append = TRUE, row.names = FALSE)
+
+    total_imported <- total_imported + nrow(chunk_data)
+
+    # Progress update every 10 chunks
+    if (i %% 10 == 0 || i == n_chunks) {
+      gc()
+      message("  Imported ", total_imported, "/", n_rows, " rows (",
+              round(100 * total_imported / n_rows, 1), "%)")
+    }
+  }
+
+  # Verify import
+  db_count <- dbGetQuery(con, "SELECT COUNT(*) as n FROM raw_gps_points")$n
+  message("✓ Completed GPS data import - ", total_imported, " points inserted")
+  message("✓ Database contains ", db_count, " GPS points")
+
+  if (db_count != total_imported) {
+    warning("Mismatch: inserted ", total_imported, " but database has ", db_count)
+  }
+
+  beepr::beep()
+
+}, error = function(e) {
+  message("✗ GPS import failed with error:")
+  message(e$message)
+  beepr::beep(sound = 2)  # Error beep
+  stop("GPS import failed. See error above.")
+})
 ```
 
 ## Data Quality Validation

@@ -13,6 +13,7 @@ library(httr)
 library(jsonlite, exclude = "flatten")
 library(geosphere, include.only = "distHaversine")
 library(leaflet)
+library(lubridate)
 
 # source `format_path` function
 devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/format_path.R?raw=true")

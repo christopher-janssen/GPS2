@@ -49,161 +49,109 @@ Verify current state of imported GPS data:
 con |> check_gps_data_status()
 ```
 
-## GPS Data Filtering
+## GPS Processing with PostGIS
 
-Filter raw GPS points for clustering analysis:
-
-```{r}
-# Load raw GPS data from database
-gps_data <- dbGetQuery(con, "
-  SELECT 
-    s.subid,
-    rg.lat,
-    rg.lon,
-    rg.time
-  FROM raw_gps_points rg
-  JOIN subjects s ON rg.subject_id = s.id
-  ORDER BY s.subid, rg.time
-")
-```
-
-## Timestamp Processing
-
-Convert timestamps and add timezone information:
+All distance calculations, speed analysis, filtering, and movement classification are performed in PostGIS for optimal performance. This avoids loading 900K+ rows into R memory and eliminates grouped data issues.
 
 ```{r}
-# Convert time to POSIXct with proper timezone handling
-gps_data <- gps_data |>
-  mutate(
-    #dttm_obs = as.POSIXct(time, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
-    dttm_obs = with_tz(dttm_obs, tz = "America/Chicago")
-  ) |>
-  arrange(subid, dttm_obs)
-```
+# Clear existing processed data (no CASCADE - don't touch raw_gps_points!)
+dbExecute(con, "TRUNCATE TABLE processed_gps_points RESTART IDENTITY")
 
-## Distance and Speed Calculations
-
-Calculate distances, durations, and speeds between consecutive GPS points:
-
-```{r}
-# Calculate Haversine distances and speeds between consecutive points
-gps_data <- gps_data |>
-  group_by(subid) |>
-  mutate(
-    # Haversine distance in meters, then convert to miles
-    dist_m = if_else(
-      row_number() == 1, 
-      0,
-      distHaversine(
-        cbind(lag(lon), lag(lat)), 
-        cbind(lon, lat)
-      )
-    ),
-    dist_miles = dist_m / 1609.344,
-    
-    # Duration between consecutive points in minutes
-    duration_mins = if_else(
-      row_number() == 1, 
-      0,
-      as.numeric(difftime(dttm_obs, lag(dttm_obs), units = "mins"))
-    ),
-    
-    # Speed in miles per hour
-    speed_mph = if_else(
-      duration_mins > 0, 
-      dist_miles / (duration_mins / 60), 
-      0
-    )
-  ) |>
-  ungroup()
-```
-
-## Data Quality Filtering
-
-Apply lab filtering rules to remove erroneous GPS points:
-
-```{r}
-# Apply lab-specific filtering rules
-speed_threshold_mph <- 100
-rows_before <- nrow(gps_data)
-
-gps_data <- gps_data |>
-  mutate(
-    # Mark records with problematic duration/distance combinations
-    duration_clean = case_when(
-      # If short distance but zero duration, likely GPS error
-      dist_miles > 0.01 & duration_mins == 0 ~ NA_real_,
-      # If impossibly high speed, mark as invalid
-      speed_mph > speed_threshold_mph ~ NA_real_,
-      # If long duration but short distance (>30 mins, >0.31 miles), suspicious
-      duration_mins > 0.5 & dist_miles > 0.31 ~ NA_real_,
-      TRUE ~ duration_mins
-    ),
-    
-    # Recalculate speed with cleaned duration
-    speed_clean = case_when(
-      !is.na(duration_clean) & duration_clean > 0 ~ dist_miles / (duration_clean / 60),
-      TRUE ~ 0
-    )
-  ) |>
-  # Keep only valid records
-  filter(!is.na(duration_clean)) |>
-  select(-duration_mins, -speed_mph) |>
-  rename(
-    duration_mins = duration_clean,
-    speed_mph = speed_clean
+# Process all GPS data with PostGIS window functions and spatial calculations
+dbExecute(con, "
+  -- Step 1: Convert timezones
+  WITH timezone_converted AS (
+    SELECT
+      rg.point_id,
+      rg.subject_id,
+      rg.lat, rg.lon, rg.time, rg.geom,
+      (rg.time AT TIME ZONE 'UTC') AT TIME ZONE 'America/Chicago' as dttm_obs
+    FROM raw_gps_points rg
+  ),
+  -- Step 2: Add lagged values using window functions
+  with_lags AS (
+    SELECT
+      *,
+      LAG(geom) OVER w as prev_geom,
+      LAG(dttm_obs) OVER w as prev_time
+    FROM timezone_converted
+    WINDOW w AS (PARTITION BY subject_id ORDER BY time)
+  ),
+  -- Step 3: Calculate distances and durations using PostGIS geography
+  with_distances AS (
+    SELECT
+      *,
+      COALESCE(ST_Distance(prev_geom::geography, geom::geography), 0) as dist_m,
+      -- Handle DST transitions: ensure duration is never negative
+      GREATEST(COALESCE(EXTRACT(EPOCH FROM (dttm_obs - prev_time)) / 60, 0), 0) as duration_mins
+    FROM with_lags
+  ),
+  -- Step 4: Calculate speeds
+  with_speeds AS (
+    SELECT
+      *,
+      dist_m / 1609.344 as dist_miles,
+      CASE
+        WHEN duration_mins > 0 THEN (dist_m / 1609.344) / (duration_mins / 60)
+        ELSE 0
+      END as speed_mph
+    FROM with_distances
+  ),
+  -- Step 5: Apply data quality filtering (same rules as before)
+  filtered AS (
+    SELECT
+      *,
+      CASE
+        -- If short distance but zero duration, likely GPS error
+        WHEN dist_miles > 0.01 AND duration_mins = 0 THEN NULL
+        -- If impossibly high speed (>100 mph), mark as invalid
+        WHEN speed_mph > 100 THEN NULL
+        -- If long duration but short distance (>30 mins, >0.31 miles), suspicious
+        WHEN duration_mins > 0.5 AND dist_miles > 0.31 THEN NULL
+        ELSE duration_mins
+      END as duration_clean,
+      CASE
+        WHEN dist_miles > 0.01 AND duration_mins = 0 THEN NULL
+        WHEN speed_mph > 100 THEN NULL
+        WHEN duration_mins > 0.5 AND dist_miles > 0.31 THEN NULL
+        -- Prevent division by zero: require at least 0.01 minutes (0.6 seconds)
+        WHEN duration_mins >= 0.01 THEN (dist_miles / (duration_mins / 60))
+        ELSE 0
+      END as speed_clean
+    FROM with_speeds
   )
-```
-
-## Movement Detection
-
-Classify GPS points as stationary vs. movement:
-
-```{r}
-# Classify movement state based on speed thresholds
-stationary_threshold_mph <- 4
-
-gps_data <- gps_data |>
-  mutate(
-    movement_state = if_else(speed_mph <= stationary_threshold_mph, "stationary", "transition"),
-    transit = if_else(speed_mph <= stationary_threshold_mph, "no", "yes")
+  -- Step 6: Insert into processed_gps_points with movement classification
+  INSERT INTO processed_gps_points (
+    raw_point_id, subject_id, lat, lon, time, dttm_obs,
+    dist_miles, duration_mins, speed_mph,
+    movement_state, is_stationary, cluster_id
   )
-
-# Summary of movement classification
-gps_data |>
-  count(movement_state) |>
-  mutate(percentage = round(n / sum(n) * 100, 1)) |> 
-  print()
-```
-
-## Processed Data Storage
-
-Populate the processed GPS points table with analysis results:
-
-
-```{r}
-# Prepare processed data for database insertion
-processed_for_db <- gps_data |>
-  # Get subject_id from database for foreign key
-  left_join(
-    dbGetQuery(con, "SELECT id as subject_id, subid FROM subjects"), 
-    by = "subid"
-  ) |>
-  select(
+  SELECT
+    point_id,
     subject_id,
     lat, lon, time, dttm_obs,
-    dist_miles, duration_mins, speed_mph,
-    movement_state, is_stationary = transit
-  ) |>
-  mutate(
-    is_stationary = is_stationary == "no",  # Convert "no"/"yes" to boolean
-    cluster_id = NA_integer_  # Will be populated after clustering
-  )
+    dist_miles,
+    duration_clean as duration_mins,
+    speed_clean as speed_mph,
+    CASE WHEN speed_clean <= 4 THEN 'stationary' ELSE 'transition' END as movement_state,
+    CASE WHEN speed_clean <= 4 THEN true ELSE false END as is_stationary,
+    NULL as cluster_id
+  FROM filtered
+  WHERE duration_clean IS NOT NULL
+")
 
-# Clear existing processed data and insert new results
-dbExecute(con, "TRUNCATE TABLE processed_gps_points RESTART IDENTITY CASCADE")
-dbWriteTable(con, "processed_gps_points", processed_for_db, 
-             append = TRUE, row.names = FALSE)
+# Verify processing results
+processing_summary <- dbGetQuery(con, "
+  SELECT
+    COUNT(*) as total_processed_points,
+    COUNT(CASE WHEN is_stationary THEN 1 END) as stationary_points,
+    COUNT(CASE WHEN movement_state = 'transition' THEN 1 END) as transition_points,
+    ROUND(100.0 * COUNT(CASE WHEN is_stationary THEN 1 END) / COUNT(*), 1) as pct_stationary
+  FROM processed_gps_points
+")
+
+print("GPS Processing Summary:")
+print(processing_summary)
 ```
 
 ## Spatial Clustering Setup
@@ -215,13 +163,25 @@ Set clustering parameters and prepare for participant-wise clustering:
 radius_m <- 20  # Radius in meters for spatial proximity
 min_duration_min <- 30  # Minimum duration for meaningful stop within a day
 
+# Load stationary GPS data from database for clustering
+gps_data <- dbGetQuery(con, "
+  SELECT
+    s.subid,
+    p.lat, p.lon,
+    p.dttm_obs,
+    p.movement_state
+  FROM processed_gps_points p
+  JOIN subjects s ON p.subject_id = s.id
+  WHERE p.is_stationary = true
+  ORDER BY s.subid, p.dttm_obs
+")
+
 # Get list of participants with stationary data
 participants_with_stationary <- gps_data |>
-  filter(movement_state == "stationary") |>
   distinct(subid) |>
   pull(subid)
 
-participants_with_stationary
+cat("Found", length(participants_with_stationary), "participants with stationary data\n")
 ```
 
 ## Individual Participant Clustering
@@ -234,24 +194,24 @@ all_clusters <- list()
 
 # Process each participant
 for (participant in participants_with_stationary) {
-  
-  # Filter for specific participant and stationary points only
+
+  # Filter for specific participant and add date
   participant_data <- gps_data |>
-    filter(subid == participant, movement_state == "stationary") |>
+    filter(subid == participant) |>
     mutate(date = as.Date(dttm_obs)) |>
     arrange(dttm_obs)
-  
+
   if (nrow(participant_data) == 0) {
     next  # Skip if no stationary data
   }
-  
+
   cat("Processing participant:", participant, "(", nrow(participant_data), "stationary points)\n")
-  
+
   # Store participant data for daily clustering
   all_clusters[[participant]] <- participant_data
 }
 
-length(all_clusters)
+cat("Loaded data for", length(all_clusters), "participants\n")
 ```
 
 
@@ -442,57 +402,53 @@ Update database with clustering results:
 
 ```{r}
 # Update processed_gps_points with cluster assignments
-# First, prepare cluster assignments for database update
+# Map each GPS point to its nearest final cluster centroid
 cluster_assignments <- list()
 
 for (participant in names(all_clusters)) {
   daily_clusters <- all_clusters[[participant]]
-  
-  if (nrow(daily_clusters) > 0) {
-    # Map daily clusters to final clusters
-    participant_final <- final_clusters[[participant]]
-    
-    if (!is.null(participant_final) && nrow(participant_final) > 0) {
-      # Create mapping between daily clusters and final clusters
-      # This is a simplified approach - in practice you'd need more sophisticated mapping
-      cluster_map <- daily_clusters |>
-        select(subid, lat, lon, time = dttm_obs, daily_cluster) |>
-        mutate(
-          # For simplicity, assign daily_cluster as final cluster_id
-          # In production, you'd map based on spatial proximity to final cluster centroids
-          final_cluster_id = daily_cluster
-        )
-      
-      cluster_assignments[[participant]] <- cluster_map
-    }
-  }
+
+  if (nrow(daily_clusters) == 0) next
+
+  # Get final clusters for this participant
+  participant_final <- final_clusters[[participant]]
+
+  if (is.null(participant_final) || nrow(participant_final) == 0) next
+
+  # For each point in daily_clusters, find nearest final cluster
+  point_assignments <- daily_clusters |>
+    rowwise() |>
+    mutate(
+      # Calculate distance to each final cluster centroid
+      distances = list(distHaversine(
+        c(lon, lat),
+        cbind(participant_final$lon, participant_final$lat)
+      )),
+      # Find nearest cluster
+      nearest_cluster_idx = which.min(distances[[1]]),
+      min_distance = min(distances[[1]]),
+      # Get the actual cluster_id from gps_clusters table (will be assigned after insertion)
+      # For now, use the final_cluster number - we'll remap after database insertion
+      temp_cluster_id = participant_final$cluster_id[nearest_cluster_idx]
+    ) |>
+    ungroup() |>
+    filter(min_distance <= radius_m * 2) |>  # Only assign if within 2x clustering radius
+    select(subid, lat, lon, time = dttm_obs, temp_cluster_id)
+
+  cluster_assignments[[participant]] <- point_assignments
 }
 
 # Combine all cluster assignments
 if (length(cluster_assignments) > 0) {
   all_cluster_assignments <- bind_rows(cluster_assignments)
-  
-  # Create temporary table for cluster updates
-  dbWriteTable(con, "temp_cluster_assignments", all_cluster_assignments,
-               overwrite = TRUE, temporary = TRUE)
-  
-  # Update processed_gps_points with cluster assignments
-  dbExecute(con, "
-    UPDATE processed_gps_points 
-    SET cluster_id = temp.final_cluster_id
-    FROM temp_cluster_assignments temp
-    JOIN subjects s ON s.subid = temp.subid
-    WHERE processed_gps_points.subject_id = s.id
-      AND processed_gps_points.lat = temp.lat
-      AND processed_gps_points.lon = temp.lon
-      AND processed_gps_points.dttm_obs = temp.time
-      AND processed_gps_points.is_stationary = true
-  ")
+
+  cat("Generated", nrow(all_cluster_assignments), "cluster assignments for",
+      length(unique(all_cluster_assignments$subid)), "participants\n")
 }
 
-# Insert final cluster results into gps_clusters table
+# Insert final cluster results into gps_clusters table FIRST
 if (nrow(all_participant_clusters) > 0) {
-  # Add subject_id foreign key to cluster data and select only columns that exist in the table
+  # Add subject_id foreign key to cluster data
   clusters_for_db <- all_participant_clusters |>
     left_join(
       dbGetQuery(con, "SELECT id as subject_id, subid FROM subjects"),
@@ -507,12 +463,166 @@ if (nrow(all_participant_clusters) > 0) {
       total_visits,
       total_duration_hours
     )
-  
+
   # Clear existing clusters and insert new results
+  # Use DELETE instead of TRUNCATE to avoid foreign key constraint issues
+  dbExecute(con, "DELETE FROM reverse_geocode_results")
+  dbExecute(con, "DELETE FROM final_analysis WHERE cluster_id IS NOT NULL")
+  dbExecute(con, "UPDATE raw_gps_points SET cluster_id = NULL WHERE cluster_id IS NOT NULL")
   dbExecute(con, "DELETE FROM gps_clusters")
+  dbExecute(con, "ALTER SEQUENCE gps_clusters_cluster_id_seq RESTART WITH 1")
   dbWriteTable(con, "gps_clusters", clusters_for_db,
                append = TRUE, row.names = FALSE)
+
+  cat("Inserted", nrow(clusters_for_db), "clusters into gps_clusters table\n")
 }
+
+# NOW update processed_gps_points with actual database cluster_ids
+if (length(cluster_assignments) > 0) {
+
+  # Get the actual cluster_ids that were assigned by the database
+  db_clusters <- dbGetQuery(con, "
+    SELECT cluster_id, subject_id, lat, lon
+    FROM gps_clusters
+  ")
+
+  # Create mapping from participant + temp_cluster_id → actual cluster_id
+  # by matching to the nearest cluster centroid in the database
+  # Process by subject for efficiency
+  assignments_with_ids <- all_cluster_assignments |>
+    left_join(
+      dbGetQuery(con, "SELECT id as subject_id, subid FROM subjects"),
+      by = "subid"
+    ) |>
+    group_by(subject_id) |>
+    group_modify(~ {
+      subject_assignments <- .x
+      subject_clusters <- db_clusters[db_clusters$subject_id == .y$subject_id, ]
+
+      if (nrow(subject_clusters) == 0) {
+        return(tibble(lat = numeric(0), lon = numeric(0),
+                      time = as.POSIXct(character(0)), final_cluster_id = integer(0)))
+      }
+
+      # Vectorized distance calculation for all points to all clusters
+      point_coords <- cbind(subject_assignments$lon, subject_assignments$lat)
+      cluster_coords <- cbind(subject_clusters$lon, subject_clusters$lat)
+
+      # Find nearest cluster for each point
+      nearest_clusters <- apply(point_coords, 1, function(pt) {
+        dists <- distHaversine(pt, cluster_coords)
+        if (min(dists) <= radius_m * 2) {
+          subject_clusters$cluster_id[which.min(dists)]
+        } else {
+          NA_integer_
+        }
+      })
+
+      subject_assignments |>
+        mutate(final_cluster_id = nearest_clusters) |>
+        filter(!is.na(final_cluster_id))
+    }) |>
+    ungroup() |>
+    select(subject_id, lat, lon, time, final_cluster_id)
+
+  cat("Mapped", nrow(assignments_with_ids), "points to final cluster IDs\n")
+
+  # Write to temporary table
+  dbWriteTable(con, "temp_cluster_assignments", assignments_with_ids,
+               overwrite = TRUE, temporary = TRUE)
+
+  # Update using spatial matching with PostGIS (more reliable than timestamp matching)
+  updates <- dbExecute(con, "
+    WITH cluster_matches AS (
+      SELECT DISTINCT ON (p.processed_id)
+        p.processed_id,
+        c.cluster_id,
+        ST_Distance(
+          p.geom::geography,
+          c.geom::geography
+        ) as distance_m
+      FROM processed_gps_points p
+      JOIN gps_clusters c ON p.subject_id = c.subject_id
+      WHERE p.is_stationary = true
+        AND p.cluster_id IS NULL
+      ORDER BY p.processed_id, ST_Distance(p.geom::geography, c.geom::geography)
+    )
+    UPDATE processed_gps_points p
+    SET cluster_id = cm.cluster_id
+    FROM cluster_matches cm
+    WHERE p.processed_id = cm.processed_id
+      AND cm.distance_m <= 40  -- 2x the clustering radius (20m * 2)
+  ")
+
+  cat("Updated", updates, "rows in processed_gps_points with cluster assignments\n")
+}
+```
+
+## Verification
+
+Verify cluster assignments were successful:
+
+```{r}
+# Check cluster assignment coverage
+assignment_stats <- dbGetQuery(con, "
+  SELECT
+    COUNT(*) as total_stationary_points,
+    COUNT(cluster_id) as points_with_clusters,
+    COUNT(DISTINCT cluster_id) as unique_clusters_assigned,
+    ROUND(100.0 * COUNT(cluster_id) / NULLIF(COUNT(*), 0), 2) as pct_assigned
+  FROM processed_gps_points
+  WHERE is_stationary = true
+")
+
+print("Cluster Assignment Statistics:")
+print(assignment_stats)
+
+# Verify cluster distribution matches gps_clusters table
+cluster_validation <- dbGetQuery(con, "
+  SELECT
+    (SELECT COUNT(*) FROM gps_clusters) as total_clusters_in_table,
+    (SELECT COUNT(DISTINCT cluster_id) FROM processed_gps_points WHERE cluster_id IS NOT NULL) as clusters_used_in_points,
+    (SELECT MIN(cluster_id) FROM processed_gps_points WHERE cluster_id IS NOT NULL) as min_cluster_id,
+    (SELECT MAX(cluster_id) FROM processed_gps_points WHERE cluster_id IS NOT NULL) as max_cluster_id
+")
+
+print("Cluster Distribution Validation:")
+print(cluster_validation)
+
+# Per-subject cluster assignment summary
+subject_stats <- dbGetQuery(con, "
+  SELECT
+    s.subid,
+    COUNT(CASE WHEN p.is_stationary THEN 1 END) as stationary_points,
+    COUNT(p.cluster_id) as points_with_clusters,
+    COUNT(DISTINCT p.cluster_id) as unique_clusters
+  FROM processed_gps_points p
+  JOIN subjects s ON p.subject_id = s.id
+  GROUP BY s.subid
+  ORDER BY s.subid
+  LIMIT 10
+")
+
+print("Sample of per-subject assignments:")
+print(subject_stats)
+
+# Sample daily cluster distribution for entropy analysis validation
+daily_cluster_sample <- dbGetQuery(con, "
+  SELECT
+    s.subid,
+    DATE(p.dttm_obs) as date,
+    p.cluster_id,
+    COUNT(*) as points_in_cluster
+  FROM processed_gps_points p
+  JOIN subjects s ON p.subject_id = s.id
+  WHERE p.cluster_id IS NOT NULL
+  GROUP BY s.subid, DATE(p.dttm_obs), p.cluster_id
+  ORDER BY s.subid, date, points_in_cluster DESC
+  LIMIT 20
+")
+
+print("Sample daily cluster distribution (for entropy calculation):")
+print(daily_cluster_sample)
 ```
 
 ## Spatial Indexing
@@ -568,6 +678,29 @@ Based on the clustering results:
 1. **If clustering successful**: Proceed to `04-reverse-geocoding.qmd`
 2. **If parameter tuning needed**: Adjust clustering algorithms and re-run
 3. **If performance issues**: Review spatial indexing strategy
+
+### Using Cluster Data for Entropy Analysis
+
+Each processed GPS point now has a `cluster_id` linking it to a specific location cluster. For Shannon's Entropy calculation of daily locations:
+
+```r
+# Example: Calculate daily location entropy per subject
+daily_entropy <- dbGetQuery(con, "
+  SELECT
+    s.subid,
+    DATE(p.dttm_obs) as date,
+    p.cluster_id,
+    COUNT(*) as points_per_cluster
+  FROM processed_gps_points p
+  JOIN subjects s ON p.subject_id = s.id
+  WHERE p.cluster_id IS NOT NULL
+  GROUP BY s.subid, DATE(p.dttm_obs), p.cluster_id
+")
+
+# Then calculate Shannon's Entropy:
+# H = -Σ(p_i * log2(p_i))
+# where p_i is the proportion of time spent in each location per day
+```
 
 ### Troubleshooting Commands
 
