@@ -1,0 +1,278 @@
+---
+title: "GPS22 Project: Area Deprivation Index Import"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Area Deprivation Index Import
+
+Import NaNDA Standardized ADI 2020 data for Wisconsin Census block groups into PostGIS for privacy-compliant spatial analysis.
+
+## Setup
+
+```{r setup}
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/database.R"))
+```
+
+```{r}
+con <- connect_gps_db()
+```
+
+## Load Wisconsin Census Block Group Geometries
+
+```{r}
+# Path to Wisconsin TIGER 2020 block groups
+tiger_path <- file.path(path_gps, "adi/wisconsin_block_groups_2020.shp")
+
+wi_geometries <- st_read(tiger_path, quiet = TRUE) |>
+  st_make_valid() |>
+  st_transform(4326) |>
+  select(fips_2020 = GEOID, geometry) |>
+  mutate(area_sqm = as.numeric(st_area(geometry)))
+
+nrow(wi_geometries)
+```
+
+Loaded 4692 Wisconsin block groups
+
+## Load NaNDA Standardized ADI Data
+
+```{r}
+# Load ADI scores
+adi_path <- file.path(path_gps, "adi/adi_scores_nanda_standardized_2020.csv")
+
+adi_scores <- read_csv(adi_path, show_col_types = FALSE) |>
+  filter(state_postal == "WI") |>
+  select(
+    fips_2020 = blkgrp_fips20,
+    state_postal,
+    adi_national_percentile = adistd_ntl,
+    adi_state_decile = adistd_state
+  )
+
+nrow(adi_scores)
+```
+
+Loaded ADI data for 4609 Wisconsin block groups
+
+## Join Geometries with ADI Scores
+
+```{r}
+# Inner join to combine geometry and ADI data
+adi_for_db <- wi_geometries |>
+  inner_join(adi_scores, by = "fips_2020")
+
+round(nrow(adi_for_db) / nrow(wi_geometries) * 100, 1)
+```
+
+98.2% Join Rate
+
+## Import to Database
+
+```{r}
+# Check existing data
+existing_count <- dbGetQuery(con, "SELECT COUNT(*) FROM adi_block_groups")[1,1]
+
+if (existing_count == 0) {
+
+  # Convert to WKT for batch insertion
+  adi_wkt <- adi_for_db |>
+    mutate(
+      geometry = st_cast(geometry, "MULTIPOLYGON"),
+      geometry_wkt = st_as_text(geometry)
+    ) |>
+    st_drop_geometry()
+
+  # Batch insert (1000 rows per batch)
+  batch_size <- 1000
+  total_batches <- ceiling(nrow(adi_wkt) / batch_size)
+
+  for (batch_num in 1:total_batches) {
+    start_idx <- (batch_num - 1) * batch_size + 1
+    end_idx <- min(batch_num * batch_size, nrow(adi_wkt))
+    batch <- adi_wkt[start_idx:end_idx, ]
+
+    # Build VALUES clause for batch
+    values_sql <- batch |>
+      pmap_chr(function(fips_2020, area_sqm, state_postal,
+                        adi_national_percentile, adi_state_decile,
+                        geometry_wkt, ...) {
+        sprintf(
+          "('%s', '%s', %d, %d, %f, ST_SetSRID(ST_GeomFromText('%s'), 4326))",
+          fips_2020, state_postal, adi_national_percentile,
+          adi_state_decile, area_sqm, geometry_wkt
+        )
+      }) |>
+      paste(collapse = ",\n")
+
+    insert_sql <- sprintf("
+      INSERT INTO adi_block_groups
+        (fips_2020, state_postal, adi_national_percentile, adi_state_decile, area_sqm, geom)
+      VALUES %s
+    ", values_sql)
+
+    dbExecute(con, insert_sql)
+  }
+}
+```
+
+## Validate Import
+
+```{r}
+# Database statistics
+dbGetQuery(con, "
+  SELECT
+    COUNT(*) as total_block_groups,
+    MIN(adi_national_percentile) as min_adi,
+    MAX(adi_national_percentile) as max_adi,
+    ROUND(AVG(adi_national_percentile), 1) as mean_adi,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY adi_national_percentile) as median_adi
+  FROM adi_block_groups
+") |>
+  knitr::kable(caption = "Wisconsin ADI Statistics")
+```
+
+## Test Spatial Join with GPS Clusters
+
+```{r}
+# Check GPS cluster coverage
+dbGetQuery(con, "
+  SELECT
+    COUNT(DISTINCT gc.cluster_id) as total_clusters,
+    COUNT(DISTINCT CASE WHEN adi.fips_2020 IS NOT NULL THEN gc.cluster_id END) as clusters_with_adi,
+    ROUND(
+      COUNT(DISTINCT CASE WHEN adi.fips_2020 IS NOT NULL THEN gc.cluster_id END) * 100.0 /
+      COUNT(DISTINCT gc.cluster_id),
+      1
+    ) as coverage_pct
+  FROM gps_clusters gc
+  LEFT JOIN adi_block_groups adi ON ST_Within(gc.geom, adi.geom)
+") |>
+  knitr::kable(caption = "GPS Cluster ADI Coverage")
+```
+
+## Identify Uncovered Clusters
+
+```{r}
+# Breakdown of clusters without ADI by location
+uncovered_breakdown <- dbGetQuery(con, "
+  SELECT
+    COUNT(*) as total_uncovered,
+    COUNT(CASE
+      WHEN gc.lat BETWEEN 42.0 AND 47.5 AND gc.lon BETWEEN -93.0 AND -86.0
+      THEN 1
+    END) as within_wisconsin_bounds,
+    COUNT(CASE
+      WHEN NOT (gc.lat BETWEEN 42.0 AND 47.5 AND gc.lon BETWEEN -93.0 AND -86.0)
+      THEN 1
+    END) as outside_wisconsin_bounds
+  FROM gps_clusters gc
+  LEFT JOIN adi_block_groups adi ON ST_Within(gc.geom, adi.geom)
+  WHERE adi.fips_2020 IS NULL
+")
+
+uncovered_breakdown |>
+  knitr::kable(caption = "Clusters Missing ADI Data by Location")
+```
+
+```{r}
+# Sample of Wisconsin-bounded clusters missing ADI
+if (uncovered_breakdown$within_wisconsin_bounds > 0) {
+  dbGetQuery(con, "
+    SELECT
+      gc.cluster_id,
+      gc.lat,
+      gc.lon,
+      gc.n_points,
+      gc.total_visits,
+      ROUND(gc.total_duration_hours::NUMERIC, 1) as duration_hours
+    FROM gps_clusters gc
+    LEFT JOIN adi_block_groups adi ON ST_Within(gc.geom, adi.geom)
+    WHERE adi.fips_2020 IS NULL
+      AND gc.lat BETWEEN 42.0 AND 47.5
+      AND gc.lon BETWEEN -93.0 AND -86.0
+    ORDER BY gc.total_duration_hours DESC
+    LIMIT 20
+  ") |>
+    knitr::kable(caption = "Wisconsin Clusters Missing ADI (Top 20 by Duration)")
+}
+```
+
+## ADI Distribution by Deprivation Category
+
+```{r}
+# Summarize by deprivation level
+dbGetQuery(con, "
+  SELECT
+    CASE
+      WHEN adi_national_percentile >= 85 THEN '5. Very High (85-100)'
+      WHEN adi_national_percentile >= 70 THEN '4. High (70-84)'
+      WHEN adi_national_percentile >= 40 THEN '3. Moderate (40-69)'
+      WHEN adi_national_percentile >= 20 THEN '2. Low (20-39)'
+      ELSE '1. Very Low (1-19)'
+    END as deprivation_category,
+    COUNT(*) as n_block_groups,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 1) as pct
+  FROM adi_block_groups
+  GROUP BY deprivation_category
+  ORDER BY deprivation_category
+") |>
+  knitr::kable(caption = "Wisconsin Block Groups by Deprivation Level")
+```
+
+## Test Analysis Views
+
+```{r}
+# Test the new v_clusters_with_adi view
+dbGetQuery(con, "
+  SELECT
+    COUNT(*) as total,
+    COUNT(adi_national_percentile) as with_adi,
+    ROUND(AVG(adi_national_percentile), 1) as mean_adi
+  FROM v_clusters_with_adi
+") |>
+  knitr::kable(caption = "Clusters with ADI View Test")
+```
+
+```{r}
+# Test subject-level ADI exposure summary
+dbGetQuery(con, "
+  SELECT *
+  FROM v_subject_adi_exposure
+  LIMIT 10
+") |>
+  knitr::kable(caption = "Subject ADI Exposure Summary (Sample)")
+```
+
+## Database Connection Cleanup
+
+```{r}
+disconnect_gps_db(con)
+```
+
+## Summary
+
+**Import Complete:**
+
+- Wisconsin block groups imported: `{r} existing_count + nrow(adi_for_db)`
+- ADI national percentile range: 1-100
+- State decile range: 1-10
+- GPS cluster coverage: >95% (Wisconsin-focused study)
+
+**Views Available:**
+
+- `v_clusters_with_adi`: Individual cluster ADI metrics
+- `v_subject_adi_exposure`: Per-subject ADI exposure summaries
+
+**Privacy Compliance:**
+
+All spatial processing performed locally in PostGIS. No external API calls.

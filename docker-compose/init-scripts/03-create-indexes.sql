@@ -14,6 +14,9 @@ CREATE INDEX idx_gps_clusters_geom ON gps_clusters USING GIST (geom);
 -- Spatial index on Madison zoning districts geometry
 CREATE INDEX idx_madison_zoning_geom ON madison_zoning_districts USING GIST (geom);
 
+-- Spatial index on ADI block groups geometry (for GPS cluster joins)
+CREATE INDEX idx_adi_block_groups_geom ON adi_block_groups USING GIST (geom);
+
 -- ============================================================================
 -- PERFORMANCE INDEXES (B-tree)
 -- ============================================================================
@@ -43,6 +46,12 @@ CREATE INDEX idx_final_analysis_zone_type ON final_analysis (zone_type);
 
 -- Reverse geocoding lookup index
 CREATE INDEX idx_reverse_geocode_city ON reverse_geocode_results (city);
+
+-- ADI lookup and filtering indexes
+CREATE INDEX idx_adi_fips ON adi_block_groups (fips_2020);
+CREATE INDEX idx_adi_state ON adi_block_groups (state_postal);
+CREATE INDEX idx_adi_national_percentile ON adi_block_groups (adi_national_percentile);
+CREATE INDEX idx_adi_state_decile ON adi_block_groups (adi_state_decile);
 
 -- ============================================================================
 -- COMPOSITE INDEXES (Multi-column)
@@ -86,3 +95,4 @@ ANALYZE madison_zoning_districts;
 ANALYZE reverse_geocode_results;
 ANALYZE final_analysis;
 ANALYZE daily_location_entropy;
+ANALYZE adi_block_groups;

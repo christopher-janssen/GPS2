@@ -92,20 +92,21 @@ check_gps_data_status <- function(con) {
 }
 
 #' Standardized data loading with numbered table references
-#' @param table_ref Integer reference: 1=raw_gps, 2=processed_gps, 3=clusters, 4=geocoded, 5=joined, 6=zoning
+#' @param table_ref Integer reference: 1=raw_gps, 2=processed_gps, 3=clusters, 4=geocoded, 5=joined, 6=zoning, 7=adi
 #' @param con Database connection (optional, will create if NULL)
 #' @param ... Additional parameters passed to specific pull functions
 pull_db <- function(table_ref, con = NULL, ...) {
   if (is.null(con)) con <- connect_gps_db()
-  
+
   switch(as.character(table_ref),
     "1" = pull_raw_gps(con, ...),           # Raw GPS points
-    "2" = pull_processed_gps(con, ...),     # Processed GPS with movement states  
+    "2" = pull_processed_gps(con, ...),     # Processed GPS with movement states
     "3" = pull_gps_clusters(con, ...),      # Location clusters
     "4" = pull_geocoded_results(con, ...),  # Reverse geocoding results
     "5" = pull_joined_data(con, ...),       # Pre-joined analysis-ready data
     "6" = pull_zoning_data(con, ...),       # Madison zoning districts
-    stop("Unknown table reference: ", table_ref, ". Use 1-6 for different tables.")
+    "7" = pull_adi_data(con, ...),          # ADI block groups
+    stop("Unknown table reference: ", table_ref, ". Use 1-7 for different tables.")
   )
 }
 
@@ -334,6 +335,60 @@ pull_zoning_data <- function(con, zone_category = NULL, include_geometry = TRUE)
       select(-geometry_wkt) |>
       st_as_sf()
   }
-  
+
+  result
+}
+
+#' Pull ADI block group data
+#' @param con Database connection
+#' @param state_filter Optional state postal codes to filter (e.g., c("WI", "IL"))
+#' @param deprivation_threshold Filter to ADI >= threshold (e.g., 70 for high deprivation)
+#' @param include_geometry Whether to include spatial geometry (default: TRUE for mapping)
+pull_adi_data <- function(con, state_filter = NULL, deprivation_threshold = NULL, include_geometry = TRUE) {
+  if (include_geometry) {
+    query <- "
+      SELECT
+        fips_2020, state_postal, state_fips, county_fips, tract_fips, block_group,
+        adi_national_percentile, adi_state_decile,
+        area_sqm, adi_year, data_source, data_coverage,
+        ST_AsText(geom) as geometry_wkt,
+        ST_X(ST_Centroid(geom)) as center_lon,
+        ST_Y(ST_Centroid(geom)) as center_lat
+      FROM adi_block_groups"
+  } else {
+    query <- "
+      SELECT
+        fips_2020, state_postal,
+        adi_national_percentile, adi_state_decile,
+        ST_X(ST_Centroid(geom)) as center_lon,
+        ST_Y(ST_Centroid(geom)) as center_lat
+      FROM adi_block_groups"
+  }
+
+  conditions <- c()
+  if (!is.null(state_filter)) {
+    state_list <- paste0("'", state_filter, "'", collapse = ",")
+    conditions <- c(conditions, sprintf("state_postal IN (%s)", state_list))
+  }
+  if (!is.null(deprivation_threshold)) {
+    conditions <- c(conditions, sprintf("adi_national_percentile >= %d", deprivation_threshold))
+  }
+
+  if (length(conditions) > 0) {
+    query <- paste(query, "WHERE", paste(conditions, collapse = " AND "))
+  }
+
+  query <- paste(query, "ORDER BY state_postal, fips_2020")
+
+  result <- dbGetQuery(con, query)
+
+  # Convert to sf if geometry requested
+  if (include_geometry && nrow(result) > 0 && "geometry_wkt" %in% names(result)) {
+    result <- result |>
+      mutate(geometry = st_as_sfc(geometry_wkt, crs = 4326)) |>
+      select(-geometry_wkt) |>
+      st_as_sf()
+  }
+
   result
 }

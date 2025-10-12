@@ -14,8 +14,7 @@ editor:
 
 # Download Docker Desktop
 
-Download: [Docker
-Desktop](https://www.docker.com/products/docker-desktop/)
+Download: [DockerDesktop](https://www.docker.com/products/docker-desktop/)
 
 (You can link the Docker Account to your Github for easy login/access)
 
@@ -124,7 +123,7 @@ system("cd docker-compose && docker-compose exec -T postgis ls -l /research_data
 ## Database Schema Check
 
 Let's check to see if all of the tables were properly generated as well,
-as of right now, you should see 24!
+as of right now, you should see 21!
 
 ```{r}
 #| cache: false

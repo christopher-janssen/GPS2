@@ -174,6 +174,44 @@ CREATE TABLE daily_location_entropy (
     PRIMARY KEY (subject_id, date)
 );
 
+-- 9. ADI Block Groups table: Area Deprivation Index for Wisconsin
+-- Privacy-compliant: All spatial joins performed locally in PostGIS, no external API calls
+CREATE TABLE adi_block_groups (
+    fips_2020 TEXT PRIMARY KEY,
+    state_postal TEXT NOT NULL,
+
+    -- NaNDA Standardized ADI metrics
+    adi_national_percentile INTEGER CHECK (adi_national_percentile BETWEEN 1 AND 100),
+    adi_state_decile INTEGER CHECK (adi_state_decile BETWEEN 1 AND 10),
+
+    -- Derived FIPS components (computed from fips_2020)
+    state_fips TEXT GENERATED ALWAYS AS (SUBSTRING(fips_2020, 1, 2)) STORED,
+    county_fips TEXT GENERATED ALWAYS AS (SUBSTRING(fips_2020, 3, 3)) STORED,
+    tract_fips TEXT GENERATED ALWAYS AS (SUBSTRING(fips_2020, 6, 6)) STORED,
+    block_group TEXT GENERATED ALWAYS AS (SUBSTRING(fips_2020, 12, 1)) STORED,
+
+    -- Spatial geometry (Census block group boundaries)
+    geom GEOMETRY(MULTIPOLYGON, 4326),
+    area_sqm NUMERIC,
+
+    -- Metadata
+    adi_year INTEGER DEFAULT 2020,
+    data_source TEXT DEFAULT 'NaNDA Standardized ADI 2020',
+    data_coverage TEXT DEFAULT 'Wisconsin',
+    imported_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT valid_fips_length CHECK (LENGTH(fips_2020) = 12)
+);
+
+COMMENT ON TABLE adi_block_groups IS
+'Area Deprivation Index (ADI) by Census block group. Privacy-compliant: All spatial processing performed locally.';
+
+COMMENT ON COLUMN adi_block_groups.adi_national_percentile IS
+'National percentile rank (1-100, higher = more deprived). Source: NaNDA Standardized ADI.';
+
+COMMENT ON COLUMN adi_block_groups.adi_state_decile IS
+'State decile rank (1-10, higher = more deprived within state).';
+
 -- Create trigger to automatically populate geometry columns
 CREATE OR REPLACE FUNCTION update_geom_from_coords()
 RETURNS TRIGGER AS $$

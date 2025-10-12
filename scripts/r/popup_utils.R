@@ -144,9 +144,86 @@ create_cluster_info_box <- function(data, subid) {
     "<strong>Timeframe:</strong> [", format(start_date, "%m-%d-%Y"), " to ", 
     format(end_date, "%m-%d-%Y"), "]<br><br>",
     "<strong>Geocoding Results:</strong><br>",
-    "Complete addresses: ", with_addresses, " (", 
+    "Complete addresses: ", with_addresses, " (",
     round(with_addresses / nrow(data) * 100, 1), "%)<br>",
     "<em>Marker size = visit importance</em>",
+    "</div>"
+  )
+}
+
+#' Create popup for ADI cluster visualization
+create_adi_popup <- function(row) {
+  paste0(
+    "<div style='font-size: 13px; line-height: 1.4;'>",
+    "<strong>Cluster ", row$cluster_id, "</strong><br/>",
+    "Subject: ", row$subid, "<br/>",
+    "<strong>ADI: ", row$adi_national_percentile, "</strong> (National Percentile)<br/>",
+    "State Decile: ", row$adi_state_decile, "<br/>",
+    "<strong>", row$deprivation_category, "</strong><br/><br/>",
+    "Visits: ", row$total_visits, "<br/>",
+    "Total Hours: ", round(row$total_duration_hours, 1), "<br/>",
+    if (!is.na(row$address)) paste0("Address: ", row$address, "<br/>") else "",
+    if (!is.na(row$city)) paste0("City: ", row$city, "<br/>") else "",
+    if (!is.na(row$block_group_fips)) paste0("Block Group: ", row$block_group_fips) else "",
+    "</div>"
+  )
+}
+
+#' Create info box for ADI cluster visualization
+create_adi_info_box <- function(data) {
+  paste0(
+    "<div style='background: rgba(255,255,255,0.9); padding: 10px; ",
+    "border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); ",
+    "font-size: 12px; line-height: 1.3; max-width: 220px;'>",
+    "<strong>ADI Cluster Analysis</strong><br/>",
+    "<strong>", format(nrow(data), big.mark = ","), "</strong> clusters<br/>",
+    "<strong>", length(unique(data$subid)), "</strong> subjects<br/>",
+    "Mean ADI: <strong>",
+    round(mean(data$adi_national_percentile, na.rm = TRUE), 1),
+    "</strong><br/>",
+    "High Dep. (≥70): <strong>",
+    sum(data$adi_national_percentile >= 70, na.rm = TRUE),
+    "</strong><br/>",
+    "<em>Higher ADI = more deprived</em>",
+    "</div>"
+  )
+}
+
+#' Create popup for ADI block group polygons
+create_adi_block_group_popup <- function(row) {
+  paste0(
+    "<div style='font-size: 13px; line-height: 1.4;'>",
+    "<strong>Census Block Group</strong><br/>",
+    "FIPS: ", row$fips_2020, "<br/><br/>",
+    "<strong>ADI: ", row$adi_national_percentile,
+    "</strong> (National Percentile)<br/>",
+    "State Decile: ", row$adi_state_decile, "<br/>",
+    "<strong>", row$deprivation_category, "</strong><br/><br/>",
+    "Area: ", round(row$area_sqm / 1000000, 2), " km²",
+    "</div>"
+  )
+}
+
+#' Create info box for ADI block group visualization
+create_adi_block_group_info_box <- function(data) {
+  total_area_km2 <- round(
+    sum(data$area_sqm, na.rm = TRUE) / 1000000, 1
+  )
+
+  paste0(
+    "<div style='background: rgba(255,255,255,0.9); padding: 10px; ",
+    "border-radius: 5px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); ",
+    "font-size: 12px; line-height: 1.3; max-width: 220px;'>",
+    "<strong>Wisconsin ADI Overview</strong><br/>",
+    "<strong>", format(nrow(data), big.mark = ","),
+    "</strong> block groups<br/>",
+    "<strong>", total_area_km2, " km²</strong> total area<br/>",
+    "Mean ADI: <strong>",
+    round(mean(data$adi_national_percentile, na.rm = TRUE), 1),
+    "</strong><br/>",
+    "Range: ", min(data$adi_national_percentile, na.rm = TRUE),
+    " - ", max(data$adi_national_percentile, na.rm = TRUE), "<br/>",
+    "<em>Higher ADI = more deprived</em>",
     "</div>"
   )
 }

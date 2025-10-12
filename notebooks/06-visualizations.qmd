@@ -17,7 +17,10 @@ editor:
 
 # Interactive GPS Visualization Showcase
 
-This notebook demonstrates the complete GPS22 visualization workflow using the refactored `pull_db()` data loading system and interactive Leaflet maps. All visualizations use the new **data-first, visualization-second** approach for clean, R-idiomatic code.
+This notebook demonstrates the complete GPS22 visualization workflow
+using the refactored `pull_db()` data loading system and interactive
+Leaflet maps. All visualizations use the new **data-first,
+visualization-second** approach for clean, R-idiomatic code.
 
 ## Setup
 
@@ -36,12 +39,13 @@ con <- connect_gps_db()
 
 The `pull_db()` system provides numbered references for data access:
 
-- **`pull_db(1)`** - Raw GPS points with coordinates and timestamps
-- **`pull_db(2)`** - Processed GPS with movement states and clustering
-- **`pull_db(3)`** - Location clusters with visit statistics and geocoding
-- **`pull_db(4)`** - Pure geocoding results for address analysis
-- **`pull_db(5)`** - Analysis-ready joined dataset
-- **`pull_db(6)`** - Madison zoning districts with spatial polygons
+-   **`pull_db(1)`** - Raw GPS points with coordinates and timestamps
+-   **`pull_db(2)`** - Processed GPS with movement states and clustering
+-   **`pull_db(3)`** - Location clusters with visit statistics and
+    geocoding
+-   **`pull_db(4)`** - Pure geocoding results for address analysis
+-   **`pull_db(5)`** - Analysis-ready joined dataset
+-   **`pull_db(6)`** - Madison zoning districts with spatial polygons
 
 ## Available Participants
 
@@ -88,7 +92,8 @@ cluster_data <- pull_db(3, subid = 66)
 
 ### Location Cluster Map (Visit Frequency)
 
-The default visualization colors clusters by visit frequency using our Material Design palette:
+The default visualization colors clusters by visit frequency using our
+Material Design palette:
 
 ```{r cluster-map-visits}
 # Create interactive cluster map colored by visit frequency
@@ -100,11 +105,11 @@ cluster_data |>
   )
 ```
 
-**Global Visit Categories (consistent across all participants):**
-- **Rare (1 visit)**: Single-visit locations  
-- **Occasional (2-4 visits)**: Infrequently visited places
-- **Frequent (5-9 visits)**: Regularly visited locations
-- **Routine (10+ visits)**: Most frequently visited places
+**Global Visit Categories (consistent across all participants):** -
+**Rare (1 visit)**: Single-visit locations\
+- **Occasional (2-4 visits)**: Infrequently visited places - **Frequent
+(5-9 visits)**: Regularly visited locations - **Routine (10+ visits)**:
+Most frequently visited places
 
 ### Location Cluster Map (Duration-Based)
 
@@ -119,12 +124,12 @@ cluster_data |>
   )
 ```
 
-**Global Duration Categories (average time per visit):**
-- **Brief Stops (<1h avg)**: Quick stops and errands
-- **Short Stays (1-2h avg)**: Brief but meaningful visits  
-- **Medium Stays (2-4h avg)**: Extended activities
-- **Long Stays (4-8h avg)**: Major time commitments
-- **Extended Stays (8h+ avg)**: Work, sleep, or primary locations
+**Global Duration Categories (average time per visit):** - **Brief Stops
+(\<1h avg)**: Quick stops and errands - **Short Stays (1-2h avg)**:
+Brief but meaningful visits\
+- **Medium Stays (2-4h avg)**: Extended activities - **Long Stays (4-8h
+avg)**: Major time commitments - **Extended Stays (8h+ avg)**: Work,
+sleep, or primary locations
 
 ## Multiple Participant Comparison
 
@@ -271,7 +276,8 @@ city_distribution |>
 
 ## Zoning District Overview
 
-Visualize Madison's zoning districts to understand the spatial context of GPS locations:
+Visualize Madison's zoning districts to understand the spatial context
+of GPS locations:
 
 ```{r zoning-overview}
 # Show zoning category distribution
@@ -307,15 +313,143 @@ pull_db(6) |>
 ```
 
 **Zoning Categories:**
-- **Residential** (Green): Various residential districts from low to high density
-- **Commercial** (Orange): Business and retail districts  
-- **Mixed-Use** (Blue): Combined residential, commercial, and office spaces
-- **Downtown** (Brown): High-density urban core areas
-- **Employment** (Purple): Office parks and employment centers
-- **Industrial** (Blue-Grey): Manufacturing and industrial zones
-- **Special** (Red): Institutional, parks, and special-purpose areas
+
+-   **Residential** (Green): Various residential districts from low to
+    high density
+-   **Commercial** (Orange): Business and retail districts
+-   **Mixed-Use** (Blue): Combined residential, commercial, and office
+    spaces
+-   **Downtown** (Brown): High-density urban core areas
+-   **Employment** (Purple): Office parks and employment centers
+-   **Industrial** (Blue-Grey): Manufacturing and industrial zones
+-   **Special** (Red): Institutional, parks, and special-purpose areas
 
 Check Research Drive for exact zoning specifications.
+
+# Area Deprivation Index (ADI) Analysis
+
+## ADI Overview
+
+Explore socioeconomic context through the Area Deprivation Index:
+
+```{r adi-overview}
+# Load clusters with ADI data
+adi_clusters <- dbGetQuery(con, "
+  SELECT * FROM v_clusters_with_adi
+  WHERE adi_national_percentile IS NOT NULL
+") |>
+  st_as_sf(coords = c("lon", "lat"), crs = 4326, remove = FALSE)
+
+# Summary statistics
+adi_summary <- adi_clusters |>
+  st_drop_geometry() |>
+  summarise(
+    total_clusters = n(),
+    unique_subjects = n_distinct(subid),
+    mean_adi = round(mean(adi_national_percentile, na.rm = TRUE), 1),
+    median_adi = round(median(adi_national_percentile, na.rm = TRUE), 1),
+    high_deprivation = sum(adi_national_percentile >= 70),
+    low_deprivation = sum(adi_national_percentile < 40)
+  )
+
+adi_summary |>
+  knitr::kable(
+    caption = "ADI-Linked GPS Cluster Summary",
+    col.names = c("Total Clusters", "Subjects", "Mean ADI", "Median ADI", "High Deprivation (≥70)", "Low Deprivation (<40)")
+  )
+```
+
+```{r adi-distribution}
+# Distribution by deprivation category
+adi_clusters |>
+  st_drop_geometry() |>
+  count(deprivation_category) |>
+  arrange(desc(n)) |>
+  mutate(pct = round(n / sum(n) * 100, 1)) |>
+  knitr::kable(
+    caption = "GPS Clusters by Deprivation Level",
+    col.names = c("Deprivation Category", "Cluster Count", "Percentage")
+  )
+```
+
+## Subject-Level ADI Exposure
+
+```{r subject-adi-exposure}
+# Load subject-level ADI summaries
+subject_adi <- dbGetQuery(con, "
+  SELECT * FROM v_subject_adi_exposure
+  ORDER BY mean_adi_percentile DESC
+  LIMIT 15
+")
+
+subject_adi |>
+  select(subid, total_clusters_with_adi, mean_adi_percentile, time_weighted_adi,
+         high_deprivation_clusters, low_deprivation_clusters) |>
+  knitr::kable(
+    caption = "Top 15 Subjects by Mean ADI Exposure",
+    col.names = c("Subject", "Clusters", "Mean ADI", "Time-Weighted ADI",
+                  "High Dep. Clusters", "Low Dep. Clusters")
+  )
+```
+
+## Interactive ADI Map
+
+Visualize GPS clusters colored by area deprivation:
+
+```{r adi-map}
+# Generate interactive ADI map
+adi_clusters |>
+  plot_adi_map(show_legend = TRUE, layer_controls = TRUE)
+```
+
+**ADI Interpretation:**
+
+-   **National Percentile (1-100)**: Higher values indicate greater
+    neighborhood deprivation
+-   **Very High Deprivation (85-100)**: Most disadvantaged neighborhoods
+    nationally
+-   **High Deprivation (70-84)**: Above-average deprivation
+-   **Moderate Deprivation (40-69)**: Average socioeconomic status
+-   **Low/Very Low (\<40)**: Below-average deprivation (more advantaged
+    areas)
+
+ADI captures factors including income, education, employment, and
+housing quality at the Census block group level.
+
+## ADI Geographic Distribution
+
+Visualize the actual Census block group polygons colored by
+deprivation level:
+
+```{r adi-block-groups}
+# Load ADI block group polygons
+adi_block_groups <- dbGetQuery(con, "
+  SELECT
+    fips_2020,
+    state_postal,
+    adi_national_percentile,
+    adi_state_decile,
+    area_sqm,
+    ST_AsText(geom) as geom
+  FROM adi_block_groups
+") |>
+  st_as_sf(wkt = "geom", crs = 4326)
+
+# Create interactive map of ADI polygons
+adi_block_groups |>
+  plot_adi_block_groups(show_legend = TRUE, layer_controls = TRUE)
+```
+
+**Map Features:**
+
+-   **Toggle layers** to focus on specific deprivation levels
+-   **Click polygons** to see FIPS codes and ADI scores
+-   Census block groups are the smallest geographic unit for ADI data
+-   Wisconsin coverage: 4,609 block groups spanning the entire state
+
+This shows the geographic distribution of neighborhood deprivation
+across Wisconsin, providing context for where study participants spend
+their time.
 
 ```{r cleanup}
 # Clean up

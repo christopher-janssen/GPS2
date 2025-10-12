@@ -137,6 +137,77 @@ WHERE fa.zone_type IS NOT NULL
 GROUP BY s.subid, fa.subject_id, fa.zone_type
 ORDER BY s.subid, total_hours_in_zone DESC;
 
+-- View: Clusters with Area Deprivation Index (ADI) metrics
+CREATE OR REPLACE VIEW v_clusters_with_adi AS
+SELECT
+    gc.cluster_id,
+    s.subid,
+    gc.subject_id,
+    gc.lat,
+    gc.lon,
+    gc.geom,
+    gc.n_points,
+    gc.total_visits,
+    gc.total_duration_hours,
+    gc.first_visit,
+    gc.last_visit,
+
+    -- ADI metrics (from spatial join)
+    adi.fips_2020 as block_group_fips,
+    adi.state_postal as adi_state,
+    adi.adi_national_percentile,
+    adi.adi_state_decile,
+
+    -- Deprivation category for interpretability
+    CASE
+        WHEN adi.adi_national_percentile >= 85 THEN 'Very High Deprivation (85-100%)'
+        WHEN adi.adi_national_percentile >= 70 THEN 'High Deprivation (70-84%)'
+        WHEN adi.adi_national_percentile >= 40 THEN 'Moderate Deprivation (40-69%)'
+        WHEN adi.adi_national_percentile >= 20 THEN 'Low Deprivation (20-39%)'
+        WHEN adi.adi_national_percentile IS NOT NULL THEN 'Very Low Deprivation (1-19%)'
+        ELSE 'Unknown'
+    END as deprivation_category,
+
+    -- Geocoding and zoning (for comprehensive location context)
+    rgr.address,
+    rgr.city,
+    rgr.state as geocoded_state,
+    mz.zone_code,
+    mz.zone_category
+
+FROM gps_clusters gc
+JOIN subjects s ON gc.subject_id = s.id
+LEFT JOIN adi_block_groups adi ON ST_Within(gc.geom, adi.geom)
+LEFT JOIN reverse_geocode_results rgr ON gc.cluster_id = rgr.cluster_id
+LEFT JOIN madison_zoning_districts mz ON ST_Within(gc.geom, mz.geom);
+
+-- View: Subject ADI exposure summary
+CREATE OR REPLACE VIEW v_subject_adi_exposure AS
+SELECT
+    subid,
+    subject_id,
+    COUNT(cluster_id) as total_clusters_with_adi,
+    ROUND(AVG(adi_national_percentile)::NUMERIC, 1) as mean_adi_percentile,
+    ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY adi_national_percentile)::NUMERIC, 1) as median_adi_percentile,
+    MIN(adi_national_percentile) as min_adi_percentile,
+    MAX(adi_national_percentile) as max_adi_percentile,
+    ROUND(STDDEV(adi_national_percentile)::NUMERIC, 1) as adi_stddev,
+    -- Time-weighted ADI (weighted by duration at each cluster)
+    ROUND(
+        (SUM(adi_national_percentile * total_duration_hours) / NULLIF(SUM(total_duration_hours), 0))::NUMERIC,
+        1
+    ) as time_weighted_adi,
+    -- Count of clusters by deprivation category
+    COUNT(CASE WHEN adi_national_percentile >= 70 THEN 1 END) as high_deprivation_clusters,
+    COUNT(CASE WHEN adi_national_percentile < 40 THEN 1 END) as low_deprivation_clusters,
+    -- Total time spent in high vs low deprivation areas
+    SUM(CASE WHEN adi_national_percentile >= 70 THEN total_duration_hours ELSE 0 END) as hours_in_high_deprivation,
+    SUM(CASE WHEN adi_national_percentile < 40 THEN total_duration_hours ELSE 0 END) as hours_in_low_deprivation
+FROM v_clusters_with_adi
+WHERE adi_national_percentile IS NOT NULL
+GROUP BY subid, subject_id
+ORDER BY subid;
+
 -- ============================================================================
 -- TEMPORAL ANALYSIS VIEWS
 -- ============================================================================

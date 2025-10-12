@@ -615,6 +615,296 @@ create_zoning_info_box <- function(zoning_data) {
   )
 }
 
+# Area Deprivation Index (ADI) Visualization Functions
+
+#' Plot interactive ADI map with deprivation-colored clusters
+#' @param adi_data sf dataframe with ADI cluster data from v_clusters_with_adi
+#' @param show_legend Whether to display category legend (default: TRUE)
+#' @param layer_controls Whether to add toggleable layer controls (default: TRUE)
+plot_adi_map <- function(adi_data, show_legend = TRUE, layer_controls = TRUE) {
+
+  # Validate data
+  if (!"sf" %in% class(adi_data)) {
+    stop("adi_data must be an sf object with geometry column")
+  }
+
+  # Material Design palette for deprivation levels (green to red)
+  deprivation_colors <- c(
+    "Very Low Deprivation (1-19%)" = "#4caf50",      # Green - least deprived
+    "Low Deprivation (20-39%)" = "#8bc34a",          # Light Green
+    "Moderate Deprivation (40-69%)" = "#ffc107",     # Amber
+    "High Deprivation (70-84%)" = "#ff9800",         # Orange
+    "Very High Deprivation (85-100%)" = "#f44336"    # Red - most deprived
+  )
+
+  # Add styling columns
+  data <- adi_data |>
+    mutate(
+      # Use case_when instead of named vector indexing
+      fill_color = case_when(
+        deprivation_category == "Very Low Deprivation (1-19%)" ~ "#4caf50",
+        deprivation_category == "Low Deprivation (20-39%)" ~ "#8bc34a",
+        deprivation_category == "Moderate Deprivation (40-69%)" ~ "#ffc107",
+        deprivation_category == "High Deprivation (70-84%)" ~ "#ff9800",
+        deprivation_category == "Very High Deprivation (85-100%)" ~ "#f44336",
+        TRUE ~ "#666666"  # Fallback
+      ),
+      # Scale marker size by time spent
+      marker_size = pmax(5, pmin(12, 5 + (total_duration_hours / max(total_duration_hours, na.rm = TRUE)) * 7))
+    ) |>
+    rowwise() |>
+    mutate(popup_content = create_adi_popup(pick(everything()))) |>
+    ungroup()
+
+  # Calculate map center
+  center_lat <- mean(data$lat)
+  center_lon <- mean(data$lon)
+
+  # Create base map
+  map <- leaflet() |>
+    setView(lng = center_lon, lat = center_lat, zoom = 11) |>
+    addTiles()
+
+  # Define category order (least to most deprived for logical layering)
+  category_order <- c(
+    "Very Low Deprivation (1-19%)",
+    "Low Deprivation (20-39%)",
+    "Moderate Deprivation (40-69%)",
+    "High Deprivation (70-84%)",
+    "Very High Deprivation (85-100%)"
+  )
+
+  existing_categories <- category_order[category_order %in% unique(data$deprivation_category)]
+
+  # Add markers by category
+  for (category in existing_categories) {
+    category_data <- data |> filter(deprivation_category == category)
+    if (nrow(category_data) > 0) {
+      map <- map |>
+        addCircleMarkers(
+          data = category_data,
+          lng = ~lon, lat = ~lat,
+          radius = ~marker_size,
+          color = "#000",
+          fillColor = ~fill_color,
+          fillOpacity = 0.8,
+          stroke = TRUE,
+          weight = 1,
+          popup = ~popup_content,
+          group = category
+        )
+    }
+  }
+
+  # Add info box
+  info_html <- create_adi_info_box(data)
+  map <- map |> addControl(html = info_html, position = "topright")
+
+  # Add layer controls if requested
+  if (layer_controls && length(existing_categories) > 1) {
+    map <- map |>
+      addLayersControl(
+        overlayGroups = existing_categories,
+        options = layersControlOptions(collapsed = length(existing_categories) > 5)
+      )
+  }
+
+  # Add legend if requested
+  if (show_legend) {
+    legend_colors <- c()
+    legend_labels <- c()
+
+    # Reverse order for display (most deprived first in legend)
+    for (category in rev(existing_categories)) {
+      color <- deprivation_colors[[category]]
+      count <- sum(data$deprivation_category == category)
+      legend_colors <- c(legend_colors, color)
+      legend_labels <- c(legend_labels, paste0(category, " (n=", count, ")"))
+    }
+
+    map <- map |>
+      addLegend(
+        position = "bottomleft",
+        colors = legend_colors,
+        labels = legend_labels,
+        title = "Area Deprivation Index",
+        opacity = 0.8
+      )
+  }
+
+  map
+}
+
+#' Plot interactive ADI block group polygons map
+#' @param adi_block_group_data sf dataframe with ADI block group polygons
+#' @param show_legend Whether to display category legend (default: TRUE)
+#' @param layer_controls Whether to add toggleable layer controls (default: TRUE)
+#' @param gps_clusters Optional GPS cluster data to overlay
+plot_adi_block_groups <- function(adi_block_group_data, show_legend = TRUE,
+                                  layer_controls = TRUE, gps_clusters = NULL) {
+
+  # Validate data
+  if (!"sf" %in% class(adi_block_group_data)) {
+    stop("adi_block_group_data must be an sf object")
+  }
+
+  # Add deprivation category and styling
+  data <- adi_block_group_data |>
+    mutate(
+      # Categorize deprivation
+      deprivation_category = case_when(
+        adi_national_percentile >= 85 ~ "Very High Deprivation (85-100%)",
+        adi_national_percentile >= 70 ~ "High Deprivation (70-84%)",
+        adi_national_percentile >= 40 ~ "Moderate Deprivation (40-69%)",
+        adi_national_percentile >= 20 ~ "Low Deprivation (20-39%)",
+        TRUE ~ "Very Low Deprivation (1-19%)"
+      ),
+      # Assign colors using case_when
+      fill_color = case_when(
+        adi_national_percentile >= 85 ~ "#f44336",  # Red - most deprived
+        adi_national_percentile >= 70 ~ "#ff9800",  # Orange
+        adi_national_percentile >= 40 ~ "#ffc107",  # Amber
+        adi_national_percentile >= 20 ~ "#8bc34a",  # Light Green
+        TRUE ~ "#4caf50"  # Green - least deprived
+      )
+    ) |>
+    rowwise() |>
+    mutate(popup_content = create_adi_block_group_popup(pick(everything()))) |>
+    ungroup()
+
+  # Calculate map center
+  bounds <- st_bbox(data)
+  center_lat <- mean(c(bounds[2], bounds[4]))
+  center_lon <- mean(c(bounds[1], bounds[3]))
+
+  # Create base map
+  map <- leaflet() |>
+    setView(lng = center_lon, lat = center_lat, zoom = 7) |>
+    addTiles()
+
+  # Define category order (least to most deprived)
+  category_order <- c(
+    "Very Low Deprivation (1-19%)",
+    "Low Deprivation (20-39%)",
+    "Moderate Deprivation (40-69%)",
+    "High Deprivation (70-84%)",
+    "Very High Deprivation (85-100%)"
+  )
+
+  existing_categories <- category_order[
+    category_order %in% unique(data$deprivation_category)
+  ]
+
+  # Add polygons by category
+  for (category in existing_categories) {
+    category_data <- data |> filter(deprivation_category == category)
+    if (nrow(category_data) > 0) {
+      map <- map |>
+        addPolygons(
+          data = category_data,
+          fillColor = ~fill_color,
+          fillOpacity = 0.6,
+          color = "#000000",
+          weight = 1,
+          opacity = 0.8,
+          popup = ~popup_content,
+          label = ~paste("ADI:", adi_national_percentile),
+          group = category
+        )
+    }
+  }
+
+  # Add GPS clusters overlay if provided
+  if (!is.null(gps_clusters)) {
+    if (all(c("lat", "lon", "cluster_id") %in% names(gps_clusters))) {
+      gps_clusters <- gps_clusters |>
+        mutate(
+          popup_gps = create_cluster_popup(pick(everything())),
+          short_label = case_when(
+            !is.na(display_name) & nchar(display_name) <= 30 ~ display_name,
+            !is.na(display_name) ~ str_c(substr(display_name, 1, 27), "..."),
+            !is.na(city) ~ city,
+            TRUE ~ str_c("Cluster ", cluster_id)
+          )
+        )
+
+      map <- map |>
+        addCircleMarkers(
+          data = gps_clusters,
+          lng = ~lon, lat = ~lat,
+          radius = 6,
+          color = "#000000",
+          fillColor = "#9c27b0",  # Purple to contrast with ADI colors
+          fillOpacity = 0.9,
+          stroke = TRUE,
+          weight = 2,
+          popup = ~popup_gps,
+          label = ~short_label,
+          group = "GPS Clusters"
+        )
+
+      existing_categories <- c(existing_categories, "GPS Clusters")
+    }
+  }
+
+  # Add info box
+  info_html <- create_adi_block_group_info_box(data)
+  map <- map |> addControl(html = info_html, position = "topright")
+
+  # Add layer controls
+  if (layer_controls && length(existing_categories) > 1) {
+    map <- map |>
+      addLayersControl(
+        overlayGroups = existing_categories,
+        options = layersControlOptions(
+          collapsed = length(existing_categories) > 6
+        )
+      )
+  }
+
+  # Add legend if requested
+  if (show_legend) {
+    legend_categories <- existing_categories[
+      existing_categories != "GPS Clusters"
+    ]
+
+    if (length(legend_categories) > 0) {
+      legend_colors <- c()
+      legend_labels <- c()
+
+      # Reverse for display (most deprived first)
+      for (category in rev(legend_categories)) {
+        color <- case_when(
+          category == "Very High Deprivation (85-100%)" ~ "#f44336",
+          category == "High Deprivation (70-84%)" ~ "#ff9800",
+          category == "Moderate Deprivation (40-69%)" ~ "#ffc107",
+          category == "Low Deprivation (20-39%)" ~ "#8bc34a",
+          category == "Very Low Deprivation (1-19%)" ~ "#4caf50",
+          TRUE ~ "#666666"
+        )
+
+        count <- sum(data$deprivation_category == category)
+        legend_colors <- c(legend_colors, color)
+        legend_labels <- c(
+          legend_labels,
+          paste0(category, " (n=", format(count, big.mark = ","), ")")
+        )
+      }
+
+      map <- map |>
+        addLegend(
+          position = "bottomleft",
+          colors = legend_colors,
+          labels = legend_labels,
+          title = "Area Deprivation Index",
+          opacity = 0.8
+        )
+    }
+  }
+
+  map
+}
+
 # Convenience wrapper functions (DEPRECATED - use pull_db() + plot functions)
 
 #' @deprecated Use pull_db(1, subid = "XXX") |> plot_gps_points() instead
