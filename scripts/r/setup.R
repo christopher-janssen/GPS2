@@ -16,7 +16,7 @@ library(leaflet)
 library(lubridate)
 
 # source `format_path` function
-devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/format_path.R?raw=true")
+source("https://raw.githubusercontent.com/jjcurtin/lab_support/main/format_path.R")
 
 # set file paths
 path_shared <- format_path(str_c("studydata/risk/data_processed/shared"))
