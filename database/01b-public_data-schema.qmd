@@ -1,0 +1,203 @@
+---
+title: "Create public_data Schema Tables"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# public_data Schema: Shared Reference Data
+
+This notebook creates the public_data schema and its tables for shared reference data (OpenStreetMap and Area Deprivation Index) that can be used across multiple studies.
+
+## Schema Structure
+
+```
+┌─────────────────────┐
+│    public_data      │
+└──────┬──────────────┘
+       │
+       ├──> osm_poi
+       ├──> osm_landuse
+       └──> adi_scores
+```
+
+## Database Connection
+
+```{r}
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+
+# Connect to geolocation database
+con <- connect_to_db()
+
+# Verify connection
+dbGetQuery(con, "SELECT current_database(), current_user")
+```
+
+## Create Schema
+
+Create the public_data schema if it doesn't already exist.
+
+```{r}
+dbExecute(con, "CREATE SCHEMA IF NOT EXISTS public_data;")
+dbExecute(con, "GRANT ALL ON SCHEMA public_data TO PUBLIC;")
+```
+
+## Create OSM Points of Interest Table
+
+Stores OpenStreetMap POI data for Wisconsin (amenity, shop, leisure, tourism, etc.)
+
+**Source:** `osm_poi_wisconsin.gpkg` from research drive
+**Expected size:** ~50k-100k points
+
+```{r}
+dbExecute(con, "
+CREATE TABLE IF NOT EXISTS public_data.osm_poi (
+    osm_id BIGINT PRIMARY KEY,
+    osm_type CHAR(1),
+    class TEXT NOT NULL,
+    type TEXT NOT NULL,
+    name TEXT,
+    housenumber TEXT,
+    street TEXT,
+    city TEXT,
+    postcode TEXT,
+    rank_address INTEGER,
+    lon DOUBLE PRECISION,
+    lat DOUBLE PRECISION,
+    geom GEOMETRY(Point, 4326)
+);
+")
+```
+
+### Verify osm_poi table
+
+```{r}
+# Check table structure
+dbGetQuery(con, "
+SELECT
+    column_name,
+    data_type,
+    is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'public_data' AND table_name = 'osm_poi'
+ORDER BY ordinal_position;
+")
+```
+
+## Create OSM Landuse Polygons Table
+
+Stores OpenStreetMap landuse polygon data for Wisconsin.
+
+**Source:** `osm_landuse_wisconsin.gpkg` from research drive
+**Expected size:** ~10k-50k polygons
+
+```{r}
+dbExecute(con, "
+CREATE TABLE IF NOT EXISTS public_data.osm_landuse (
+    osm_id BIGINT PRIMARY KEY,
+    osm_type CHAR(1),
+    class TEXT NOT NULL,
+    type TEXT NOT NULL,
+    name TEXT,
+    city TEXT,
+    rank_address INTEGER,
+    area_sqkm DOUBLE PRECISION,
+    geom GEOMETRY(MultiPolygon, 4326)
+);
+")
+```
+
+### Verify osm_landuse table
+
+```{r}
+# Check table structure
+dbGetQuery(con, "
+SELECT
+    column_name,
+    data_type,
+    is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'public_data' AND table_name = 'osm_landuse'
+ORDER BY ordinal_position;
+")
+```
+
+## Create Area Deprivation Index Table
+
+Stores ADI scores by census block group (2020 data).
+
+**Source:** `adi_2020.gpkg` from research drive
+**Expected size:** ~20k block groups (Wisconsin)
+
+```{r}
+dbExecute(con, "
+CREATE TABLE IF NOT EXISTS public_data.adi_scores (
+    fips_2020 TEXT PRIMARY KEY,
+    state_postal CHAR(2),
+    state_fips CHAR(2),
+    county_fips CHAR(3),
+    tract_fips CHAR(6),
+    block_group CHAR(1),
+    adi_national_percentile INTEGER,
+    adi_state_decile INTEGER,
+    area_sqm DOUBLE PRECISION,
+    adi_year INTEGER,
+    data_source TEXT,
+    data_coverage TEXT,
+    geom GEOMETRY(MultiPolygon, 4326)
+);
+")
+```
+
+### Verify adi_scores table
+
+```{r}
+# Check table structure
+dbGetQuery(con, "
+SELECT
+    column_name,
+    data_type,
+    is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'public_data' AND table_name = 'adi_scores'
+ORDER BY ordinal_position;
+")
+```
+
+## Summary
+
+```{r}
+# List all tables in public_data schema
+tables <- dbGetQuery(con, "
+SELECT
+    table_name,
+    (SELECT COUNT(*)
+     FROM information_schema.columns
+     WHERE table_schema = 'public_data' AND table_name = t.table_name) as column_count
+FROM information_schema.tables t
+WHERE table_schema = 'public_data'
+ORDER BY table_name;
+")
+
+tables
+```
+
+## Next Steps
+
+1. Load OSM POI data → see data loading notebooks (02-98)
+2. Load OSM landuse data → see data loading notebooks (02-98)
+3. Load ADI data → see data loading notebooks (02-98)
+4. After all data is loaded, run `99-create-indexes.qmd` to create indexes
+
+```{r}
+# Close connection
+disconnect_db(con)
+```

@@ -1,0 +1,318 @@
+---
+title: "Process GPS Data"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Process GPS Data
+
+This notebook processes raw GPS data using the lab's validated R-based method: quality filtering, movement classification, timezone conversion, and speed/distance calculations.
+
+**Source:** `risk1.raw_gps`
+**Target:** `risk1.processed_gps`
+**Processing:**
+
+- Data quality filtering (remove GPS artifacts and sensor errors)
+- Distance/speed calculations (Haversine great circle distance)
+- Movement classification (speed ≤ 4 mph = stationary)
+- Timezone conversion (UTC → America/Chicago)
+
+**Note:** Clustering is not included in this version. `cluster_id` remains NULL for future implementation.
+
+## Setup
+
+```{r}
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+
+# Additional package for distance calculations
+library(geosphere)
+
+# Connect to database
+con <- connect_to_db()
+```
+
+## Verify Raw Data
+
+```{r}
+# Check raw GPS data is loaded
+dbGetQuery(con, "
+SELECT
+    COUNT(*) as total_points,
+    COUNT(DISTINCT subid) as subjects,
+    MIN(time) as min_time,
+    MAX(time) as max_time
+FROM risk1.raw_gps;
+")
+```
+
+## Load Raw GPS from Database
+
+```{r}
+# Load all raw GPS points
+gps_raw <- dbGetQuery(con, "
+SELECT
+    point_id,
+    subid,
+    lat,
+    lon,
+    time
+FROM risk1.raw_gps
+ORDER BY subid, time;
+")
+
+nrow(gps_raw)
+```
+
+## GPS Processing Pipeline
+
+Using the lab's validated method with quality filtering.
+
+### Step 1: Timezone Conversion
+
+```{r}
+# Convert UTC to America/Chicago local time
+gps_data <- gps_raw |>
+  mutate(
+    dttm_obs = as.POSIXct(time, tz = "UTC"),
+    dttm_obs = with_tz(dttm_obs, tz = "America/Chicago")
+  ) |>
+  arrange(subid, dttm_obs)
+
+glimpse(gps_data)
+```
+
+### Step 2: Calculate Distances, Durations, and Speeds
+
+```{r}
+# Calculate Haversine distance and movement metrics
+gps_processed <- gps_data |>
+  group_by(subid) |>
+  mutate(
+    # Haversine great circle distance in meters
+    dist_m = if_else(row_number() == 1, 0,
+                     distHaversine(cbind(lag(lon), lag(lat)),
+                                   cbind(lon, lat))),
+    # Convert to miles
+    dist = dist_m / 1609.344,
+
+    # Duration in minutes
+    duration = if_else(row_number() == 1, 0,
+                       as.numeric(difftime(dttm_obs, lag(dttm_obs), units = "mins"))),
+
+    # Speed in mph
+    speed = if_else(duration > 0, dist / (duration / 60), 0)
+  ) |>
+  ungroup()
+
+# Preview metrics
+gps_processed |>
+  filter(dist > 0) |>
+  select(subid, dttm_obs, dist, duration, speed) |>
+  slice_head(n = 10)
+```
+
+### Step 3: Apply Lab Quality Filtering Rules
+
+```{r}
+# Apply filtering rules to remove GPS artifacts
+gps_filtered <- gps_processed |>
+  mutate(
+    # Rule 1: Remove instantaneous jumps (distance without time)
+    duration = if_else(dist > 0.01 & duration == 0, NA_real_, duration),
+
+    # Rule 2: Remove implausibly fast speeds (>100 mph)
+    duration = if_else(speed > 100, NA_real_, duration),
+
+    # Rule 3: Remove rapid long-distance jumps (>0.31 miles in <30 seconds)
+    duration = if_else(duration > 0.5 & dist > 0.31, NA_real_, duration),
+
+    # Mark valid records
+    valid_record = !is.na(duration),
+
+    # Recalculate speed for valid records
+    speed = if_else(valid_record & duration > 0, dist / (duration / 60), 0)
+  ) |>
+  filter(valid_record) |>
+  select(-valid_record)
+
+# Check filtering impact
+tibble(
+  metric = c("Original points", "After filtering", "Removed"),
+  count = c(nrow(gps_processed), nrow(gps_filtered),
+            nrow(gps_processed) - nrow(gps_filtered)),
+  percentage = c(100,
+                 round(nrow(gps_filtered) / nrow(gps_processed) * 100, 2),
+                 round((nrow(gps_processed) - nrow(gps_filtered)) / nrow(gps_processed) * 100, 2))
+) |>
+  knitr::kable()
+```
+
+### Step 4: Movement State Classification
+
+```{r}
+# Classify movement state (4 mph threshold)
+gps_classified <- gps_filtered |>
+  mutate(
+    movement_state = if_else(speed <= 4, "stationary", "transition"),
+    is_stationary = if_else(speed <= 4, TRUE, FALSE)
+  )
+
+# Movement state distribution
+gps_classified |>
+  count(movement_state) |>
+  mutate(percentage = round(n / sum(n) * 100, 2)) |>
+  knitr::kable()
+```
+
+### Step 5: Prepare for Database Insert
+
+```{r}
+# Prepare final dataset for database
+gps_final <- gps_classified |>
+  mutate(
+    raw_point_id = point_id,
+    time_local = dttm_obs,
+    cluster_id = NA_integer_,  # NULL for now, future clustering implementation
+    speed_mph = round(speed, 2),
+    dist_miles = round(dist, 4),
+    dwell_time_seconds = round(duration * 60, 0)
+  ) |>
+  select(
+    subid,
+    raw_point_id,
+    lat,
+    lon,
+    time,
+    time_local,
+    movement_state,
+    is_stationary,
+    cluster_id,
+    speed_mph,
+    dist_miles,
+    dwell_time_seconds
+  )
+
+glimpse(gps_final)
+```
+
+## Write Processed GPS to Database
+
+```{r}
+# Write to risk1.processed_gps (without geometry initially)
+dbWriteTable(con,
+             Id(schema = "risk1", table = "processed_gps"),
+             gps_final,
+             append = TRUE,
+             row.names = FALSE)
+```
+
+## Update Geometries
+
+```{r}
+# Create PostGIS geometries from lat/lon
+dbExecute(con, "
+UPDATE risk1.processed_gps
+SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326)
+WHERE geom IS NULL;
+")
+```
+
+## Verify Processed Data
+
+```{r}
+# Check row count
+dbGetQuery(con, "SELECT COUNT(*) as processed_count FROM risk1.processed_gps")
+```
+
+```{r}
+# Movement state distribution
+dbGetQuery(con, "
+SELECT
+    movement_state,
+    COUNT(*) as count,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) as percentage,
+    ROUND(AVG(speed_mph)::numeric, 2) as avg_speed_mph
+FROM risk1.processed_gps
+GROUP BY movement_state;
+")
+```
+
+```{r}
+# Subject-level summary
+dbGetQuery(con, "
+SELECT
+    subid,
+    COUNT(*) as total_points,
+    COUNT(*) FILTER (WHERE is_stationary = TRUE) as stationary_points,
+    ROUND(AVG(speed_mph)::numeric, 2) as avg_speed_mph,
+    ROUND(AVG(dist_miles)::numeric, 4) as avg_dist_miles
+FROM risk1.processed_gps
+GROUP BY subid
+ORDER BY total_points DESC
+LIMIT 10;
+")
+```
+
+```{r}
+# Check geometry creation
+dbGetQuery(con, "
+SELECT
+    COUNT(*) as total_points,
+    COUNT(geom) as points_with_geom,
+    COUNT(*) - COUNT(geom) as missing_geom
+FROM risk1.processed_gps;
+")
+```
+
+```{r}
+# Sample processed records
+dbGetQuery(con, "
+SELECT
+    processed_id,
+    subid,
+    time_local,
+    movement_state,
+    speed_mph,
+    dist_miles
+FROM risk1.processed_gps
+ORDER BY processed_id
+LIMIT 10;
+")
+```
+
+## Summary
+
+```{r}
+# Overall statistics
+dbGetQuery(con, "
+SELECT
+    COUNT(*) as total_processed_points,
+    COUNT(DISTINCT subid) as subjects,
+    COUNT(*) FILTER (WHERE is_stationary = TRUE) as stationary_points,
+    COUNT(*) FILTER (WHERE movement_state = 'transition') as transition_points,
+    ROUND(AVG(speed_mph)::numeric, 2) as avg_speed_mph,
+    ROUND(AVG(dist_miles)::numeric, 4) as avg_dist_miles,
+    COUNT(geom) as points_with_geometry
+FROM risk1.processed_gps;
+")
+```
+
+## Cleanup
+
+```{r}
+disconnect_db(con)
+```
+
+## Next Steps
+
+1. Run **`99-create-indexes.qmd`** to create indexes for query performance optimization
+2. Use processed GPS data for spatial enrichment with public data sources (OSM POI, landuse, ADI)

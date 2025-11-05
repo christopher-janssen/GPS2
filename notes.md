@@ -67,7 +67,7 @@
 
 #### Workflow Consolidation
 
-- 🎉 **Major Documentation Win**: Consolidated workflows into clean QMD scripts
+- **Major Documentation Win**: Consolidated workflows into clean QMD scripts
 - ✅ Created first-attempt clustering script
 - ✅ Fixed time_derivative calculations and mapping demos
 - **Focus**: Need to implement day-to-day clustering for better real-world use cases
@@ -199,3 +199,13 @@
 - Created comprehensive `documentation/README.md` with database schema and architecture details
 - merged development history in `documentation/notes.md` to preserve progress-tracking
 - Added 03a-movement-classification.qmd to address deeprooted clustering/processing issues
+
+
+### 10/27
+
+- Add ADI information for EACH lat/lon from the `gps_enriched.csv` in RD, into a new CSV `gps_enriched_all.csv`
+- Add Nominatim placex information (match to the nearest centroid + distance)
+- Nearest shop `class` and `type`, with `distance` to centroid (accuracy metric)
+- Explore: can locations have multiple shop "types"?
+
+- Try to make the code readable (with assistance / walkthrough)

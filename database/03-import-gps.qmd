@@ -1,0 +1,255 @@
+---
+title: "Import Raw GPS Data"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Import Raw GPS Data
+
+This notebook imports raw GPS data from CSV into the database.
+
+**Source:** `gps.csv` (shared data)
+**Target:** `risk1.subjects` and `risk1.raw_gps`
+**Expected:** ~1.24M GPS points, 167 subjects
+
+## Setup
+
+```{r}
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+
+# Connect to database
+con <- connect_to_db()
+```
+
+## Read GPS CSV
+
+```{r}
+# Path to GPS CSV
+gps_path <- str_c(path_shared, "/gps.csv")
+
+# Read GPS data
+gps_raw <- read_csv(gps_path,
+                    col_types = cols(
+                      subid = col_integer(),
+                      lat = col_double(),
+                      lon = col_double(),
+                      time = col_datetime(),
+                      .default = col_skip()  # Skip unused columns
+                    ))
+```
+
+## Preview and Validate Data
+
+```{r}
+# Show structure
+glimpse(gps_raw)
+```
+
+```{r}
+# Basic statistics
+nrow(gps_raw)
+```
+
+```{r}
+# Check for missing values
+gps_raw |>
+  summarise(
+    missing_subid = sum(is.na(subid)),
+    missing_lat = sum(is.na(lat)),
+    missing_lon = sum(is.na(lon)),
+    missing_time = sum(is.na(time))
+  )
+```
+
+```{r}
+# Validate coordinate ranges
+gps_raw |>
+  summarise(
+    min_lat = min(lat, na.rm = TRUE),
+    max_lat = max(lat, na.rm = TRUE),
+    min_lon = min(lon, na.rm = TRUE),
+    max_lon = max(lon, na.rm = TRUE),
+    invalid_coords = sum(lat < -90 | lat > 90 | lon < -180 | lon > 180, na.rm = TRUE)
+  )
+```
+
+```{r}
+# Time range
+gps_raw |>
+  summarise(
+    min_time = min(time, na.rm = TRUE),
+    max_time = max(time, na.rm = TRUE)
+  )
+```
+
+## Load Subjects
+
+```{r}
+# Extract unique subjects
+subjects <- gps_raw |>
+  distinct(subid) |>
+  arrange(subid)
+
+nrow(subjects)
+```
+
+```{r}
+# Write subjects to database
+dbWriteTable(con,
+             Id(schema = "risk1", table = "subjects"),
+             subjects,
+             append = TRUE,
+             row.names = FALSE)
+```
+
+```{r}
+# Verify subjects load
+dbGetQuery(con, "SELECT COUNT(*) as subject_count FROM risk1.subjects")
+```
+
+## Prepare GPS Data for Loading
+
+```{r}
+# Select only needed columns and remove any NA coordinates
+gps_clean <- gps_raw |>
+  select(subid, lat, lon, time) |>
+  filter(!is.na(subid),
+         !is.na(lat),
+         !is.na(lon),
+         !is.na(time),
+         lat >= -90, lat <= 90,
+         lon >= -180, lon <= 180)
+
+nrow(gps_clean)
+```
+
+```{r}
+# Show records that would be excluded
+nrow(gps_raw) - nrow(gps_clean)
+```
+
+## Load GPS Data to Database
+
+Note: Loading without indexes first (indexes created in notebook 99).
+
+```{r}
+# Write GPS data to database
+# Using append=TRUE since table already exists
+dbWriteTable(con,
+             Id(schema = "risk1", table = "raw_gps"),
+             gps_clean,
+             append = TRUE,
+             row.names = FALSE)
+```
+
+## Generate PostGIS Geometries
+
+```{r}
+# Create geometry column from lat/lon
+dbExecute(con, "
+UPDATE risk1.raw_gps
+SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326)
+WHERE geom IS NULL;
+")
+```
+
+## Verify Load
+
+```{r}
+# Check row count
+dbGetQuery(con, "SELECT COUNT(*) as gps_point_count FROM risk1.raw_gps")
+```
+
+```{r}
+# Check by subject
+dbGetQuery(con, "
+SELECT
+    COUNT(DISTINCT subid) as unique_subjects,
+    COUNT(*) as total_points,
+    ROUND(AVG(point_count)::numeric, 2) as avg_points_per_subject
+FROM (
+    SELECT subid, COUNT(*) as point_count
+    FROM risk1.raw_gps
+    GROUP BY subid
+) subid_counts;
+")
+```
+
+```{r}
+# Check coordinate ranges
+dbGetQuery(con, "
+SELECT
+    MIN(lat) as min_lat,
+    MAX(lat) as max_lat,
+    MIN(lon) as min_lon,
+    MAX(lon) as max_lon
+FROM risk1.raw_gps;
+")
+```
+
+```{r}
+# Check time range
+dbGetQuery(con, "
+SELECT
+    MIN(time) as min_time,
+    MAX(time) as max_time
+FROM risk1.raw_gps;
+")
+```
+
+```{r}
+# Check geometry creation
+dbGetQuery(con, "
+SELECT
+    COUNT(*) as total_points,
+    COUNT(geom) as points_with_geom,
+    COUNT(*) - COUNT(geom) as missing_geom
+FROM risk1.raw_gps;
+")
+```
+
+```{r}
+# Sample records
+dbGetQuery(con, "
+SELECT
+    point_id,
+    subid,
+    lat,
+    lon,
+    time
+FROM risk1.raw_gps
+LIMIT 10;
+")
+```
+
+## Summary
+
+```{r}
+# Top 10 subjects by point count
+dbGetQuery(con, "
+SELECT
+    subid,
+    COUNT(*) as point_count,
+    MIN(time) as first_point,
+    MAX(time) as last_point
+FROM risk1.raw_gps
+GROUP BY subid
+ORDER BY point_count DESC
+LIMIT 10;
+")
+```
+
+## Cleanup
+
+```{r}
+disconnect_db(con)
+```

@@ -1,0 +1,224 @@
+---
+title: "Create risk1 Schema Tables"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# risk1 Schema: Study-specific GPS Data
+
+This notebook creates the risk1 schema and its core tables for study GPS data in the `geolocation` database.
+
+## Schema Structure
+
+```
+┌─────────────────────┐
+│      risk1          │
+└──────┬──────────────┘
+       │
+       ├──> subjects
+       ├──> raw_gps
+       └──> processed_gps
+```
+
+## Database Connection
+
+```{r}
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+
+# Connect to geolocation database
+con <- connect_to_db()
+
+# Verify connection
+dbGetQuery(con, "SELECT current_database(), current_user")
+```
+
+## Create Schema
+
+Create the risk1 schema if it doesn't already exist.
+
+```{r}
+dbExecute(con, "CREATE SCHEMA IF NOT EXISTS risk1;")
+dbExecute(con, "GRANT ALL ON SCHEMA risk1 TO PUBLIC;")
+```
+
+## Create Subjects Table
+
+Simplified structure with `subid` as primary key. Metadata columns can be added later as needed.
+
+```{r}
+dbExecute(con, "
+CREATE TABLE IF NOT EXISTS risk1.subjects (
+    subid SMALLINT PRIMARY KEY
+);
+")
+```
+
+### Verify subjects table
+
+```{r}
+# Check table exists and show structure
+dbGetQuery(con, "
+SELECT
+    column_name,
+    data_type,
+    is_nullable,
+    column_default
+FROM information_schema.columns
+WHERE table_schema = 'risk1' AND table_name = 'subjects'
+ORDER BY ordinal_position;
+")
+```
+
+## Create Raw GPS Table
+
+Stores raw GPS data imported from CSV. Includes only core analysis fields: subid, lat, lon, time.
+
+**Excluded fields:** sgmnt_type, trckpnt_type, app_source (not used in analysis)
+
+```{r}
+dbExecute(con, "
+CREATE TABLE IF NOT EXISTS risk1.raw_gps (
+    point_id SERIAL PRIMARY KEY,
+    subid SMALLINT NOT NULL,
+    lat DOUBLE PRECISION NOT NULL,
+    lon DOUBLE PRECISION NOT NULL,
+    time TIMESTAMP NOT NULL,
+    geom GEOMETRY(Point, 4326),
+
+    -- Foreign key constraint
+    CONSTRAINT fk_subject
+        FOREIGN KEY (subid)
+        REFERENCES risk1.subjects(subid)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE,
+
+    -- Data validation
+    CONSTRAINT valid_coords
+        CHECK (lat BETWEEN -90 AND 90 AND lon BETWEEN -180 AND 180)
+);
+")
+```
+
+### Verify raw_gps table
+
+```{r}
+# Check table structure
+dbGetQuery(con, "
+SELECT
+    column_name,
+    data_type,
+    is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'risk1' AND table_name = 'raw_gps'
+ORDER BY ordinal_position;
+")
+```
+
+```{r}
+# Check constraints
+dbGetQuery(con, "
+SELECT
+    constraint_name,
+    constraint_type
+FROM information_schema.table_constraints
+WHERE table_schema = 'risk1' AND table_name = 'raw_gps';
+")
+```
+
+## Create Processed GPS Table
+
+Stores results from the GPS processing pipeline: movement classification, clustering, and timezone conversion.
+
+```{r}
+dbExecute(con, "
+CREATE TABLE IF NOT EXISTS risk1.processed_gps (
+    processed_id SERIAL PRIMARY KEY,
+    subid SMALLINT NOT NULL,
+    raw_point_id INTEGER,
+    lat DOUBLE PRECISION NOT NULL,
+    lon DOUBLE PRECISION NOT NULL,
+    time TIMESTAMP NOT NULL,
+    time_local TIMESTAMP,
+    movement_state TEXT NOT NULL CHECK (movement_state IN ('stationary', 'transition')),
+    is_stationary BOOLEAN NOT NULL,
+    cluster_id INTEGER,
+    speed_mph DOUBLE PRECISION,
+    dist_miles DOUBLE PRECISION,
+    dwell_time_seconds INTEGER,
+    geom GEOMETRY(Point, 4326),
+
+    -- Foreign key constraints
+    CONSTRAINT fk_processed_subject
+        FOREIGN KEY (subid)
+        REFERENCES risk1.subjects(subid)
+        ON DELETE RESTRICT,
+
+    CONSTRAINT fk_processed_raw_point
+        FOREIGN KEY (raw_point_id)
+        REFERENCES risk1.raw_gps(point_id)
+        ON DELETE SET NULL
+);
+")
+```
+
+### Verify processed_gps table
+
+```{r}
+# Check table structure
+dbGetQuery(con, "
+SELECT
+    column_name,
+    data_type,
+    is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'risk1' AND table_name = 'processed_gps'
+ORDER BY ordinal_position;
+")
+```
+
+```{r}
+# Check constraints
+dbGetQuery(con, "
+SELECT
+    constraint_name,
+    constraint_type
+FROM information_schema.table_constraints
+WHERE table_schema = 'risk1' AND table_name = 'processed_gps';
+")
+```
+
+## Summary
+
+```{r}
+# List all tables in risk1 schema
+dbGetQuery(con, "
+SELECT
+    table_name,
+    (SELECT COUNT(*)
+     FROM information_schema.columns
+     WHERE table_schema = 'risk1' AND table_name = t.table_name) as column_count
+FROM information_schema.tables t
+WHERE table_schema = 'risk1'
+ORDER BY table_name;
+")
+```
+
+## Next Steps
+
+1. Proceed to `01b-public_data-schema.qmd` to create reference data tables
+2. Load data using notebooks 02-98
+3. Run `99-create-indexes.qmd` to create indexes (AFTER all data is loaded)
+
+```{r}
+# Close connection
+disconnect_db(con)
+```

@@ -1,0 +1,254 @@
+---
+title: "Create Database Indexes"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Create Indexes for Query Performance
+
+**IMPORTANT:** Run this notebook LAST, after all data has been loaded into the database.
+
+Building indexes on populated tables is significantly faster than maintaining indexes during bulk inserts. With ~1.24M GPS points, this approach saves considerable time.
+
+## Database Connection
+
+```{r}
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+
+# Connect to geolocation database
+con <- connect_to_db()
+
+# Verify connection
+dbGetQuery(con, "SELECT current_database(), current_user")
+```
+
+## Verify Data is Loaded
+
+Before creating indexes, verify that tables contain data:
+
+```{r}
+# Check row counts for all tables
+row_counts <- dbGetQuery(con, "
+SELECT
+    schemaname,
+    tablename,
+    n_live_tup as row_count
+FROM pg_stat_user_tables
+WHERE schemaname IN ('risk1', 'public_data')
+ORDER BY schemaname, tablename;
+")
+
+row_counts
+
+# Warn if tables are empty
+if (any(row_counts$row_count == 0)) {
+    warning("Some tables are empty! Consider loading data before creating indexes.")
+}
+```
+
+## Create Indexes for risk1.raw_gps
+
+```{r}
+# Foreign key index
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_raw_gps_subid
+ON risk1.raw_gps(subid);
+")
+
+# Time-based queries
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_raw_gps_time
+ON risk1.raw_gps(time);
+")
+
+# Composite index for subject time-series queries
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_raw_gps_subid_time
+ON risk1.raw_gps(subid, time);
+")
+
+# Spatial index for PostGIS operations
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_raw_gps_geom
+ON risk1.raw_gps USING GIST(geom);
+")
+```
+
+## Create Indexes for risk1.processed_gps
+
+```{r}
+# Foreign key index
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_processed_gps_subid
+ON risk1.processed_gps(subid);
+")
+
+# Link to raw GPS (useful for auditing/debugging)
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_processed_gps_raw_point
+ON risk1.processed_gps(raw_point_id);
+")
+
+# Temporal queries (local time)
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_processed_gps_time_local
+ON risk1.processed_gps(time_local);
+")
+
+# Composite index for subject temporal queries
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_processed_gps_subid_time
+ON risk1.processed_gps(subid, time_local);
+")
+
+# Movement classification queries
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_processed_gps_movement
+ON risk1.processed_gps(movement_state);
+")
+
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_processed_gps_stationary
+ON risk1.processed_gps(is_stationary);
+")
+
+# Cluster analysis (future use - currently NULL)
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_processed_gps_cluster
+ON risk1.processed_gps(cluster_id);
+")
+
+# Spatial index for PostGIS operations (need for enrichment)
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_processed_gps_geom
+ON risk1.processed_gps USING GIST(geom);
+")
+```
+
+## Create Indexes for public_data.osm_poi
+
+```{r}
+# POI type filtering
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_osm_poi_class
+ON public_data.osm_poi(class);
+")
+
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_osm_poi_type
+ON public_data.osm_poi(class, type);
+")
+
+# Spatial index for proximity queries
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_osm_poi_geom
+ON public_data.osm_poi USING GIST(geom);
+")
+```
+
+## Create Indexes for public_data.osm_landuse
+
+```{r}
+# Landuse type filtering
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_osm_landuse_class
+ON public_data.osm_landuse(class);
+")
+
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_osm_landuse_type
+ON public_data.osm_landuse(class, type);
+")
+
+# Spatial index for polygon containment queries
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_osm_landuse_geom
+ON public_data.osm_landuse USING GIST(geom);
+")
+```
+
+## Create Indexes for public_data.adi_scores
+
+```{r}
+# Geographic filtering
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_adi_state
+ON public_data.adi_scores(state_postal);
+")
+
+# ADI metric filtering
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_adi_national
+ON public_data.adi_scores(adi_national_percentile);
+")
+
+# Spatial index for block group containment queries
+dbExecute(con, "
+CREATE INDEX IF NOT EXISTS idx_adi_geom
+ON public_data.adi_scores USING GIST(geom);
+")
+```
+
+## Summary
+
+```{r}
+# Group by table
+dbGetQuery(con, "
+SELECT
+    schemaname || '.' || tablename as table_name,
+    COUNT(*) as index_count
+FROM pg_indexes
+WHERE schemaname IN ('risk1', 'public_data')
+GROUP BY schemaname, tablename
+ORDER BY schemaname, tablename;
+")
+```
+
+## Verify Index Sizes
+
+Check the size of indexes to ensure they were built properly:
+
+```{r}
+# Index sizes
+dbGetQuery(con, "
+SELECT
+    schemaname || '.' || tablename as table_name,
+    indexname,
+    pg_size_pretty(pg_relation_size(indexrelid)) as index_size
+FROM pg_stat_user_indexes
+WHERE schemaname IN ('risk1', 'public_data')
+ORDER BY pg_relation_size(indexrelid) DESC;
+")
+```
+
+## Performance Note
+
+Queries using these indexes should now be significantly faster:
+
+**Spatial enrichment (primary use case):**
+- GPS point → OSM POI proximity (`ST_DWithin` on geom indexes)
+- GPS point → Landuse containment (`ST_Contains` on geom indexes)
+- GPS point → ADI block group (`ST_Contains` on geom indexes)
+
+**Filtering and analysis:**
+- Subject filtering (`subid` indexes)
+- Temporal queries (`time`, `time_local` indexes)
+- Movement state classification (`movement_state`, `is_stationary` indexes)
+- POI/landuse type filtering (`class`, `type` indexes)
+
+**Future capabilities:**
+- Cluster-based analysis (when clustering is implemented)
+
+```{r}
+# Close connection
+disconnect_db(con)
+```
