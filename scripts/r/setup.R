@@ -15,10 +15,10 @@ library(dbscan, include.only = "dbscan")
 # source `format_path` function
 source("https://raw.githubusercontent.com/jjcurtin/lab_support/main/format_path.R")
 
-# set file paths
-path_shared <- file.path(str_c("/Volumes/jjcurtin/studydata/risk/data_processed/shared"))
-path_processed <- file.path(str_c("/Volumes/jjcurtin/studydata/risk/data_processed"))
-path_gps2 <- file.path(str_c("/Volumes/jjcurtin/studydata/risk/data_processed/gps2"))
+# set file paths (cross-platform via format_path)
+path_shared <- format_path("studydata/risk/data_processed/shared")
+path_processed <- format_path("studydata/risk/data_processed")
+path_gps2 <- format_path("studydata/risk/data_processed/gps2")
 
 # database configuration
 # For local testing or VM, adjust as needed
