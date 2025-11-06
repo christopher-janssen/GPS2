@@ -52,22 +52,7 @@ gps_raw <- read_csv(gps_path,
 ```{r}
 # Show structure
 glimpse(gps_raw)
-```
-
-```{r}
-# Basic statistics
 nrow(gps_raw)
-```
-
-```{r}
-# Check for missing values
-gps_raw |>
-  summarise(
-    missing_subid = sum(is.na(subid)),
-    missing_lat = sum(is.na(lat)),
-    missing_lon = sum(is.na(lon)),
-    missing_time = sum(is.na(time))
-  )
 ```
 
 ```{r}

@@ -103,7 +103,6 @@ SELECT
     osm_id,
     class,
     type,
-    name,
     city
 FROM public_data.osm_poi
 LIMIT 10;
@@ -119,7 +118,6 @@ SELECT
     COUNT(*) as total_points,
     COUNT(DISTINCT class) as unique_classes,
     COUNT(DISTINCT type) as unique_types,
-    COUNT(name) as named_points,
     COUNT(geom) as points_with_geometry
 FROM public_data.osm_poi;
 ")
@@ -137,7 +135,7 @@ This section loads OpenStreetMap landuse polygons for Wisconsin from the archive
 
 ```{r}
 # Path to archived landuse data
-landuse_path <- str_c(path_gps_public, "/osm_landuse_wisconsin.gpkg")
+landuse_path <- str_c(path_gps2, "/nominatim/osm_landuse_wisconsin.gpkg")
 
 # Read landuse data
 osm_landuse <- st_read(landuse_path)
@@ -155,7 +153,7 @@ glimpse(osm_landuse)
 osm_landuse |>
   slice_head(n = 10) |>
   st_drop_geometry() |>
-  select(osm_id, class, type, name, city, area_sqkm)
+  select(osm_id, class, type, city, area_sqkm)
 ```
 
 ```{r}
@@ -170,7 +168,7 @@ osm_landuse |>
 osm_landuse |>
   st_drop_geometry() |>
   arrange(desc(area_sqkm)) |>
-  select(osm_id, class, type, name, area_sqkm) |>
+  select(osm_id, class, type, area_sqkm) |>
   slice_head(n = 10)
 ```
 
@@ -210,7 +208,6 @@ SELECT
     osm_id,
     class,
     type,
-    name,
     area_sqkm
 FROM public_data.osm_landuse
 ORDER BY area_sqkm DESC
@@ -227,7 +224,6 @@ SELECT
     COUNT(*) as total_polygons,
     COUNT(DISTINCT class) as unique_classes,
     COUNT(DISTINCT type) as unique_types,
-    COUNT(name) as named_polygons,
     ROUND(SUM(area_sqkm)::numeric, 2) as total_area_sqkm,
     COUNT(geom) as polygons_with_geometry
 FROM public_data.osm_landuse;
@@ -246,7 +242,7 @@ This section loads Area Deprivation Index (ADI) scores by census block group for
 
 ```{r}
 # Path to ADI data
-adi_path <- str_c(path_shared, "/adi/adi_2020.gpkg")
+adi_path <- str_c(path_gps2, "/adi/wisconsin_block_groups_2020.shp")
 
 # Read ADI data
 adi_data <- st_read(adi_path)
