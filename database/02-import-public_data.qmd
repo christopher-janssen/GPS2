@@ -118,7 +118,7 @@ SELECT
     COUNT(*) as total_points,
     COUNT(DISTINCT class) as unique_classes,
     COUNT(DISTINCT type) as unique_types,
-    COUNT(geom) as points_with_geometry
+    COUNT(geometry) as points_with_geometry
 FROM public_data.osm_poi;
 ")
 ```
@@ -225,7 +225,7 @@ SELECT
     COUNT(DISTINCT class) as unique_classes,
     COUNT(DISTINCT type) as unique_types,
     ROUND(SUM(area_sqkm)::numeric, 2) as total_area_sqkm,
-    COUNT(geom) as polygons_with_geometry
+    COUNT(geometry) as polygons_with_geometry
 FROM public_data.osm_landuse;
 ")
 ```
@@ -371,7 +371,7 @@ SELECT
     COUNT(adi_national_percentile) as with_adi_score,
     ROUND(AVG(adi_national_percentile)::numeric, 1) as avg_adi,
     ROUND(AVG(area_sqm)::numeric, 2) as avg_area_sqm,
-    COUNT(geom) as with_geometry
+    COUNT(geometry) as with_geometry
 FROM public_data.adi_scores;
 ")
 ```

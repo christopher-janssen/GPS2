@@ -150,8 +150,8 @@ ON public_data.osm_poi(class, type);
 
 # Spatial index for proximity queries
 dbExecute(con, "
-CREATE INDEX IF NOT EXISTS idx_osm_poi_geom
-ON public_data.osm_poi USING GIST(geom);
+CREATE INDEX IF NOT EXISTS idx_osm_poi_geometry
+ON public_data.osm_poi USING GIST(geometry);
 ")
 ```
 
@@ -171,8 +171,8 @@ ON public_data.osm_landuse(class, type);
 
 # Spatial index for polygon containment queries
 dbExecute(con, "
-CREATE INDEX IF NOT EXISTS idx_osm_landuse_geom
-ON public_data.osm_landuse USING GIST(geom);
+CREATE INDEX IF NOT EXISTS idx_osm_landuse_geometry
+ON public_data.osm_landuse USING GIST(geometry);
 ")
 ```
 
@@ -193,8 +193,8 @@ ON public_data.adi_scores(adi_national_percentile);
 
 # Spatial index for block group containment queries
 dbExecute(con, "
-CREATE INDEX IF NOT EXISTS idx_adi_geom
-ON public_data.adi_scores USING GIST(geom);
+CREATE INDEX IF NOT EXISTS idx_adi_geometry
+ON public_data.adi_scores USING GIST(geometry);
 ")
 ```
 
