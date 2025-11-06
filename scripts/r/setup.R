@@ -21,11 +21,11 @@ path_processed <- format_path("studydata/risk/data_processed")
 path_gps2 <- format_path("studydata/risk/data_processed/gps2")
 
 # database configuration
-# For local testing or VM, adjust as needed
+# Uses Unix socket connection for peer authentication on VM
+# host parameter omitted to avoid TCP/IP password requirement
 GPS_DB_PARAMS <- list(
-  host = "localhost",
   port = 5432,
   dbname = "geolocation"
-  # user and password omitted for peer authentication on VM
-  # add them for local testing if needed
+  # user and password omitted for peer authentication
+  # add host = "localhost" + credentials for remote connections if needed
 )
