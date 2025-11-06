@@ -134,24 +134,17 @@ ORDER BY ordinal_position;
 
 Stores ADI scores by census block group (2020 data).
 
-**Source:** `adi_2020.gpkg` from research drive
-**Expected size:** ~20k block groups (Wisconsin)
+**Source:** Wisconsin block group geometries + NaNDA ADI scores (joined in R)
+**Expected size:** ~4,600 block groups (Wisconsin only)
 
 ```{r}
 dbExecute(con, "
 CREATE TABLE IF NOT EXISTS public_data.adi_scores (
     fips_2020 TEXT PRIMARY KEY,
     state_postal CHAR(2),
-    state_fips CHAR(2),
-    county_fips CHAR(3),
-    tract_fips CHAR(6),
-    block_group CHAR(1),
     adi_national_percentile INTEGER,
     adi_state_decile INTEGER,
     area_sqm DOUBLE PRECISION,
-    adi_year INTEGER,
-    data_source TEXT,
-    data_coverage TEXT,
     geom GEOMETRY(MultiPolygon, 4326)
 );
 ")

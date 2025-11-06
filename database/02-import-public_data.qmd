@@ -232,23 +232,63 @@ FROM public_data.osm_landuse;
 
 ## Load ADI Data
 
-This section loads Area Deprivation Index (ADI) scores by census block group for Wisconsin.
+This section loads Area Deprivation Index (ADI) scores by census block group for Wisconsin. ADI data comes from two sources that are joined in R:
 
-**Source:** `adi_2020.gpkg` (2020 census block groups)
+**Source 1:** Wisconsin census block group geometries (shapefile)
+**Source 2:** NaNDA standardized ADI scores 2020 (CSV)
 **Target:** `public_data.adi_scores`
-**Expected:** ~20k block groups (Wisconsin)
+**Expected:** ~4,600 block groups (Wisconsin only)
 
-## Load ADI from GeoPackage
+### Load Wisconsin Census Block Group Geometries
 
 ```{r}
-# Path to ADI data
-adi_path <- str_c(path_gps2, "/adi/wisconsin_block_groups_2020.shp")
+# Path to Wisconsin TIGER 2020 block groups
+tiger_path <- str_c(path_gps2, "/adi/wisconsin_block_groups_2020.shp")
 
-# Read ADI data
-adi_data <- st_read(adi_path)
+wi_geometries <- st_read(tiger_path) |>
+  st_make_valid() |>
+  st_transform(4326) |>
+  select(fips_2020 = GEOID, geometry) |>
+  mutate(area_sqm = as.numeric(st_area(geometry)))
+
+nrow(wi_geometries)
 ```
 
-## Preview Data
+### Load NaNDA Standardized ADI Scores
+
+```{r}
+# Path to ADI scores CSV
+adi_path <- str_c(path_gps2, "/adi/adi_scores_nanda_standardized_2020.csv")
+
+adi_scores <- read_csv(adi_path, show_col_types = FALSE) |>
+  filter(state_postal == "WI") |>
+  select(
+    fips_2020 = blkgrp_fips20,
+    state_postal,
+    adi_national_percentile = adistd_ntl,
+    adi_state_decile = adistd_state
+  )
+
+nrow(adi_scores)
+```
+
+### Join Geometries with ADI Scores
+
+```{r}
+# Inner join to combine geometry and ADI data
+adi_data <- wi_geometries |>
+  inner_join(adi_scores, by = "fips_2020") |>
+  mutate(geometry = st_cast(geometry, "MULTIPOLYGON"))
+
+nrow(adi_data)
+```
+
+```{r}
+# Calculate join rate
+round(nrow(adi_data) / nrow(wi_geometries) * 100, 1)
+```
+
+### Preview Data
 
 ```{r}
 # Show structure
@@ -272,19 +312,11 @@ adi_data |>
     q25_adi = quantile(adi_national_percentile, 0.25, na.rm = TRUE),
     median_adi = median(adi_national_percentile, na.rm = TRUE),
     q75_adi = quantile(adi_national_percentile, 0.75, na.rm = TRUE),
-    max_adi = max(adi_national_percentile, na.rm = TRUE),
-    missing = sum(is.na(adi_national_percentile))
+    max_adi = max(adi_national_percentile, na.rm = TRUE)
   )
 ```
 
-```{r}
-# State coverage check
-adi_data |>
-  st_drop_geometry() |>
-  count(state_postal, sort = TRUE)
-```
-
-## Write to Database
+### Write to Database
 
 ```{r}
 # Write to public_data.adi_scores
@@ -294,7 +326,7 @@ st_write(adi_data,
          append = FALSE)
 ```
 
-## Verify Load
+### Verify Load
 
 ```{r}
 # Check row count
@@ -309,21 +341,8 @@ SELECT
     PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY adi_national_percentile) as q25_adi,
     PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY adi_national_percentile) as median_adi,
     PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY adi_national_percentile) as q75_adi,
-    MAX(adi_national_percentile) as max_adi,
-    COUNT(*) FILTER (WHERE adi_national_percentile IS NULL) as missing
+    MAX(adi_national_percentile) as max_adi
 FROM public_data.adi_scores;
-")
-```
-
-```{r}
-# Check by state
-dbGetQuery(con, "
-SELECT
-    state_postal,
-    COUNT(*) as block_groups
-FROM public_data.adi_scores
-GROUP BY state_postal
-ORDER BY block_groups DESC;
 ")
 ```
 
@@ -332,27 +351,25 @@ ORDER BY block_groups DESC;
 dbGetQuery(con, "
 (SELECT 'High Deprivation' as category, fips_2020, adi_national_percentile, adi_state_decile
  FROM public_data.adi_scores
- WHERE adi_national_percentile IS NOT NULL
  ORDER BY adi_national_percentile DESC
  LIMIT 5)
 UNION ALL
 (SELECT 'Low Deprivation' as category, fips_2020, adi_national_percentile, adi_state_decile
  FROM public_data.adi_scores
- WHERE adi_national_percentile IS NOT NULL
  ORDER BY adi_national_percentile ASC
  LIMIT 5);
 ")
 ```
 
-## Summary
+### Summary
 
 ```{r}
 # Final statistics
 dbGetQuery(con, "
 SELECT
     COUNT(*) as total_block_groups,
-    COUNT(DISTINCT state_postal) as states,
     COUNT(adi_national_percentile) as with_adi_score,
+    ROUND(AVG(adi_national_percentile)::numeric, 1) as avg_adi,
     ROUND(AVG(area_sqm)::numeric, 2) as avg_area_sqm,
     COUNT(geom) as with_geometry
 FROM public_data.adi_scores;
