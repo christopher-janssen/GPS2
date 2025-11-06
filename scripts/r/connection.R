@@ -62,8 +62,10 @@ disconnect_db <- function(con) {
       if (dbIsValid(con)) {
         dbDisconnect(con)
         message("✓ Database connection closed")
+        return(TRUE)
       } else {
         message("Connection already closed/invalid")
+        return(TRUE)
       }
     }, otherwise = NULL, quiet = FALSE)
 
