@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS public_data.osm_poi (
     rank_address INTEGER,
     lon DOUBLE PRECISION,
     lat DOUBLE PRECISION,
-    geometry GEOMETRY(Point, 4326)
+    geom GEOMETRY(Point, 4326)
 );
 ")
 ```
@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS public_data.osm_landuse (
     city TEXT,
     rank_address INTEGER,
     area_sqkm DOUBLE PRECISION,
-    geometry GEOMETRY(MultiPolygon, 4326)
+    geom GEOMETRY(MultiPolygon, 4326)
 );
 ")
 ```
