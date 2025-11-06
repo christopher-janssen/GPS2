@@ -16,9 +16,9 @@ library(dbscan, include.only = "dbscan")
 source("https://raw.githubusercontent.com/jjcurtin/lab_support/main/format_path.R")
 
 # set file paths (cross-platform via format_path)
-path_shared <- format_path("studydata/risk/data_processed/shared")
-path_processed <- format_path("studydata/risk/data_processed")
-path_gps2 <- format_path("studydata/risk/data_processed/gps2")
+path_shared <- format_path("risk/data_processed/shared")
+path_processed <- format_path("risk/data_processed")
+path_gps2 <- format_path("risk/data_processed/gps2")
 
 # database configuration
 # Uses Unix socket connection for peer authentication on VM
