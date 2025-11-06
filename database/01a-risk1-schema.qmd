@@ -136,7 +136,9 @@ WHERE table_schema = 'risk1' AND table_name = 'raw_gps';
 
 ## Create Processed GPS Table
 
-Stores results from the GPS processing pipeline: movement classification, clustering, and timezone conversion.
+Stores results from the GPS processing pipeline: timezone conversion, dwell time, and optional movement classification/clustering.
+
+**Note:** Movement/cluster fields are optional - supports both point-level and cluster-based analyses.
 
 ```{r}
 dbExecute(con, "
@@ -148,8 +150,8 @@ CREATE TABLE IF NOT EXISTS risk1.processed_gps (
     lon DOUBLE PRECISION NOT NULL,
     time TIMESTAMP NOT NULL,
     time_local TIMESTAMP,
-    movement_state TEXT NOT NULL CHECK (movement_state IN ('stationary', 'transition')),
-    is_stationary BOOLEAN NOT NULL,
+    movement_state TEXT CHECK (movement_state IN ('stationary', 'transition')),
+    is_stationary BOOLEAN,
     cluster_id INTEGER,
     speed_mph DOUBLE PRECISION,
     dist_miles DOUBLE PRECISION,
