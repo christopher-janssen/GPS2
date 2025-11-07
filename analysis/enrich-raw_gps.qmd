@@ -81,6 +81,14 @@ SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326);
 dbExecute(con, "
 CREATE INDEX idx_temp_gps_geom ON temp_gps_points USING GIST(geom);
 ")
+
+# Create index on row_id for join performance
+dbExecute(con, "
+CREATE INDEX idx_temp_gps_row_id ON temp_gps_points(row_id);
+")
+
+# CRITICAL: Update table statistics so query planner uses indexes
+dbExecute(con, "ANALYZE temp_gps_points;")
 ```
 
 ```{r}
@@ -199,10 +207,15 @@ WHERE poi.class NOT IN ('man_made', 'natural', 'military', 'emergency', 'healthc
 #
 # Query breakdown:
 #   1. For each GPS point (CROSS JOIN LATERAL)
-#   2. Find POI within 20m (ST_DWithin filter)
-#   3. Sort by distance (ORDER BY <-> using spatial index)
-#   4. Keep only nearest (LIMIT 1)
+#   2. Fast geometric pre-filter using <-> operator and index
+#   3. Accurate geography distance check (only on nearest candidates)
+#   4. Keep only nearest within 20m (LIMIT 1)
 #   5. Return one result per GPS point (DISTINCT ON)
+#
+# Performance optimization:
+#   - Uses geometry (fast, indexed) for initial sorting
+#   - Only converts to geography for final distance validation
+#   - At Wisconsin latitude (~43°), 20m ≈ 0.00018 degrees
 
 nearest_poi <- dbGetQuery(con, str_c("
 SELECT DISTINCT ON (gps.row_id)
@@ -215,11 +228,11 @@ CROSS JOIN LATERAL (
     SELECT class, type, geom
     FROM public_data.osm_poi poi
     ", noise_filter, "
-      AND ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
     ORDER BY poi.geom <-> gps.geom
-    LIMIT 1
+    LIMIT 5
 ) poi
-ORDER BY gps.row_id;
+WHERE ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
+ORDER BY gps.row_id, poi.geom <-> gps.geom;
 "))
 
 nrow(nearest_poi)
@@ -243,7 +256,7 @@ Find nearest POI within each major class (shop, amenity, leisure, tourism).
 ### Nearest Shop
 
 ```{r}
-# Same pattern as overall nearest POI, but filtering WHERE class = 'shop'
+# Same optimization pattern: geometry for sorting, geography for validation
 nearest_shop <- dbGetQuery(con, "
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
@@ -254,11 +267,11 @@ CROSS JOIN LATERAL (
     SELECT type, geom
     FROM public_data.osm_poi poi
     WHERE poi.class = 'shop'
-      AND ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
     ORDER BY poi.geom <-> gps.geom
-    LIMIT 1
+    LIMIT 5
 ) poi
-ORDER BY gps.row_id;
+WHERE ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
+ORDER BY gps.row_id, poi.geom <-> gps.geom;
 ")
 
 nrow(nearest_shop)
@@ -267,7 +280,7 @@ nrow(nearest_shop)
 ### Nearest Amenity
 
 ```{r}
-# Same pattern, filtering WHERE class = 'amenity' (excluding noise types)
+# Same optimization pattern: geometry for sorting, geography for validation
 nearest_amenity <- dbGetQuery(con, "
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
@@ -281,11 +294,11 @@ CROSS JOIN LATERAL (
       AND poi.type NOT IN ('parking', 'bench', 'bicycle_parking', 'shelter',
                            'waste_basket', 'toilets', 'loading_dock', 'waste_disposal',
                            'drinking_water', 'grave_yard')
-      AND ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
     ORDER BY poi.geom <-> gps.geom
-    LIMIT 1
+    LIMIT 5
 ) poi
-ORDER BY gps.row_id;
+WHERE ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
+ORDER BY gps.row_id, poi.geom <-> gps.geom;
 ")
 
 nrow(nearest_amenity)
@@ -294,7 +307,7 @@ nrow(nearest_amenity)
 ### Nearest Leisure
 
 ```{r}
-# Same pattern, filtering WHERE class = 'leisure'
+# Same optimization pattern: geometry for sorting, geography for validation
 nearest_leisure <- dbGetQuery(con, "
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
@@ -305,11 +318,11 @@ CROSS JOIN LATERAL (
     SELECT type, geom
     FROM public_data.osm_poi poi
     WHERE poi.class = 'leisure'
-      AND ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
     ORDER BY poi.geom <-> gps.geom
-    LIMIT 1
+    LIMIT 5
 ) poi
-ORDER BY gps.row_id;
+WHERE ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
+ORDER BY gps.row_id, poi.geom <-> gps.geom;
 ")
 
 nrow(nearest_leisure)
@@ -318,7 +331,7 @@ nrow(nearest_leisure)
 ### Nearest Tourism
 
 ```{r}
-# Same pattern, filtering WHERE class = 'tourism'
+# Same optimization pattern: geometry for sorting, geography for validation
 nearest_tourism <- dbGetQuery(con, "
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
@@ -329,11 +342,11 @@ CROSS JOIN LATERAL (
     SELECT type, geom
     FROM public_data.osm_poi poi
     WHERE poi.class = 'tourism'
-      AND ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
     ORDER BY poi.geom <-> gps.geom
-    LIMIT 1
+    LIMIT 5
 ) poi
-ORDER BY gps.row_id;
+WHERE ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
+ORDER BY gps.row_id, poi.geom <-> gps.geom;
 ")
 
 nrow(nearest_tourism)
@@ -348,7 +361,7 @@ nrow(nearest_tourism)
 Bars, pubs, nightclubs, biergartens.
 
 ```{r}
-# Same pattern, filtering WHERE type IN ('bar', 'pub', 'nightclub', 'biergarten')
+# Same optimization pattern: geometry for sorting, geography for validation
 nearest_alcohol_venue <- dbGetQuery(con, "
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
@@ -360,11 +373,11 @@ CROSS JOIN LATERAL (
     FROM public_data.osm_poi poi
     WHERE poi.class = 'amenity'
       AND poi.type IN ('bar', 'pub', 'nightclub', 'biergarten')
-      AND ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
     ORDER BY poi.geom <-> gps.geom
-    LIMIT 1
+    LIMIT 5
 ) poi
-ORDER BY gps.row_id;
+WHERE ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
+ORDER BY gps.row_id, poi.geom <-> gps.geom;
 ")
 
 nrow(nearest_alcohol_venue)
@@ -375,7 +388,7 @@ nrow(nearest_alcohol_venue)
 Liquor stores, wine shops, breweries.
 
 ```{r}
-# Same pattern, filtering across multiple classes (shop:alcohol/wine, craft:brewery)
+# Same optimization pattern: geometry for sorting, geography for validation
 nearest_alcohol_retail <- dbGetQuery(con, "
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
@@ -390,11 +403,11 @@ CROSS JOIN LATERAL (
     FROM public_data.osm_poi poi
     WHERE ((poi.class = 'shop' AND poi.type IN ('alcohol', 'wine'))
            OR (poi.class = 'craft' AND poi.type = 'brewery'))
-      AND ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
     ORDER BY poi.geom <-> gps.geom
-    LIMIT 1
+    LIMIT 5
 ) poi
-ORDER BY gps.row_id;
+WHERE ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
+ORDER BY gps.row_id, poi.geom <-> gps.geom;
 ")
 
 nrow(nearest_alcohol_retail)
@@ -405,7 +418,7 @@ nrow(nearest_alcohol_retail)
 Restaurants, cafes, fast food.
 
 ```{r}
-# Same pattern, filtering WHERE type IN ('restaurant', 'cafe', 'fast_food')
+# Same optimization pattern: geometry for sorting, geography for validation
 nearest_food_venue <- dbGetQuery(con, "
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
@@ -417,11 +430,11 @@ CROSS JOIN LATERAL (
     FROM public_data.osm_poi poi
     WHERE poi.class = 'amenity'
       AND poi.type IN ('restaurant', 'cafe', 'fast_food')
-      AND ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
     ORDER BY poi.geom <-> gps.geom
-    LIMIT 1
+    LIMIT 5
 ) poi
-ORDER BY gps.row_id;
+WHERE ST_DWithin(poi.geom::geography, gps.geom::geography, 20)
+ORDER BY gps.row_id, poi.geom <-> gps.geom;
 ")
 
 nrow(nearest_food_venue)
