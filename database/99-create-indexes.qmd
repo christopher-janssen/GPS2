@@ -31,30 +31,6 @@ con <- connect_to_db()
 dbGetQuery(con, "SELECT current_database(), current_user")
 ```
 
-## Verify Data is Loaded
-
-Before creating indexes, verify that tables contain data:
-
-```{r}
-# Check row counts for all tables
-row_counts <- dbGetQuery(con, "
-SELECT
-    schemaname,
-    tablename,
-    n_live_tup as row_count
-FROM pg_stat_user_tables
-WHERE schemaname IN ('risk1', 'public_data')
-ORDER BY schemaname, tablename;
-")
-
-row_counts
-
-# Warn if tables are empty
-if (any(row_counts$row_count == 0)) {
-    warning("Some tables are empty! Consider loading data before creating indexes.")
-}
-```
-
 ## Create Indexes for risk1.raw_gps
 
 ```{r}

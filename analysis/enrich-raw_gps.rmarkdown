@@ -539,3 +539,4 @@ dbExecute(con, "DROP TABLE IF EXISTS temp_gps_points;")
 # Disconnect
 disconnect_db(con)
 ```
+
