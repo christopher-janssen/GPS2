@@ -19,8 +19,6 @@ This notebook enriches GPS data with spatial context from the database:
 - **ADI scores**: Census block group deprivation index
 - **Nearest POI**: Hierarchical matching to OpenStreetMap points of interest
 
-**Input:** `gps_enriched.csv` from research drive
-**Output:** `gps_enriched_all.csv` with added spatial context
 **POI Distance Limit:** 20 meters
 
 ## Setup
@@ -58,10 +56,14 @@ For efficient spatial queries, we'll load GPS points into a temporary database t
 gps_spatial <- gps_data |>
   mutate(row_id = row_number()) |>
   select(row_id, lat, lon)
+```
 
+```{r}
 # Write to temporary table
 dbWriteTable(con, "temp_gps_points", gps_spatial, temporary = TRUE, overwrite = TRUE, row.names = FALSE)
 ```
+
+This is basically the R equivalent of loading a dataset into the environment. We want it to be available and ready for analyses quickly, but not permanently.
 
 ```{r}
 # Create geometry column
@@ -76,6 +78,72 @@ SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326);
 ")
 ```
 
+`GEOMETRY(Point, 4326)` defines two major things:
+
+1. Point = Geometry Type
+
+Specifies what kind of spatial object we are storing.
+
+Options include:
+- Point (single location, like GPS coords)
+- LineString - A connected path (route)
+- Polygon - enclosed area (cencus block groups/landuse)
+- Multipoint, MultiPolygon, etc
+
+2. 4326 = **SRID** (Spatial Reference System Identifier)
+
+Specifies what coordinate system, and how to interpret the lat/lon numbers.
+
+This project uses **EPSG:4326 / WGS84**
+
+They both refer to the same thing:
+- WGS84 = "World Geodetic System 1984"
+- EPSG:4326 = The code number for it from the EPSG registry
+
+WGS84 is the coordinate system GPS satellites use:
+
+- Uses degrees (not meters/feet)
+- Covers the whole Earth
+- Good for storage and display
+
+But notably **not suited for distance calculations**:
+
+In Madison, Wisconsin's latitude (~43°)
+- 1° lon = ~80km
+- 1° lat = ~111km
+
+At the equator:
+- 1° lon = ~ 111km
+- 1° lat = ~ 111km
+
+The solution:
+
+ST_MakePoint(lon, lat)    -- Creates a point 
+ST_SetSRID(..., 4326)     -- Tag it: "These are WGS84 lat/lon degrees"
+
+Now PostGIS knows:
+
+- These are degrees, not meters
+- These points need to be converted to geography for accurate meter-based distances
+- Spatial indexes can be used to optimize this lat/lon data
+
+Why Transform to Geometry Type?
+
+- PostGIS spatial indexes make "nearest neighbor" queries feasible.
+- Without spatial indexes, finding the nearest POI would require 1.24M GPS points × 85K POI = 105 billion distance calculations
+
+Why can't we use those fancy spatial indexes on the lat/lons?
+
+PostgreSQL's GIST indexes require a single column. The geometry type packages both coordinates into one column, enabling spatial indexing. You cannot create a GIST spatial index on `(lat, lon)` as separate columns.
+
+Use-case:
+
+Queries will use both geometry and geography types:
+- `geometry` when fast operations in degrees are necessary
+- `geography` when accurate caluclations in meters are necessary
+
+
+
 ```{r}
 # Create spatial index for performance
 dbExecute(con, "
@@ -87,7 +155,7 @@ dbExecute(con, "
 CREATE INDEX idx_temp_gps_row_id ON temp_gps_points(row_id);
 ")
 
-# CRITICAL: Update table statistics so query planner uses indexes
+# Update table statistics so query planner uses indexes
 dbExecute(con, "ANALYZE temp_gps_points;")
 ```
 
@@ -182,11 +250,6 @@ gps_data |>
 
 6. **`LIMIT 1`** = "Return only the nearest POI for this GPS point"
    - Combined with ORDER BY, gets the closest match
-
-**Why SQL Instead of R:**
-- **Performance**: With 1.24M GPS points and 85K POI, PostGIS spatial indexes make this fast
-- **Memory**: Database handles data without loading everything into R
-- **Accuracy**: PostGIS geography type gives true meter distances
 
 ### Nearest POI - Overall
 
