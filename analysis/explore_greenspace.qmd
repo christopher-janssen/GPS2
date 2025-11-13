@@ -601,30 +601,56 @@ subject_greenspace_all |>
 
 ```{r}
 # Select 3 subjects with contrasting greenspace exposure
-selected_greenspace_subjects <- bind_rows(
-  subject_greenspace_all |>
+# Start with empty tibble in case we can't find subjects
+selected_greenspace_subjects <- tibble()
+
+if (nrow(subject_greenspace_all) > 0) {
+  # High greenspace subject
+  high_gs <- subject_greenspace_all |>
     arrange(desc(pct_time_greenspace)) |>
     slice(1) |>
-    mutate(profile = "High Greenspace"),
-  subject_greenspace_all |>
+    mutate(profile = "High Greenspace")
+
+  # Low greenspace subject
+  low_gs <- subject_greenspace_all |>
     arrange(pct_time_greenspace) |>
     slice(1) |>
-    mutate(profile = "Low Greenspace"),
-  subject_greenspace_all |>
+    mutate(profile = "Low Greenspace")
+
+  # Moderate greenspace subject (try to find one, otherwise pick one with good data)
+  moderate_gs <- subject_greenspace_all |>
     filter(pct_time_greenspace > 5, pct_time_greenspace < 15) |>
     arrange(desc(total_points)) |>
-    slice(1) |>
-    mutate(profile = "Moderate Greenspace")
-) |>
-  select(profile, everything())
+    slice(1)
+
+  # If no moderate subject found, pick one from middle of distribution
+  if (nrow(moderate_gs) == 0 && nrow(subject_greenspace_all) >= 3) {
+    moderate_gs <- subject_greenspace_all |>
+      arrange(pct_time_greenspace) |>
+      slice(n() %/% 2)
+  }
+
+  if (nrow(moderate_gs) > 0) {
+    moderate_gs <- moderate_gs |> mutate(profile = "Moderate Greenspace")
+  }
+
+  # Combine subjects
+  selected_greenspace_subjects <- bind_rows(high_gs, low_gs, moderate_gs) |>
+    distinct(subid, .keep_all = TRUE) |>
+    select(profile, everything())
+}
 
 # Display selected subjects
-selected_greenspace_subjects |>
-  knitr::kable(
-    col.names = c("Profile", "Subject ID", "GPS Points", "Total Hours", "Greenspace Points", "Greenspace Hours", "Park Points", "Park Hours", "% Time Greenspace", "% Time Parks"),
-    digits = 1,
-    format.args = list(big.mark = ",")
-  )
+if (nrow(selected_greenspace_subjects) > 0) {
+  selected_greenspace_subjects |>
+    knitr::kable(
+      col.names = c("Profile", "Subject ID", "GPS Points", "Total Hours", "Greenspace Points", "Greenspace Hours", "Park Points", "Park Hours", "% Time Greenspace", "% Time Parks"),
+      digits = 1,
+      format.args = list(big.mark = ",")
+    )
+} else {
+  cat("No subjects found with sufficient data for greenspace analysis.\n")
+}
 ```
 
 ## Individual Greenspace Analysis
@@ -641,18 +667,23 @@ analyze_subject_greenspace <- function(subject_id) {
   return(subject_landuse)
 }
 
-# Analyze each selected subject
-subject_greenspace_analyses <- selected_greenspace_subjects |>
-  mutate(
-    landuse_data = map(subid, analyze_subject_greenspace)
-  )
+# Analyze each selected subject (only if we found subjects)
+if (nrow(selected_greenspace_subjects) > 0) {
+  subject_greenspace_analyses <- selected_greenspace_subjects |>
+    mutate(
+      landuse_data = map(subid, analyze_subject_greenspace)
+    )
+} else {
+  subject_greenspace_analyses <- tibble()
+}
 ```
 
 ### Subject 1: High Greenspace Exposure
 
 ```{r}
-subj1_gs_id <- selected_greenspace_subjects$subid[1]
-subj1_gs_data <- subject_greenspace_analyses$landuse_data[[1]]
+if (nrow(selected_greenspace_subjects) >= 1) {
+  subj1_gs_id <- selected_greenspace_subjects$subid[1]
+  subj1_gs_data <- subject_greenspace_analyses$landuse_data[[1]]
 
 cat(sprintf("\n**Subject %d:** %.1f%% of time in greenspace (%.1f hours of %.1f total)\n\n",
             subj1_gs_id,
@@ -683,16 +714,19 @@ subj1_gs_breakdown |>
 ```
 
 ```{r}
-# Sample GPS records showing greenspace exposure
-if (nrow(subj1_gs_data |> filter(is_greenspace)) > 0) {
-  subj1_gs_data |>
-    filter(is_greenspace) |>
-    select(processed_id, dwell_hours, greenspace_category, landuse_type, landuse_area_sqkm) |>
-    slice_head(n = 15) |>
-    knitr::kable(
-      col.names = c("GPS Point ID", "Dwell (hrs)", "Greenspace Type", "Landuse Type", "Area (km²)"),
-      digits = 2
-    )
+  # Sample GPS records showing greenspace exposure
+  if (nrow(subj1_gs_data |> filter(is_greenspace)) > 0) {
+    subj1_gs_data |>
+      filter(is_greenspace) |>
+      select(processed_id, dwell_hours, greenspace_category, landuse_type, landuse_area_sqkm) |>
+      slice_head(n = 15) |>
+      knitr::kable(
+        col.names = c("GPS Point ID", "Dwell (hrs)", "Greenspace Type", "Landuse Type", "Area (km²)"),
+        digits = 2
+      )
+  }
+} else {
+  cat("Subject 1 data not available.\n")
 }
 ```
 
@@ -764,6 +798,8 @@ if (nrow(selected_greenspace_subjects) >= 3) {
       digits = 1,
       format.args = list(big.mark = ",")
     )
+} else {
+  cat("Subject 3 data not available.\n")
 }
 ```
 
@@ -772,48 +808,56 @@ if (nrow(selected_greenspace_subjects) >= 3) {
 Visual comparison of selected subjects' greenspace exposure.
 
 ```{r}
-# Side-by-side comparison
-greenspace_comparison <- selected_greenspace_subjects |>
-  select(profile, subid, total_hours, greenspace_hours, pct_time_greenspace, park_hours, pct_time_parks)
+if (nrow(selected_greenspace_subjects) > 0) {
+  # Side-by-side comparison
+  greenspace_comparison <- selected_greenspace_subjects |>
+    select(profile, subid, total_hours, greenspace_hours, pct_time_greenspace, park_hours, pct_time_parks)
 
-greenspace_comparison |>
-  knitr::kable(
-    col.names = c("Profile", "Subject ID", "Total Hours", "Greenspace Hours", "% Greenspace", "Park Hours", "% Parks"),
-    digits = 1,
-    format.args = list(big.mark = ",")
-  )
+  greenspace_comparison |>
+    knitr::kable(
+      col.names = c("Profile", "Subject ID", "Total Hours", "Greenspace Hours", "% Greenspace", "Park Hours", "% Parks"),
+      digits = 1,
+      format.args = list(big.mark = ",")
+    )
+} else {
+  cat("No subjects available for comparison.\n")
+}
 ```
 
 ```{r}
-# Park accessibility for selected subjects
-subject_park_access <- gps_park_access |>
-  filter(subid %in% selected_greenspace_subjects$subid) |>
-  group_by(subid) |>
-  summarise(
-    n_points = n(),
-    in_park = sum(nearest_park_distance_m == 0, na.rm = TRUE),
-    within_100m = sum(nearest_park_distance_m <= 100, na.rm = TRUE),
-    within_500m = sum(nearest_park_distance_m <= 500, na.rm = TRUE),
-    avg_park_distance_m = mean(nearest_park_distance_m[nearest_park_distance_m > 0], na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  mutate(
-    pct_in_park = round(100 * in_park / n_points, 1),
-    pct_within_100m = round(100 * within_100m / n_points, 1),
-    pct_within_500m = round(100 * within_500m / n_points, 1)
-  ) |>
-  left_join(
-    selected_greenspace_subjects |> select(subid, profile),
-    by = "subid"
-  ) |>
-  select(profile, everything())
+if (nrow(selected_greenspace_subjects) > 0) {
+  # Park accessibility for selected subjects
+  subject_park_access <- gps_park_access |>
+    filter(subid %in% selected_greenspace_subjects$subid) |>
+    group_by(subid) |>
+    summarise(
+      n_points = n(),
+      in_park = sum(nearest_park_distance_m == 0, na.rm = TRUE),
+      within_100m = sum(nearest_park_distance_m <= 100, na.rm = TRUE),
+      within_500m = sum(nearest_park_distance_m <= 500, na.rm = TRUE),
+      avg_park_distance_m = mean(nearest_park_distance_m[nearest_park_distance_m > 0], na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    mutate(
+      pct_in_park = round(100 * in_park / n_points, 1),
+      pct_within_100m = round(100 * within_100m / n_points, 1),
+      pct_within_500m = round(100 * within_500m / n_points, 1)
+    ) |>
+    left_join(
+      selected_greenspace_subjects |> select(subid, profile),
+      by = "subid"
+    ) |>
+    select(profile, everything())
 
-subject_park_access |>
-  knitr::kable(
-    col.names = c("Profile", "Subject ID", "GPS Points", "In Park", "Within 100m", "Within 500m", "Avg Distance (m)", "% In Park", "% <100m", "% <500m"),
-    digits = 1,
-    format.args = list(big.mark = ",")
-  )
+  subject_park_access |>
+    knitr::kable(
+      col.names = c("Profile", "Subject ID", "GPS Points", "In Park", "Within 100m", "Within 500m", "Avg Distance (m)", "% In Park", "% <100m", "% <500m"),
+      digits = 1,
+      format.args = list(big.mark = ",")
+    )
+} else {
+  cat("No subjects available for park accessibility analysis.\n")
+}
 ```
 
 # Recommendations for Meeting
