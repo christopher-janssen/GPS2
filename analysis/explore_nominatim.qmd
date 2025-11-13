@@ -14,7 +14,7 @@ editor_options:
 
 # Overview
 
-This notebook explores the Wisconsin OpenStreetMap (OSM) data in the `public_data` schema of the GPS3 geolocation database. The data includes points of interest (POI) and landuse polygons extracted from OpenStreetMap.
+This notebook explores the Wisconsin OpenStreetMap (OSM) data in the `public_data` schema of the GPS2 geolocation database. The data includes points of interest (POI) and landuse polygons extracted from OpenStreetMap.
 
 ## Setup
 
