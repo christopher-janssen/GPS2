@@ -685,35 +685,33 @@ if (nrow(selected_greenspace_subjects) >= 1) {
   subj1_gs_id <- selected_greenspace_subjects$subid[1]
   subj1_gs_data <- subject_greenspace_analyses$landuse_data[[1]]
 
-cat(sprintf("\n**Subject %d:** %.1f%% of time in greenspace (%.1f hours of %.1f total)\n\n",
-            subj1_gs_id,
-            selected_greenspace_subjects$pct_time_greenspace[1],
-            selected_greenspace_subjects$greenspace_hours[1],
-            selected_greenspace_subjects$total_hours[1]))
+  cat(sprintf("\n**Subject %d:** %.1f%% of time in greenspace (%.1f hours of %.1f total)\n\n",
+              subj1_gs_id,
+              selected_greenspace_subjects$pct_time_greenspace[1],
+              selected_greenspace_subjects$greenspace_hours[1],
+              selected_greenspace_subjects$total_hours[1]))
 
-# Breakdown by greenspace type
-subj1_gs_breakdown <- subj1_gs_data |>
-  filter(is_greenspace) |>
-  group_by(greenspace_category) |>
-  summarise(
-    n_points = n(),
-    total_hours = sum(dwell_hours, na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  mutate(
-    pct_of_greenspace_time = round(100 * total_hours / sum(total_hours), 1)
-  ) |>
-  arrange(desc(total_hours))
+  # Breakdown by greenspace type
+  subj1_gs_breakdown <- subj1_gs_data |>
+    filter(is_greenspace) |>
+    group_by(greenspace_category) |>
+    summarise(
+      n_points = n(),
+      total_hours = sum(dwell_hours, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    mutate(
+      pct_of_greenspace_time = round(100 * total_hours / sum(total_hours), 1)
+    ) |>
+    arrange(desc(total_hours))
 
-subj1_gs_breakdown |>
-  knitr::kable(
-    col.names = c("Greenspace Type", "GPS Points", "Hours", "% of Greenspace Time"),
-    digits = 1,
-    format.args = list(big.mark = ",")
-  )
-```
+  subj1_gs_breakdown |>
+    knitr::kable(
+      col.names = c("Greenspace Type", "GPS Points", "Hours", "% of Greenspace Time"),
+      digits = 1,
+      format.args = list(big.mark = ",")
+    )
 
-```{r}
   # Sample GPS records showing greenspace exposure
   if (nrow(subj1_gs_data |> filter(is_greenspace)) > 0) {
     subj1_gs_data |>
