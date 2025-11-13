@@ -111,6 +111,14 @@ The `osm_poi` table contains points of interest organized by `class` and `type`.
 
 ## POI Class-Level Summary
 
+The `osm_poi` table contains point features representing specific locations. Common classes:
+
+- **amenity**: Services and facilities (restaurants, schools, hospitals, ATMs, benches)
+- **shop**: Retail locations (grocery stores, clothing, hardware, etc.)
+- **leisure**: Small recreational features (playgrounds, picnic tables, fitness stations)
+- **tourism**: Tourist attractions (hotels, museums, viewpoints, information centers)
+- **healthcare**: Medical facilities (clinics, doctors, dentists, pharmacies)
+
 ```{r}
 class_summary <- dbGetQuery(con, "
 SELECT
@@ -132,6 +140,13 @@ class_summary |>
 
 ## Landuse Class Summary
 
+The `osm_landuse` table contains polygon features representing land areas. Common classes:
+
+- **landuse**: How land is used (residential, commercial, industrial, forest, farmland)
+- **natural**: Natural features (water, wood, grassland, wetland)
+- **leisure**: Large recreational areas (parks, golf courses, sports fields)
+- **amenity**: Large facility areas (parking lots, cemeteries, universities)
+
 ```{r}
 landuse_summary <- dbGetQuery(con, "
 SELECT
@@ -147,6 +162,30 @@ ORDER BY n_polygons DESC;
 landuse_summary |>
   knitr::kable(
     col.names = c("Class", "Polygons", "Types", "% of Total"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+### Landuse Type Details
+
+See what specific types exist within each landuse class:
+
+```{r}
+# Show types for each landuse class
+landuse_types <- dbGetQuery(con, "
+SELECT
+  class,
+  type,
+  COUNT(*) as n_polygons,
+  ROUND(AVG(area_sqkm), 3) as avg_area_sqkm
+FROM public_data.osm_landuse
+GROUP BY class, type
+ORDER BY class, n_polygons DESC;
+")
+
+landuse_types |>
+  knitr::kable(
+    col.names = c("Class", "Type", "Count", "Avg Area (km²)"),
     format.args = list(big.mark = ",")
   )
 ```
