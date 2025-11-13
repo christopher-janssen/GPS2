@@ -378,8 +378,8 @@ nrow(park_distance)
 ```
 
 ```{r}
-# Join with original GPS data to exclude points already in parks
-gps_park_access <- gps_landuse |>
+# Join with greenspace-categorized GPS data to include greenspace categories
+gps_park_access <- gps_greenspace |>
   left_join(park_distance, by = "processed_id") |>
   mutate(
     in_park = !is.na(landuse_class) & landuse_class == "leisure" & landuse_type == "park",
