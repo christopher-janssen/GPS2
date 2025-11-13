@@ -1,0 +1,914 @@
+---
+title: "POI Noise Analysis for GPS Enrichment"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+    toc: true
+    toc-depth: 3
+    code-fold: show
+editor_options:
+  chunk_output_type: console
+---
+
+# Overview
+
+This notebook analyzes which POI types are being matched during GPS enrichment to identify:
+
+1. **Noise problem**: Which POI types dominate matches but have low research value (e.g., bicycle_parking, benches)
+2. **Frequency distribution**: How often each POI type appears in enriched data
+3. **Decision framework**: Categorize POI by research relevance to guide inclusion/exclusion decisions
+
+## Setup
+
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+```
+
+## Database Connection
+
+```{r}
+# Connect to database
+con <- connect_to_db()
+
+# Verify connection
+dbGetQuery(con, "SELECT current_database(), current_user")
+```
+
+# Sample GPS Data
+
+Pull a sample of GPS points for enrichment analysis.
+
+```{r}
+# Get sample of 10,000 GPS points from processed_gps
+# Focus on stationary points for meaningful matches
+gps_sample <- dbGetQuery(con, "
+SELECT
+  processed_id,
+  subid,
+  lat,
+  lon,
+  time_local,
+  is_stationary,
+  dwell_time_seconds,
+  geom
+FROM risk1.processed_gps
+WHERE is_stationary = TRUE
+LIMIT 10000;
+")
+
+nrow(gps_sample)
+```
+
+```{r}
+# Summary of sample
+gps_sample |>
+  summarise(
+    n_subjects = n_distinct(subid),
+    n_points = n(),
+    total_hours = sum(dwell_time_seconds, na.rm = TRUE) / 3600
+  )
+```
+
+# Current POI Enrichment
+
+Run enrichment on sample using current approach (20m radius, nearest POI).
+
+## Nearest POI Overall
+
+```{r}
+# Find nearest POI of any type within 20m
+# Using same approach as enrich-raw_gps.qmd
+
+# Current noise exclusions
+noise_classes <- c('man_made', 'natural', 'military', 'emergency', 'healthcare')
+noise_types <- c('parking', 'bench', 'bicycle_parking', 'shelter', 'waste_basket', 'toilets')
+
+nearest_overall <- dbGetQuery(con, "
+WITH gps_points AS (
+  SELECT
+    processed_id,
+    lat,
+    lon,
+    geom
+  FROM risk1.processed_gps
+  WHERE is_stationary = TRUE
+  LIMIT 10000
+),
+poi_filtered AS (
+  SELECT
+    osm_id,
+    class,
+    type,
+    geom
+  FROM public_data.osm_poi
+  WHERE class NOT IN ('man_made', 'natural', 'military', 'emergency', 'healthcare')
+    AND type NOT IN ('parking', 'bench', 'bicycle_parking', 'shelter', 'waste_basket', 'toilets')
+)
+SELECT DISTINCT ON (g.processed_id)
+  g.processed_id,
+  p.class as nearest_poi_class,
+  p.type as nearest_poi_type,
+  ST_Distance(g.geom::geography, p.geom::geography) as distance_m
+FROM gps_points g
+CROSS JOIN LATERAL (
+  SELECT osm_id, class, type, geom
+  FROM poi_filtered
+  ORDER BY poi_filtered.geom <-> g.geom
+  LIMIT 10
+) p
+WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
+ORDER BY g.processed_id, distance_m;
+")
+
+nrow(nearest_overall)
+```
+
+```{r}
+# Match rate
+tibble(
+  total_points = 10000,
+  matched_points = nrow(nearest_overall),
+  match_rate_pct = round(100 * nrow(nearest_overall) / 10000, 1)
+)
+```
+
+## Frequency Analysis: Overall POI
+
+```{r}
+# Count frequency of each POI type in matches
+poi_frequency <- nearest_overall |>
+  count(nearest_poi_class, nearest_poi_type, sort = TRUE) |>
+  mutate(
+    pct = round(100 * n / sum(n), 2),
+    cum_pct = round(cumsum(pct), 2)
+  )
+
+# Top 50 most frequent POI types
+poi_frequency |>
+  slice_head(n = 50) |>
+  knitr::kable(
+    col.names = c("Class", "Type", "Count", "% of Matches", "Cumulative %"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Frequency by Class
+
+```{r}
+# Aggregate by class
+poi_class_freq <- nearest_overall |>
+  count(nearest_poi_class, sort = TRUE) |>
+  mutate(
+    pct = round(100 * n / sum(n), 2)
+  )
+
+poi_class_freq |>
+  knitr::kable(
+    col.names = c("Class", "Count", "% of Matches"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+# Nearest POI by Major Class
+
+Analyze specific category enrichments (shop, amenity, leisure, tourism).
+
+## Shops
+
+```{r}
+# Nearest shop within 20m
+nearest_shop <- dbGetQuery(con, "
+WITH gps_points AS (
+  SELECT
+    processed_id,
+    geom
+  FROM risk1.processed_gps
+  WHERE is_stationary = TRUE
+  LIMIT 10000
+)
+SELECT DISTINCT ON (g.processed_id)
+  g.processed_id,
+  p.type as nearest_shop_type,
+  ST_Distance(g.geom::geography, p.geom::geography) as distance_m
+FROM gps_points g
+CROSS JOIN LATERAL (
+  SELECT osm_id, type, geom
+  FROM public_data.osm_poi
+  WHERE class = 'shop'
+  ORDER BY geom <-> g.geom
+  LIMIT 10
+) p
+WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
+ORDER BY g.processed_id, distance_m;
+")
+
+# Frequency
+nearest_shop |>
+  count(nearest_shop_type, sort = TRUE) |>
+  mutate(pct = round(100 * n / sum(n), 2)) |>
+  slice_head(n = 30) |>
+  knitr::kable(
+    col.names = c("Shop Type", "Count", "% of Shop Matches"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Amenities
+
+```{r}
+# Nearest amenity within 20m
+nearest_amenity <- dbGetQuery(con, "
+WITH gps_points AS (
+  SELECT
+    processed_id,
+    geom
+  FROM risk1.processed_gps
+  WHERE is_stationary = TRUE
+  LIMIT 10000
+),
+amenity_filtered AS (
+  SELECT osm_id, type, geom
+  FROM public_data.osm_poi
+  WHERE class = 'amenity'
+    AND type NOT IN ('parking', 'bench', 'bicycle_parking', 'shelter', 'waste_basket', 'toilets')
+)
+SELECT DISTINCT ON (g.processed_id)
+  g.processed_id,
+  p.type as nearest_amenity_type,
+  ST_Distance(g.geom::geography, p.geom::geography) as distance_m
+FROM gps_points g
+CROSS JOIN LATERAL (
+  SELECT osm_id, type, geom
+  FROM amenity_filtered
+  ORDER BY geom <-> g.geom
+  LIMIT 10
+) p
+WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
+ORDER BY g.processed_id, distance_m;
+")
+
+# Frequency
+nearest_amenity |>
+  count(nearest_amenity_type, sort = TRUE) |>
+  mutate(pct = round(100 * n / sum(n), 2)) |>
+  slice_head(n = 30) |>
+  knitr::kable(
+    col.names = c("Amenity Type", "Count", "% of Amenity Matches"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Leisure
+
+```{r}
+# Nearest leisure within 20m
+nearest_leisure <- dbGetQuery(con, "
+WITH gps_points AS (
+  SELECT
+    processed_id,
+    geom
+  FROM risk1.processed_gps
+  WHERE is_stationary = TRUE
+  LIMIT 10000
+)
+SELECT DISTINCT ON (g.processed_id)
+  g.processed_id,
+  p.type as nearest_leisure_type,
+  ST_Distance(g.geom::geography, p.geom::geography) as distance_m
+FROM gps_points g
+CROSS JOIN LATERAL (
+  SELECT osm_id, type, geom
+  FROM public_data.osm_poi
+  WHERE class = 'leisure'
+  ORDER BY geom <-> g.geom
+  LIMIT 10
+) p
+WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
+ORDER BY g.processed_id, distance_m;
+")
+
+# Frequency
+nearest_leisure |>
+  count(nearest_leisure_type, sort = TRUE) |>
+  mutate(pct = round(100 * n / sum(n), 2)) |>
+  knitr::kable(
+    col.names = c("Leisure Type", "Count", "% of Leisure Matches"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+# Risk-Relevant Categories
+
+Analyze alcohol and food venue matches.
+
+## Alcohol Venues (On-Premise)
+
+```{r}
+# Alcohol venues: bar, pub, nightclub, biergarten
+alcohol_venues <- dbGetQuery(con, "
+WITH gps_points AS (
+  SELECT
+    processed_id,
+    geom
+  FROM risk1.processed_gps
+  WHERE is_stationary = TRUE
+  LIMIT 10000
+)
+SELECT DISTINCT ON (g.processed_id)
+  g.processed_id,
+  p.type as alcohol_venue_type,
+  ST_Distance(g.geom::geography, p.geom::geography) as distance_m
+FROM gps_points g
+CROSS JOIN LATERAL (
+  SELECT osm_id, type, geom
+  FROM public_data.osm_poi
+  WHERE class = 'amenity'
+    AND type IN ('bar', 'pub', 'nightclub', 'biergarten')
+  ORDER BY geom <-> g.geom
+  LIMIT 10
+) p
+WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
+ORDER BY g.processed_id, distance_m;
+")
+
+tibble(
+  category = "Alcohol Venues (On-Premise)",
+  matched_points = nrow(alcohol_venues),
+  match_rate_pct = round(100 * nrow(alcohol_venues) / 10000, 2)
+)
+```
+
+## Alcohol Retail (Off-Premise)
+
+```{r}
+# Alcohol retail: liquor stores, wine shops, breweries
+alcohol_retail <- dbGetQuery(con, "
+WITH gps_points AS (
+  SELECT
+    processed_id,
+    geom
+  FROM risk1.processed_gps
+  WHERE is_stationary = TRUE
+  LIMIT 10000
+)
+SELECT DISTINCT ON (g.processed_id)
+  g.processed_id,
+  p.type as alcohol_retail_type,
+  ST_Distance(g.geom::geography, p.geom::geography) as distance_m
+FROM gps_points g
+CROSS JOIN LATERAL (
+  SELECT osm_id, type, geom
+  FROM public_data.osm_poi
+  WHERE (class = 'shop' AND type IN ('alcohol', 'wine', 'beverages'))
+     OR (class = 'amenity' AND type = 'pub')
+     OR (class = 'craft' AND type = 'brewery')
+  ORDER BY geom <-> g.geom
+  LIMIT 10
+) p
+WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
+ORDER BY g.processed_id, distance_m;
+")
+
+tibble(
+  category = "Alcohol Retail (Off-Premise)",
+  matched_points = nrow(alcohol_retail),
+  match_rate_pct = round(100 * nrow(alcohol_retail) / 10000, 2)
+)
+```
+
+## Food Venues
+
+```{r}
+# Food venues: restaurant, cafe, fast_food
+food_venues <- dbGetQuery(con, "
+WITH gps_points AS (
+  SELECT
+    processed_id,
+    geom
+  FROM risk1.processed_gps
+  WHERE is_stationary = TRUE
+  LIMIT 10000
+)
+SELECT DISTINCT ON (g.processed_id)
+  g.processed_id,
+  p.type as food_venue_type,
+  ST_Distance(g.geom::geography, p.geom::geography) as distance_m
+FROM gps_points g
+CROSS JOIN LATERAL (
+  SELECT osm_id, type, geom
+  FROM public_data.osm_poi
+  WHERE class = 'amenity'
+    AND type IN ('restaurant', 'cafe', 'fast_food', 'food_court')
+  ORDER BY geom <-> g.geom
+  LIMIT 10
+) p
+WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
+ORDER BY g.processed_id, distance_m;
+")
+
+tibble(
+  category = "Food Venues",
+  matched_points = nrow(food_venues),
+  match_rate_pct = round(100 * nrow(food_venues) / 10000, 2)
+)
+```
+
+# POI Decision Framework
+
+Categorize all POI types by research relevance.
+
+## High Relevance POI
+
+Research-critical categories that should always be included.
+
+```{r}
+# Define high-relevance POI
+high_relevance <- tibble(
+  category = c(
+    "Alcohol (On-Premise)",
+    "Alcohol (Off-Premise)",
+    "Food/Dining",
+    "Healthcare",
+    "Education",
+    "Financial Services"
+  ),
+  poi_filter = c(
+    "class='amenity' AND type IN ('bar','pub','nightclub','biergarten')",
+    "class='shop' AND type IN ('alcohol','wine','beverages')",
+    "class='amenity' AND type IN ('restaurant','cafe','fast_food','food_court')",
+    "class='amenity' AND type IN ('hospital','clinic','pharmacy','doctors','dentist')",
+    "class='amenity' AND type IN ('school','university','college','kindergarten','library')",
+    "class='amenity' AND type IN ('bank','atm','post_office')"
+  ),
+  rationale = c(
+    "Core exposure variable for alcohol use research",
+    "Alcohol availability/access measurement",
+    "Social context, co-occurrence with alcohol venues",
+    "Medical service access, health behavior context",
+    "Activity pattern context, time-use validation",
+    "Essential services access, economic activity"
+  )
+)
+
+high_relevance |>
+  knitr::kable()
+```
+
+## Medium Relevance POI
+
+Potentially useful categories - discuss with team.
+
+```{r}
+# Define medium-relevance POI
+medium_relevance <- tibble(
+  category = c(
+    "Retail (General)",
+    "Recreation",
+    "Transportation",
+    "Social Venues"
+  ),
+  poi_filter = c(
+    "class='shop' (excluding alcohol)",
+    "class='leisure' AND type IN ('park','playground','sports_centre','swimming_pool')",
+    "class='amenity' AND type IN ('bus_stop','parking_entrance')",
+    "class='amenity' AND type IN ('community_centre','social_facility','theatre','cinema')"
+  ),
+  rationale = c(
+    "Shopping behavior context, may indicate activity patterns",
+    "Physical activity context, health-related behaviors",
+    "Mobility patterns, accessibility measures",
+    "Social engagement context, community participation"
+  ),
+  concerns = c(
+    "High frequency, may dominate matches",
+    "Moderate value, focus on point features only",
+    "Very high frequency, mostly noise for this study",
+    "Low frequency, unclear research value"
+  )
+)
+
+medium_relevance |>
+  knitr::kable()
+```
+
+## Low Relevance / Noise POI
+
+Should be excluded - infrastructure/utility features with no research value.
+
+```{r}
+# Define noise/low-relevance POI
+noise_poi <- tibble(
+  poi_type = c(
+    "bicycle_parking", "bench", "waste_basket", "shelter",
+    "toilets", "post_box", "telephone", "vending_machine",
+    "drinking_water", "recycling", "car_sharing", "charging_station",
+    "motorcycle_parking", "ferry_terminal", "loading_dock"
+  ),
+  count_in_sample = c(
+    "TBD - run query",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD",
+    "TBD"
+  ),
+  rationale = "Infrastructure/utility - no behavior/context value"
+)
+
+noise_poi |>
+  knitr::kable(
+    col.names = c("POI Type", "Frequency (if matched)", "Exclusion Rationale")
+  )
+```
+
+## Current vs. Proposed Exclusions
+
+```{r}
+# Compare current noise filters to proposed
+exclusion_comparison <- tibble(
+  filter_type = c(
+    "Current: Class Exclusions",
+    "Current: Type Exclusions",
+    "Proposed: Additional Type Exclusions"
+  ),
+  values = c(
+    "man_made, natural, military, emergency, healthcare",
+    "parking, bench, bicycle_parking, shelter, waste_basket, toilets",
+    "post_box, telephone, vending_machine, drinking_water, recycling, car_sharing, charging_station, motorcycle_parking"
+  )
+)
+
+exclusion_comparison |>
+  knitr::kable()
+```
+
+# Summary Statistics
+
+```{r}
+# Overall enrichment summary
+summary_stats <- tibble(
+  metric = c(
+    "Sample Size (Stationary Points)",
+    "Overall POI Matches (20m)",
+    "Match Rate %",
+    "Unique POI Types Matched",
+    "Alcohol Venue Matches",
+    "Alcohol Retail Matches",
+    "Food Venue Matches",
+    "Top POI Type (Most Frequent)"
+  ),
+  value = c(
+    "10,000",
+    format(nrow(nearest_overall), big.mark = ","),
+    sprintf("%.1f%%", 100 * nrow(nearest_overall) / 10000),
+    format(n_distinct(nearest_overall$nearest_poi_type), big.mark = ","),
+    format(nrow(alcohol_venues), big.mark = ","),
+    format(nrow(alcohol_retail), big.mark = ","),
+    format(nrow(food_venues), big.mark = ","),
+    ifelse(nrow(poi_frequency) > 0,
+           paste0(poi_frequency$nearest_poi_type[1], " (", poi_frequency$n[1], ")"),
+           "N/A")
+  )
+)
+
+summary_stats |>
+  knitr::kable()
+```
+
+# Individual Subject Profiles
+
+To make the data more concrete, let's analyze specific individuals with contrasting POI exposure patterns.
+
+## Subject Selection
+
+Find subjects with varying POI match rates and alcohol venue exposure.
+
+```{r}
+# Find subjects with contrasting patterns
+subject_profiles <- dbGetQuery(con, "
+WITH subject_stats AS (
+  SELECT
+    subid,
+    COUNT(*) as n_points,
+    SUM(dwell_time_seconds) / 3600.0 as total_hours
+  FROM risk1.processed_gps
+  WHERE is_stationary = TRUE
+    AND dwell_time_seconds IS NOT NULL
+  GROUP BY subid
+  HAVING COUNT(*) >= 100  -- Sufficient data coverage
+),
+subject_poi_matches AS (
+  SELECT
+    g.subid,
+    COUNT(*) as total_stationary_points,
+    COUNT(DISTINCT CASE
+      WHEN ST_DWithin(g.geom::geography, p.geom::geography, 20)
+        AND p.class NOT IN ('man_made', 'natural', 'military', 'emergency', 'healthcare')
+        AND p.type NOT IN ('parking', 'bench', 'bicycle_parking', 'shelter', 'waste_basket', 'toilets')
+      THEN g.processed_id END) as poi_match_count
+  FROM risk1.processed_gps g
+  LEFT JOIN public_data.osm_poi p ON 1=1
+  WHERE g.is_stationary = TRUE
+    AND g.dwell_time_seconds IS NOT NULL
+  GROUP BY g.subid
+),
+subject_alcohol_exposure AS (
+  SELECT
+    g.subid,
+    COUNT(DISTINCT CASE
+      WHEN ST_DWithin(g.geom::geography, p.geom::geography, 20)
+        AND p.class = 'amenity'
+        AND p.type IN ('bar', 'pub', 'nightclub', 'biergarten')
+      THEN g.processed_id END) as alcohol_venue_matches
+  FROM risk1.processed_gps g
+  LEFT JOIN public_data.osm_poi p ON 1=1
+  WHERE g.is_stationary = TRUE
+    AND g.dwell_time_seconds IS NOT NULL
+  GROUP BY g.subid
+)
+SELECT
+  ss.subid,
+  ss.n_points,
+  ROUND(ss.total_hours, 1) as total_hours,
+  COALESCE(spm.poi_match_count, 0) as poi_matches,
+  ROUND(100.0 * COALESCE(spm.poi_match_count, 0) / ss.n_points, 1) as poi_match_rate_pct,
+  COALESCE(sae.alcohol_venue_matches, 0) as alcohol_venue_matches
+FROM subject_stats ss
+LEFT JOIN subject_poi_matches spm ON ss.subid = spm.subid
+LEFT JOIN subject_alcohol_exposure sae ON ss.subid = sae.subid
+ORDER BY ss.n_points DESC
+LIMIT 20;
+")
+
+# Show top subjects by data coverage
+subject_profiles |>
+  knitr::kable(
+    col.names = c("Subject ID", "GPS Points", "Total Hours", "POI Matches", "Match Rate %", "Alcohol Venues"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+```{r}
+# Select 3 subjects for detailed analysis
+# 1. High alcohol exposure
+# 2. Low/no alcohol exposure
+# 3. Moderate exposure or high overall POI matches
+
+selected_subjects <- subject_profiles |>
+  arrange(desc(alcohol_venue_matches)) |>
+  slice(c(1)) |>  # Subject with most alcohol venue matches
+  bind_rows(
+    subject_profiles |>
+      filter(alcohol_venue_matches == 0) |>
+      arrange(desc(n_points)) |>
+      slice(1)  # Subject with no alcohol matches but good coverage
+  ) |>
+  bind_rows(
+    subject_profiles |>
+      filter(alcohol_venue_matches > 0) |>
+      arrange(desc(poi_match_rate_pct)) |>
+      slice(1)  # Subject with high overall POI match rate
+  ) |>
+  distinct(subid, .keep_all = TRUE)
+
+# Display selected subjects
+selected_subjects |>
+  mutate(profile_label = c("High Alcohol Exposure", "No Alcohol Exposure", "High POI Exposure")[1:n()]) |>
+  select(profile_label, everything()) |>
+  knitr::kable(
+    col.names = c("Profile", "Subject ID", "GPS Points", "Total Hours", "POI Matches", "Match Rate %", "Alcohol Venues"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Individual POI Analysis
+
+For each selected subject, analyze their POI exposure patterns.
+
+```{r}
+# Function to analyze one subject's POI matches
+analyze_subject_poi <- function(subject_id) {
+  # Get subject's GPS points and nearest POI
+  subject_poi <- dbGetQuery(con, sprintf("
+  WITH gps_points AS (
+    SELECT
+      processed_id,
+      time_local,
+      dwell_time_seconds,
+      geom
+    FROM risk1.processed_gps
+    WHERE subid = %d
+      AND is_stationary = TRUE
+  ),
+  poi_filtered AS (
+    SELECT
+      osm_id,
+      class,
+      type,
+      geom
+    FROM public_data.osm_poi
+    WHERE class NOT IN ('man_made', 'natural', 'military', 'emergency', 'healthcare')
+      AND type NOT IN ('parking', 'bench', 'bicycle_parking', 'shelter', 'waste_basket', 'toilets')
+  )
+  SELECT DISTINCT ON (g.processed_id)
+    g.processed_id,
+    g.time_local,
+    g.dwell_time_seconds / 3600.0 as dwell_hours,
+    p.class as nearest_poi_class,
+    p.type as nearest_poi_type,
+    ST_Distance(g.geom::geography, p.geom::geography) as distance_m
+  FROM gps_points g
+  CROSS JOIN LATERAL (
+    SELECT osm_id, class, type, geom
+    FROM poi_filtered
+    ORDER BY poi_filtered.geom <-> g.geom
+    LIMIT 10
+  ) p
+  WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
+  ORDER BY g.processed_id, distance_m;
+  ", subject_id))
+
+  return(subject_poi)
+}
+
+# Analyze each selected subject
+subject_analyses <- selected_subjects |>
+  mutate(
+    poi_data = map(subid, analyze_subject_poi),
+    profile_label = c("High Alcohol Exposure", "No Alcohol Exposure", "High POI Exposure")[1:n()]
+  )
+```
+
+### Subject 1: High Alcohol Exposure
+
+```{r}
+subj1_id <- selected_subjects$subid[1]
+subj1_data <- subject_analyses$poi_data[[1]]
+
+# POI type frequency for this subject
+if (nrow(subj1_data) > 0) {
+  subj1_freq <- subj1_data |>
+    count(nearest_poi_class, nearest_poi_type, sort = TRUE) |>
+    mutate(pct = round(100 * n / sum(n), 2))
+
+  cat(sprintf("\n**Subject %d:** %d GPS points, %d POI matches (%.1f%% match rate)\n\n",
+              subj1_id,
+              selected_subjects$n_points[1],
+              nrow(subj1_data),
+              100 * nrow(subj1_data) / selected_subjects$n_points[1]))
+
+  subj1_freq |>
+    slice_head(n = 20) |>
+    knitr::kable(
+      col.names = c("Class", "Type", "Count", "% of Matches"),
+      format.args = list(big.mark = ",")
+    )
+} else {
+  cat(sprintf("\n**Subject %d:** No POI matches within 20m\n", subj1_id))
+}
+```
+
+```{r}
+# Sample GPS records with POI context
+if (nrow(subj1_data) > 0) {
+  subj1_data |>
+    arrange(time_local) |>
+    slice_head(n = 15) |>
+    select(time_local, nearest_poi_class, nearest_poi_type, distance_m, dwell_hours) |>
+    knitr::kable(
+      col.names = c("Date/Time", "POI Class", "POI Type", "Distance (m)", "Dwell (hrs)"),
+      digits = 2
+    )
+}
+```
+
+### Subject 2: No Alcohol Exposure
+
+```{r}
+if (nrow(selected_subjects) >= 2) {
+  subj2_id <- selected_subjects$subid[2]
+  subj2_data <- subject_analyses$poi_data[[2]]
+
+  if (nrow(subj2_data) > 0) {
+    subj2_freq <- subj2_data |>
+      count(nearest_poi_class, nearest_poi_type, sort = TRUE) |>
+      mutate(pct = round(100 * n / sum(n), 2))
+
+    cat(sprintf("\n**Subject %d:** %d GPS points, %d POI matches (%.1f%% match rate)\n\n",
+                subj2_id,
+                selected_subjects$n_points[2],
+                nrow(subj2_data),
+                100 * nrow(subj2_data) / selected_subjects$n_points[2]))
+
+    subj2_freq |>
+      slice_head(n = 20) |>
+      knitr::kable(
+        col.names = c("Class", "Type", "Count", "% of Matches"),
+        format.args = list(big.mark = ",")
+      )
+  } else {
+    cat(sprintf("\n**Subject %d:** No POI matches within 20m\n", subj2_id))
+  }
+}
+```
+
+### Subject 3: High POI Exposure
+
+```{r}
+if (nrow(selected_subjects) >= 3) {
+  subj3_id <- selected_subjects$subid[3]
+  subj3_data <- subject_analyses$poi_data[[3]]
+
+  if (nrow(subj3_data) > 0) {
+    subj3_freq <- subj3_data |>
+      count(nearest_poi_class, nearest_poi_type, sort = TRUE) |>
+      mutate(pct = round(100 * n / sum(n), 2))
+
+    cat(sprintf("\n**Subject %d:** %d GPS points, %d POI matches (%.1f%% match rate)\n\n",
+                subj3_id,
+                selected_subjects$n_points[3],
+                nrow(subj3_data),
+                100 * nrow(subj3_data) / selected_subjects$n_points[3]))
+
+    subj3_freq |>
+      slice_head(n = 20) |>
+      knitr::kable(
+        col.names = c("Class", "Type", "Count", "% of Matches"),
+        format.args = list(big.mark = ",")
+      )
+  }
+}
+```
+
+## Subject Comparison
+
+```{r}
+# Compare selected subjects side-by-side
+comparison <- selected_subjects |>
+  mutate(
+    profile = c("High Alcohol", "No Alcohol", "High POI")[1:n()]
+  ) |>
+  select(profile, subid, n_points, total_hours, poi_matches, poi_match_rate_pct, alcohol_venue_matches)
+
+comparison |>
+  knitr::kable(
+    col.names = c("Profile", "Subject ID", "GPS Points", "Hours", "POI Matches", "Match Rate %", "Alcohol Venues"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+# Recommendations for Meeting
+
+Based on this analysis:
+
+## 1. Expand Noise Exclusions
+
+**Current exclusions are insufficient.** Recommend adding:
+- post_box, telephone, vending_machine
+- drinking_water, recycling
+- car_sharing, charging_station, motorcycle_parking
+- Consider excluding all transportation infrastructure except bus_stop
+
+## 2. Focus on High-Relevance Categories
+
+**Prioritize enrichment for:**
+- Alcohol venues & retail (core research question)
+- Food venues (context for alcohol exposure)
+- Healthcare facilities (service access)
+- Education facilities (activity validation)
+
+## 3. Selective Medium-Relevance Inclusion
+
+**Discuss with team:**
+- Recreation POI: Keep only if interested in physical activity context
+- Retail shops: May want to exclude or aggregate to reduce noise
+- Transportation: Likely exclude except for specific research questions
+
+## 4. Create Category-Specific Enrichment
+
+Instead of "nearest POI overall", consider:
+- Nearest alcohol venue (if any within 20m)
+- Nearest food venue (if any within 20m)
+- Nearest healthcare (if any within 20m)
+- Skip generic "nearest POI" to reduce noise
+
+## Cleanup
+
+```{r}
+disconnect_db(con)
+```
