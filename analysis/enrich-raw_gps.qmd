@@ -16,14 +16,15 @@ editor:
 
 This notebook enriches GPS data with spatial context from the database:
 
-- **ADI scores**: Census block group deprivation index
-- **Nearest POI**: Hierarchical matching to OpenStreetMap points of interest
+-   **ADI scores**: Census block group deprivation index
+-   **Nearest POI**: Hierarchical matching to OpenStreetMap points of
+    interest
 
 **POI Distance Limit:** 20 meters
 
 ## Setup
 
-```{r}
+```{r include=FALSE}
 source(here::here("scripts/r/setup.R"))
 source(here::here("scripts/r/connection.R"))
 
@@ -49,7 +50,8 @@ glimpse(gps_data)
 
 ## Load GPS Points into Temporary Database Table
 
-For efficient spatial queries, we'll load GPS points into a temporary database table with PostGIS geometries.
+For efficient spatial queries, we'll load GPS points into a temporary
+database table with PostGIS geometries.
 
 ```{r}
 # Select minimal columns needed for spatial joins
@@ -63,7 +65,9 @@ gps_spatial <- gps_data |>
 dbWriteTable(con, "temp_gps_points", gps_spatial, temporary = TRUE, overwrite = TRUE, row.names = FALSE)
 ```
 
-This is basically the R equivalent of loading a dataset into the environment. We want it to be available and ready for analyses quickly, but not permanently.
+This is basically the R equivalent of loading a dataset into the
+environment. We want it to be available and ready for analyses quickly,
+but not permanently.
 
 ```{r}
 # Create geometry column
@@ -80,69 +84,82 @@ SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326);
 
 `GEOMETRY(Point, 4326)` defines two major things:
 
-1. Point = Geometry Type
+1.  Point = Geometry Type
 
 Specifies what kind of spatial object we are storing.
 
 Options include:
-- Point (single location, like GPS coords)
-- LineString - A connected path (route)
-- Polygon - enclosed area (cencus block groups/landuse)
-- Multipoint, MultiPolygon, etc
 
-2. 4326 = **SRID** (Spatial Reference System Identifier)
+-   Point (single location, like GPS coords)
 
-Specifies what coordinate system, and how to interpret the lat/lon numbers.
+-   LineString - A connected path (route)
+
+-   Polygon - enclosed area (census block groups/landuse)
+
+-   Multipoint, MultiPolygon, etc
+
+2.  4326 = **SRID** (Spatial Reference System Identifier)
+
+Specifies what coordinate system, and how to interpret the lat/lon
+numbers.
 
 This project uses **EPSG:4326 / WGS84**
 
-They both refer to the same thing:
-- WGS84 = "World Geodetic System 1984"
-- EPSG:4326 = The code number for it from the EPSG registry
+They both refer to the same thing: 
+
+-   WGS84 = "World Geodetic System 1984" 
+-   EPSG:4326 = The code number for it from the EPSG registry
 
 WGS84 is the coordinate system GPS satellites use:
 
-- Uses degrees (not meters/feet)
-- Covers the whole Earth
-- Good for storage and display
+-   Uses degrees (not meters/feet)
+
+-   Covers the whole Earth
+
+-   Good for storage and display
 
 But notably **not suited for distance calculations**:
 
-In Madison, Wisconsin's latitude (~43°)
-- 1° lon = ~80km
-- 1° lat = ~111km
+In Madison, Wisconsin's latitude (\~43°) - 1° lon = \~80km - 1° lat =
+\~111km
 
-At the equator:
-- 1° lon = ~ 111km
-- 1° lat = ~ 111km
+At the equator: - 1° lon = \~ 111km - 1° lat = \~ 111km
 
 The solution:
 
-ST_MakePoint(lon, lat)    -- Creates a point 
-ST_SetSRID(..., 4326)     -- Tag it: "These are WGS84 lat/lon degrees"
+```{r}
+ST_MakePoint(lon, lat) # Creates a point 
+ST_SetSRID(..., 4326) # Tag it: "These are WGS84 lat/lon degrees"
+```
 
 Now PostGIS knows:
 
-- These are degrees, not meters
-- These points need to be converted to geography for accurate meter-based distances
-- Spatial indexes can be used to optimize this lat/lon data
+-   These are degrees, not meters
+
+-   These points need to be converted to geography for accurate meter-based distances
+
+-   Spatial indexes can be used to optimize this lat/lon data
 
 Why Transform to Geometry Type?
 
-- PostGIS spatial indexes make "nearest neighbor" queries feasible.
-- Without spatial indexes, finding the nearest POI would require 1.24M GPS points × 85K POI = 105 billion distance calculations
+-   PostGIS spatial indexes make "nearest neighbor" queries feasible.
+
+-   Without spatial indexes, finding the nearest POI would require 1.24M GPS points × 85K POI = 105 billion distance calculations
 
 Why can't we use those fancy spatial indexes on the lat/lons?
 
-PostgreSQL's GIST indexes require a single column. The geometry type packages both coordinates into one column, enabling spatial indexing. You cannot create a GIST spatial index on `(lat, lon)` as separate columns.
+PostgreSQL's GIST indexes require a single column. The geometry type
+packages both coordinates into one column, enabling spatial indexing.
+You cannot create a GIST spatial index on `(lat, lon)` as separate
+columns.
 
 Use-case:
 
-Queries will use both geometry and geography types:
-- `geometry` when fast operations in degrees are necessary
-- `geography` when accurate caluclations in meters are necessary
+Queries will use both geometry and geography types: 
 
+-   `geometry` when fast operations in degrees are necessary 
 
+-   `geography` when accurate calculations in meters are necessary
 
 ```{r}
 # Create spatial index for performance
@@ -211,10 +228,12 @@ adi_results |>
 
 ### How the POI Queries Work
 
-The POI enrichment queries find the nearest point of interest within 20 meters for each GPS point. Here's how they work:
+The POI enrichment queries find the nearest point of interest within 20
+meters for each GPS point. Here's how they work:
 
 **R-Equivalent Logic:**
-```r
+
+``` r
 # What we're doing in R terms:
 gps_data |>
   group_by(row_id) |>
@@ -227,29 +246,29 @@ gps_data |>
 
 **SQL Pattern Explanation:**
 
-1. **`CROSS JOIN LATERAL`** = "For each GPS point, run this subquery"
-   - Like a nested loop or `map()` function
-   - Lets us search POI table for each GPS row independently
-
-2. **`DISTINCT ON (gps.row_id)`** = "Keep only the first match per GPS point"
-   - R equivalent: `group_by(row_id) |> slice_head(n = 1)`
-   - Ensures we get exactly one result per GPS point (or zero if no match)
-
-3. **`ORDER BY poi.geom <-> gps.geom`** = "Sort by nearest distance using spatial index"
-   - The `<->` operator is PostGIS's fast distance operator
-   - Uses spatial indexes for extremely fast lookup (milliseconds per point)
-   - R equivalent: `arrange(distance)` but optimized
-
-4. **`ST_DWithin(..., 20)`** = "Only consider POI within 20 meters"
-   - Pre-filters POI before distance calculation
-   - R equivalent: `filter(distance <= 20)`
-
-5. **`::geography`** = "Use accurate meter-based distance on Earth's surface"
-   - Converts from degrees to true meters
-   - R equivalent: transforming to a projected CRS
-
-6. **`LIMIT 1`** = "Return only the nearest POI for this GPS point"
-   - Combined with ORDER BY, gets the closest match
+1.  **`CROSS JOIN LATERAL`** = "For each GPS point, run this subquery"
+    -   Like a nested loop or `map()` function
+    -   Lets us search POI table for each GPS row independently
+2.  **`DISTINCT ON (gps.row_id)`** = "Keep only the first match per GPS
+    point"
+    -   R equivalent: `group_by(row_id) |> slice_head(n = 1)`
+    -   Ensures we get exactly one result per GPS point (or zero if no
+        match)
+3.  **`ORDER BY poi.geom <-> gps.geom`** = "Sort by nearest distance
+    using spatial index"
+    -   The `<->` operator is PostGIS's fast distance operator
+    -   Uses spatial indexes for extremely fast lookup (milliseconds per
+        point)
+    -   R equivalent: `arrange(distance)` but optimized
+4.  **`ST_DWithin(..., 20)`** = "Only consider POI within 20 meters"
+    -   Pre-filters POI before distance calculation
+    -   R equivalent: `filter(distance <= 20)`
+5.  **`::geography`** = "Use accurate meter-based distance on Earth's
+    surface"
+    -   Converts from degrees to true meters
+    -   R equivalent: transforming to a projected CRS
+6.  **`LIMIT 1`** = "Return only the nearest POI for this GPS point"
+    -   Combined with ORDER BY, gets the closest match
 
 ### Nearest POI - Overall
 
@@ -312,9 +331,11 @@ tibble(
 
 ## Enrich with Nearest POI by Major Class
 
-Find nearest POI within each major class (shop, amenity, leisure, tourism).
+Find nearest POI within each major class (shop, amenity, leisure,
+tourism).
 
-**Note:** These queries follow the same pattern as above, but filter to specific POI classes.
+**Note:** These queries follow the same pattern as above, but filter to
+specific POI classes.
 
 ### Nearest Shop
 
@@ -417,7 +438,8 @@ nrow(nearest_tourism)
 
 ## Enrich with Risk-Relevant POI Categories
 
-**Note:** These queries use the same pattern, but filter to research-relevant POI types.
+**Note:** These queries use the same pattern, but filter to
+research-relevant POI types.
 
 ### Nearest Alcohol Venue (On-Premise)
 
