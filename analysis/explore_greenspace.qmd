@@ -99,24 +99,19 @@ greenspace_types |>
 
 # GPS Sample
 
-Pull sample of stationary GPS points for enrichment.
+Pull sample of GPS points for enrichment.
 
 ```{r}
-# Get 10,000 stationary points with dwell time
+# Get 10,000 GPS points from raw_gps
 gps_sample <- dbGetQuery(con, "
 SELECT
-  processed_id,
+  point_id,
   subid,
   lat,
   lon,
-  time_local,
-  is_stationary,
-  dwell_time_seconds,
-  dwell_time_seconds / 3600.0 as dwell_hours,
+  time,
   geom
-FROM risk1.processed_gps
-WHERE is_stationary = TRUE
-  AND dwell_time_seconds IS NOT NULL
+FROM risk1.raw_gps
 LIMIT 10000;
 ")
 
@@ -128,12 +123,10 @@ nrow(gps_sample)
 gps_sample |>
   summarise(
     n_subjects = n_distinct(subid),
-    n_points = n(),
-    total_hours = sum(dwell_hours, na.rm = TRUE),
-    avg_dwell_min = mean(dwell_time_seconds / 60, na.rm = TRUE)
+    n_points = n()
   ) |>
   knitr::kable(
-    col.names = c("Subjects", "GPS Points", "Total Hours", "Avg Dwell (min)"),
+    col.names = c("Subjects", "GPS Points"),
     digits = 1
   )
 ```
@@ -150,20 +143,15 @@ Add landuse context to GPS points using point-in-polygon matching.
 gps_landuse <- dbGetQuery(con, "
 WITH gps_points AS (
   SELECT
-    processed_id,
+    point_id,
     subid,
-    dwell_time_seconds,
     geom
-  FROM risk1.processed_gps
-  WHERE is_stationary = TRUE
-    AND dwell_time_seconds IS NOT NULL
+  FROM risk1.raw_gps
   LIMIT 10000
 )
 SELECT
-  g.processed_id,
+  g.point_id,
   g.subid,
-  g.dwell_time_seconds,
-  g.dwell_time_seconds / 3600.0 as dwell_hours,
   l.class as landuse_class,
   l.type as landuse_type,
   l.area_sqkm as landuse_area_sqkm
@@ -237,28 +225,26 @@ gps_greenspace |>
   knitr::kable()
 ```
 
-## Time in Parks/Nature
+## GPS Points in Parks/Nature
 
-Calculate time spent in greenspace vs. built environment.
+Count GPS points in greenspace vs. built environment (note: without dwell time data, we count points rather than time spent).
 
 ```{r}
-# Aggregate time by greenspace category
-time_by_greenspace <- gps_greenspace |>
+# Aggregate points by greenspace category
+points_by_greenspace <- gps_greenspace |>
   group_by(greenspace_category) |>
   summarise(
     n_points = n(),
-    total_hours = sum(dwell_hours, na.rm = TRUE),
     .groups = "drop"
   ) |>
   mutate(
-    pct_points = round(100 * n_points / sum(n_points), 2),
-    pct_time = round(100 * total_hours / sum(total_hours), 2)
+    pct_points = round(100 * n_points / sum(n_points), 2)
   ) |>
-  arrange(desc(total_hours))
+  arrange(desc(n_points))
 
-time_by_greenspace |>
+points_by_greenspace |>
   knitr::kable(
-    col.names = c("Environment Type", "GPS Points", "Total Hours", "% Points", "% Time"),
+    col.names = c("Environment Type", "GPS Points", "% of Points"),
     format.args = list(big.mark = ","),
     digits = 1
   )
@@ -278,18 +264,16 @@ greenspace_summary <- gps_greenspace |>
   group_by(environment) |>
   summarise(
     n_points = n(),
-    total_hours = sum(dwell_hours, na.rm = TRUE),
     .groups = "drop"
   ) |>
   mutate(
-    pct_points = round(100 * n_points / sum(n_points), 2),
-    pct_time = round(100 * total_hours / sum(total_hours), 2)
+    pct_points = round(100 * n_points / sum(n_points), 2)
   ) |>
-  arrange(desc(total_hours))
+  arrange(desc(n_points))
 
 greenspace_summary |>
   knitr::kable(
-    col.names = c("Environment", "GPS Points", "Total Hours", "% Points", "% Time"),
+    col.names = c("Environment", "GPS Points", "% of Points"),
     format.args = list(big.mark = ","),
     digits = 1
   )
@@ -298,32 +282,30 @@ greenspace_summary |>
 ## Subject-Level Greenspace Exposure
 
 ```{r}
-# Calculate greenspace exposure per subject
+# Calculate greenspace exposure per subject (by point counts)
 subject_greenspace <- gps_greenspace |>
   group_by(subid) |>
   summarise(
     total_points = n(),
-    total_hours = sum(dwell_hours, na.rm = TRUE),
     greenspace_points = sum(is_greenspace, na.rm = TRUE),
-    greenspace_hours = sum(dwell_hours[is_greenspace], na.rm = TRUE),
     .groups = "drop"
   ) |>
   mutate(
-    pct_time_greenspace = round(100 * greenspace_hours / total_hours, 1)
+    pct_points_greenspace = round(100 * greenspace_points / total_points, 1)
   ) |>
-  arrange(desc(pct_time_greenspace))
+  arrange(desc(pct_points_greenspace))
 
 # Summary statistics
 subject_greenspace |>
   summarise(
     n_subjects = n(),
-    avg_pct_greenspace = mean(pct_time_greenspace, na.rm = TRUE),
-    median_pct_greenspace = median(pct_time_greenspace, na.rm = TRUE),
-    min_pct = min(pct_time_greenspace, na.rm = TRUE),
-    max_pct = max(pct_time_greenspace, na.rm = TRUE)
+    avg_pct_greenspace = mean(pct_points_greenspace, na.rm = TRUE),
+    median_pct_greenspace = median(pct_points_greenspace, na.rm = TRUE),
+    min_pct = min(pct_points_greenspace, na.rm = TRUE),
+    max_pct = max(pct_points_greenspace, na.rm = TRUE)
   ) |>
   knitr::kable(
-    col.names = c("Subjects", "Mean % Time", "Median % Time", "Min %", "Max %"),
+    col.names = c("Subjects", "Mean % Points", "Median % Points", "Min %", "Max %"),
     digits = 1
   )
 ```
@@ -333,7 +315,7 @@ subject_greenspace |>
 subject_greenspace |>
   slice_head(n = 10) |>
   knitr::kable(
-    col.names = c("Subject", "Total Points", "Total Hours", "Greenspace Points", "Greenspace Hours", "% Time in Greenspace"),
+    col.names = c("Subject", "Total Points", "Greenspace Points", "% Points in Greenspace"),
     digits = 1
   )
 ```
@@ -350,10 +332,9 @@ For GPS points NOT in parks, how far to the nearest park?
 park_distance <- dbGetQuery(con, "
 WITH gps_points AS (
   SELECT
-    processed_id,
+    point_id,
     geom
-  FROM risk1.processed_gps
-  WHERE is_stationary = TRUE
+  FROM risk1.raw_gps
   LIMIT 10000
 ),
 parks AS (
@@ -366,11 +347,11 @@ parks AS (
   WHERE class = 'leisure' AND type = 'park'
 )
 SELECT
-  g.processed_id,
+  g.point_id,
   MIN(ST_Distance(g.geom::geography, p.geom::geography)) as nearest_park_distance_m
 FROM gps_points g
 CROSS JOIN parks p
-GROUP BY g.processed_id
+GROUP BY g.point_id
 ;
 ")
 
@@ -380,7 +361,7 @@ nrow(park_distance)
 ```{r}
 # Join with greenspace-categorized GPS data to include greenspace categories
 gps_park_access <- gps_greenspace |>
-  left_join(park_distance, by = "processed_id") |>
+  left_join(park_distance, by = "point_id") |>
   mutate(
     in_park = !is.na(landuse_class) & landuse_class == "leisure" & landuse_type == "park",
     nearest_park_distance_m = ifelse(in_park, 0, nearest_park_distance_m)
@@ -545,9 +526,8 @@ environmental_profile |>
 # Show what enriched GPS data would look like
 enriched_example <- gps_park_access |>
   select(
-    processed_id,
+    point_id,
     subid,
-    dwell_hours,
     landuse_class,
     landuse_type,
     landuse_area_sqkm,
@@ -575,25 +555,22 @@ subject_greenspace_all <- gps_greenspace |>
   group_by(subid) |>
   summarise(
     total_points = n(),
-    total_hours = sum(dwell_hours, na.rm = TRUE),
     greenspace_points = sum(is_greenspace, na.rm = TRUE),
-    greenspace_hours = sum(dwell_hours[is_greenspace], na.rm = TRUE),
     park_points = sum(greenspace_category == "Parks", na.rm = TRUE),
-    park_hours = sum(dwell_hours[greenspace_category == "Parks"], na.rm = TRUE),
     .groups = "drop"
   ) |>
   filter(total_points >= 50) |>  # Sufficient data
   mutate(
-    pct_time_greenspace = round(100 * greenspace_hours / total_hours, 1),
-    pct_time_parks = round(100 * park_hours / total_hours, 1)
+    pct_points_greenspace = round(100 * greenspace_points / total_points, 1),
+    pct_points_parks = round(100 * park_points / total_points, 1)
   ) |>
-  arrange(desc(pct_time_greenspace))
+  arrange(desc(pct_points_greenspace))
 
 # Show distribution
 subject_greenspace_all |>
   slice_head(n = 20) |>
   knitr::kable(
-    col.names = c("Subject ID", "GPS Points", "Total Hours", "Greenspace Points", "Greenspace Hours", "Park Points", "Park Hours", "% Time Greenspace", "% Time Parks"),
+    col.names = c("Subject ID", "GPS Points", "Greenspace Points", "Park Points", "% Points Greenspace", "% Points Parks"),
     digits = 1,
     format.args = list(big.mark = ",")
   )
@@ -607,26 +584,26 @@ selected_greenspace_subjects <- tibble()
 if (nrow(subject_greenspace_all) > 0) {
   # High greenspace subject
   high_gs <- subject_greenspace_all |>
-    arrange(desc(pct_time_greenspace)) |>
+    arrange(desc(pct_points_greenspace)) |>
     slice(1) |>
     mutate(profile = "High Greenspace")
 
   # Low greenspace subject
   low_gs <- subject_greenspace_all |>
-    arrange(pct_time_greenspace) |>
+    arrange(pct_points_greenspace) |>
     slice(1) |>
     mutate(profile = "Low Greenspace")
 
   # Moderate greenspace subject (try to find one, otherwise pick one with good data)
   moderate_gs <- subject_greenspace_all |>
-    filter(pct_time_greenspace > 5, pct_time_greenspace < 15) |>
+    filter(pct_points_greenspace > 5, pct_points_greenspace < 15) |>
     arrange(desc(total_points)) |>
     slice(1)
 
   # If no moderate subject found, pick one from middle of distribution
   if (nrow(moderate_gs) == 0 && nrow(subject_greenspace_all) >= 3) {
     moderate_gs <- subject_greenspace_all |>
-      arrange(pct_time_greenspace) |>
+      arrange(pct_points_greenspace) |>
       slice(n() %/% 2)
   }
 
@@ -644,7 +621,7 @@ if (nrow(subject_greenspace_all) > 0) {
 if (nrow(selected_greenspace_subjects) > 0) {
   selected_greenspace_subjects |>
     knitr::kable(
-      col.names = c("Profile", "Subject ID", "GPS Points", "Total Hours", "Greenspace Points", "Greenspace Hours", "Park Points", "Park Hours", "% Time Greenspace", "% Time Parks"),
+      col.names = c("Profile", "Subject ID", "GPS Points", "Greenspace Points", "Park Points", "% Points Greenspace", "% Points Parks"),
       digits = 1,
       format.args = list(big.mark = ",")
     )
@@ -685,11 +662,11 @@ if (nrow(selected_greenspace_subjects) >= 1) {
   subj1_gs_id <- selected_greenspace_subjects$subid[1]
   subj1_gs_data <- subject_greenspace_analyses$landuse_data[[1]]
 
-  cat(sprintf("\n**Subject %d:** %.1f%% of time in greenspace (%.1f hours of %.1f total)\n\n",
+  cat(sprintf("\n**Subject %d:** %.1f%% of GPS points in greenspace (%d of %d points)\n\n",
               subj1_gs_id,
-              selected_greenspace_subjects$pct_time_greenspace[1],
-              selected_greenspace_subjects$greenspace_hours[1],
-              selected_greenspace_subjects$total_hours[1]))
+              selected_greenspace_subjects$pct_points_greenspace[1],
+              selected_greenspace_subjects$greenspace_points[1],
+              selected_greenspace_subjects$total_points[1]))
 
   # Breakdown by greenspace type
   subj1_gs_breakdown <- subj1_gs_data |>
@@ -697,17 +674,16 @@ if (nrow(selected_greenspace_subjects) >= 1) {
     group_by(greenspace_category) |>
     summarise(
       n_points = n(),
-      total_hours = sum(dwell_hours, na.rm = TRUE),
       .groups = "drop"
     ) |>
     mutate(
-      pct_of_greenspace_time = round(100 * total_hours / sum(total_hours), 1)
+      pct_of_greenspace_points = round(100 * n_points / sum(n_points), 1)
     ) |>
-    arrange(desc(total_hours))
+    arrange(desc(n_points))
 
   subj1_gs_breakdown |>
     knitr::kable(
-      col.names = c("Greenspace Type", "GPS Points", "Hours", "% of Greenspace Time"),
+      col.names = c("Greenspace Type", "GPS Points", "% of Greenspace Points"),
       digits = 1,
       format.args = list(big.mark = ",")
     )
@@ -716,10 +692,10 @@ if (nrow(selected_greenspace_subjects) >= 1) {
   if (nrow(subj1_gs_data |> filter(is_greenspace)) > 0) {
     subj1_gs_data |>
       filter(is_greenspace) |>
-      select(processed_id, dwell_hours, greenspace_category, landuse_type, landuse_area_sqkm) |>
+      select(point_id, greenspace_category, landuse_type, landuse_area_sqkm) |>
       slice_head(n = 15) |>
       knitr::kable(
-        col.names = c("GPS Point ID", "Dwell (hrs)", "Greenspace Type", "Landuse Type", "Area (km²)"),
+        col.names = c("GPS Point ID", "Greenspace Type", "Landuse Type", "Area (km²)"),
         digits = 2
       )
   }
@@ -735,31 +711,32 @@ if (nrow(selected_greenspace_subjects) >= 2) {
   subj2_gs_id <- selected_greenspace_subjects$subid[2]
   subj2_gs_data <- subject_greenspace_analyses$landuse_data[[2]]
 
-  cat(sprintf("\n**Subject %d:** %.1f%% of time in greenspace (%.1f hours of %.1f total)\n\n",
+  cat(sprintf("\n**Subject %d:** %.1f%% of GPS points in greenspace (%d of %d points)\n\n",
               subj2_gs_id,
-              selected_greenspace_subjects$pct_time_greenspace[2],
-              selected_greenspace_subjects$greenspace_hours[2],
-              selected_greenspace_subjects$total_hours[2]))
+              selected_greenspace_subjects$pct_points_greenspace[2],
+              selected_greenspace_subjects$greenspace_points[2],
+              selected_greenspace_subjects$total_points[2]))
 
-  # Where do they spend time instead?
+  # Where are GPS points instead?
   subj2_env_breakdown <- subj2_gs_data |>
     group_by(greenspace_category) |>
     summarise(
       n_points = n(),
-      total_hours = sum(dwell_hours, na.rm = TRUE),
       .groups = "drop"
     ) |>
     mutate(
-      pct_of_time = round(100 * total_hours / sum(total_hours), 1)
+      pct_of_points = round(100 * n_points / sum(n_points), 1)
     ) |>
-    arrange(desc(total_hours))
+    arrange(desc(n_points))
 
   subj2_env_breakdown |>
     knitr::kable(
-      col.names = c("Environment Type", "GPS Points", "Hours", "% of Time"),
+      col.names = c("Environment Type", "GPS Points", "% of Points"),
       digits = 1,
       format.args = list(big.mark = ",")
     )
+} else {
+  cat("Subject 2 data not available.\n")
 }
 ```
 
@@ -770,29 +747,28 @@ if (nrow(selected_greenspace_subjects) >= 3) {
   subj3_gs_id <- selected_greenspace_subjects$subid[3]
   subj3_gs_data <- subject_greenspace_analyses$landuse_data[[3]]
 
-  cat(sprintf("\n**Subject %d:** %.1f%% of time in greenspace (%.1f hours of %.1f total)\n\n",
+  cat(sprintf("\n**Subject %d:** %.1f%% of GPS points in greenspace (%d of %d points)\n\n",
               subj3_gs_id,
-              selected_greenspace_subjects$pct_time_greenspace[3],
-              selected_greenspace_subjects$greenspace_hours[3],
-              selected_greenspace_subjects$total_hours[3]))
+              selected_greenspace_subjects$pct_points_greenspace[3],
+              selected_greenspace_subjects$greenspace_points[3],
+              selected_greenspace_subjects$total_points[3]))
 
   # Environment breakdown
   subj3_env_breakdown <- subj3_gs_data |>
     group_by(greenspace_category) |>
     summarise(
       n_points = n(),
-      total_hours = sum(dwell_hours, na.rm = TRUE),
       .groups = "drop"
     ) |>
     mutate(
-      pct_of_time = round(100 * total_hours / sum(total_hours), 1)
+      pct_of_points = round(100 * n_points / sum(n_points), 1)
     ) |>
-    arrange(desc(total_hours))
+    arrange(desc(n_points))
 
   subj3_env_breakdown |>
     slice_head(n = 10) |>
     knitr::kable(
-      col.names = c("Environment Type", "GPS Points", "Hours", "% of Time"),
+      col.names = c("Environment Type", "GPS Points", "% of Points"),
       digits = 1,
       format.args = list(big.mark = ",")
     )
@@ -809,11 +785,11 @@ Visual comparison of selected subjects' greenspace exposure.
 if (nrow(selected_greenspace_subjects) > 0) {
   # Side-by-side comparison
   greenspace_comparison <- selected_greenspace_subjects |>
-    select(profile, subid, total_hours, greenspace_hours, pct_time_greenspace, park_hours, pct_time_parks)
+    select(profile, subid, total_points, greenspace_points, pct_points_greenspace, park_points, pct_points_parks)
 
   greenspace_comparison |>
     knitr::kable(
-      col.names = c("Profile", "Subject ID", "Total Hours", "Greenspace Hours", "% Greenspace", "Park Hours", "% Parks"),
+      col.names = c("Profile", "Subject ID", "Total Points", "Greenspace Points", "% Greenspace", "Park Points", "% Parks"),
       digits = 1,
       format.args = list(big.mark = ",")
     )

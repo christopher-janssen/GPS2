@@ -45,20 +45,16 @@ dbGetQuery(con, "SELECT current_database(), current_user")
 Pull a sample of GPS points for enrichment analysis.
 
 ```{r}
-# Get sample of 10,000 GPS points from processed_gps
-# Focus on stationary points for meaningful matches
+# Get sample of 10,000 GPS points from raw_gps
 gps_sample <- dbGetQuery(con, "
 SELECT
-  processed_id,
+  point_id,
   subid,
   lat,
   lon,
-  time_local,
-  is_stationary,
-  dwell_time_seconds,
+  time,
   geom
-FROM risk1.processed_gps
-WHERE is_stationary = TRUE
+FROM risk1.raw_gps
 LIMIT 10000;
 ")
 
@@ -70,8 +66,7 @@ nrow(gps_sample)
 gps_sample |>
   summarise(
     n_subjects = n_distinct(subid),
-    n_points = n(),
-    total_hours = sum(dwell_time_seconds, na.rm = TRUE) / 3600
+    n_points = n()
   )
 ```
 
@@ -92,12 +87,11 @@ noise_types <- c('parking', 'bench', 'bicycle_parking', 'shelter', 'waste_basket
 nearest_overall <- dbGetQuery(con, "
 WITH gps_points AS (
   SELECT
-    processed_id,
+    point_id,
     lat,
     lon,
     geom
-  FROM risk1.processed_gps
-  WHERE is_stationary = TRUE
+  FROM risk1.raw_gps
   LIMIT 10000
 ),
 poi_filtered AS (
@@ -110,8 +104,8 @@ poi_filtered AS (
   WHERE class NOT IN ('man_made', 'natural', 'military', 'emergency', 'healthcare')
     AND type NOT IN ('parking', 'bench', 'bicycle_parking', 'shelter', 'waste_basket', 'toilets')
 )
-SELECT DISTINCT ON (g.processed_id)
-  g.processed_id,
+SELECT DISTINCT ON (g.point_id)
+  g.point_id,
   p.class as nearest_poi_class,
   p.type as nearest_poi_type,
   ST_Distance(g.geom::geography, p.geom::geography) as distance_m
@@ -123,7 +117,7 @@ CROSS JOIN LATERAL (
   LIMIT 10
 ) p
 WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
-ORDER BY g.processed_id, distance_m;
+ORDER BY g.point_id, distance_m;
 ")
 
 nrow(nearest_overall)
@@ -186,14 +180,13 @@ Analyze specific category enrichments (shop, amenity, leisure, tourism).
 nearest_shop <- dbGetQuery(con, "
 WITH gps_points AS (
   SELECT
-    processed_id,
+    point_id,
     geom
-  FROM risk1.processed_gps
-  WHERE is_stationary = TRUE
+  FROM risk1.raw_gps
   LIMIT 10000
 )
-SELECT DISTINCT ON (g.processed_id)
-  g.processed_id,
+SELECT DISTINCT ON (g.point_id)
+  g.point_id,
   p.type as nearest_shop_type,
   ST_Distance(g.geom::geography, p.geom::geography) as distance_m
 FROM gps_points g
@@ -205,7 +198,7 @@ CROSS JOIN LATERAL (
   LIMIT 10
 ) p
 WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
-ORDER BY g.processed_id, distance_m;
+ORDER BY g.point_id, distance_m;
 ")
 
 # Frequency
@@ -226,10 +219,9 @@ nearest_shop |>
 nearest_amenity <- dbGetQuery(con, "
 WITH gps_points AS (
   SELECT
-    processed_id,
+    point_id,
     geom
-  FROM risk1.processed_gps
-  WHERE is_stationary = TRUE
+  FROM risk1.raw_gps
   LIMIT 10000
 ),
 amenity_filtered AS (
@@ -238,8 +230,8 @@ amenity_filtered AS (
   WHERE class = 'amenity'
     AND type NOT IN ('parking', 'bench', 'bicycle_parking', 'shelter', 'waste_basket', 'toilets')
 )
-SELECT DISTINCT ON (g.processed_id)
-  g.processed_id,
+SELECT DISTINCT ON (g.point_id)
+  g.point_id,
   p.type as nearest_amenity_type,
   ST_Distance(g.geom::geography, p.geom::geography) as distance_m
 FROM gps_points g
@@ -250,7 +242,7 @@ CROSS JOIN LATERAL (
   LIMIT 10
 ) p
 WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
-ORDER BY g.processed_id, distance_m;
+ORDER BY g.point_id, distance_m;
 ")
 
 # Frequency
@@ -271,14 +263,13 @@ nearest_amenity |>
 nearest_leisure <- dbGetQuery(con, "
 WITH gps_points AS (
   SELECT
-    processed_id,
+    point_id,
     geom
-  FROM risk1.processed_gps
-  WHERE is_stationary = TRUE
+  FROM risk1.raw_gps
   LIMIT 10000
 )
-SELECT DISTINCT ON (g.processed_id)
-  g.processed_id,
+SELECT DISTINCT ON (g.point_id)
+  g.point_id,
   p.type as nearest_leisure_type,
   ST_Distance(g.geom::geography, p.geom::geography) as distance_m
 FROM gps_points g
@@ -290,7 +281,7 @@ CROSS JOIN LATERAL (
   LIMIT 10
 ) p
 WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
-ORDER BY g.processed_id, distance_m;
+ORDER BY g.point_id, distance_m;
 ")
 
 # Frequency
@@ -314,14 +305,13 @@ Analyze alcohol and food venue matches.
 alcohol_venues <- dbGetQuery(con, "
 WITH gps_points AS (
   SELECT
-    processed_id,
+    point_id,
     geom
-  FROM risk1.processed_gps
-  WHERE is_stationary = TRUE
+  FROM risk1.raw_gps
   LIMIT 10000
 )
-SELECT DISTINCT ON (g.processed_id)
-  g.processed_id,
+SELECT DISTINCT ON (g.point_id)
+  g.point_id,
   p.type as alcohol_venue_type,
   ST_Distance(g.geom::geography, p.geom::geography) as distance_m
 FROM gps_points g
@@ -334,7 +324,7 @@ CROSS JOIN LATERAL (
   LIMIT 10
 ) p
 WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
-ORDER BY g.processed_id, distance_m;
+ORDER BY g.point_id, distance_m;
 ")
 
 tibble(
@@ -351,14 +341,13 @@ tibble(
 alcohol_retail <- dbGetQuery(con, "
 WITH gps_points AS (
   SELECT
-    processed_id,
+    point_id,
     geom
-  FROM risk1.processed_gps
-  WHERE is_stationary = TRUE
+  FROM risk1.raw_gps
   LIMIT 10000
 )
-SELECT DISTINCT ON (g.processed_id)
-  g.processed_id,
+SELECT DISTINCT ON (g.point_id)
+  g.point_id,
   p.type as alcohol_retail_type,
   ST_Distance(g.geom::geography, p.geom::geography) as distance_m
 FROM gps_points g
@@ -372,7 +361,7 @@ CROSS JOIN LATERAL (
   LIMIT 10
 ) p
 WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
-ORDER BY g.processed_id, distance_m;
+ORDER BY g.point_id, distance_m;
 ")
 
 tibble(
@@ -389,14 +378,13 @@ tibble(
 food_venues <- dbGetQuery(con, "
 WITH gps_points AS (
   SELECT
-    processed_id,
+    point_id,
     geom
-  FROM risk1.processed_gps
-  WHERE is_stationary = TRUE
+  FROM risk1.raw_gps
   LIMIT 10000
 )
-SELECT DISTINCT ON (g.processed_id)
-  g.processed_id,
+SELECT DISTINCT ON (g.point_id)
+  g.point_id,
   p.type as food_venue_type,
   ST_Distance(g.geom::geography, p.geom::geography) as distance_m
 FROM gps_points g
@@ -409,7 +397,7 @@ CROSS JOIN LATERAL (
   LIMIT 10
 ) p
 WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
-ORDER BY g.processed_id, distance_m;
+ORDER BY g.point_id, distance_m;
 ")
 
 tibble(
@@ -604,27 +592,22 @@ subject_profiles <- dbGetQuery(con, "
 WITH subject_stats AS (
   SELECT
     subid,
-    COUNT(*) as n_points,
-    SUM(dwell_time_seconds) / 3600.0 as total_hours
-  FROM risk1.processed_gps
-  WHERE is_stationary = TRUE
-    AND dwell_time_seconds IS NOT NULL
+    COUNT(*) as n_points
+  FROM risk1.raw_gps
   GROUP BY subid
   HAVING COUNT(*) >= 100  -- Sufficient data coverage
 ),
 subject_poi_matches AS (
   SELECT
     g.subid,
-    COUNT(*) as total_stationary_points,
+    COUNT(*) as total_gps_points,
     COUNT(DISTINCT CASE
       WHEN ST_DWithin(g.geom::geography, p.geom::geography, 20)
         AND p.class NOT IN ('man_made', 'natural', 'military', 'emergency', 'healthcare')
         AND p.type NOT IN ('parking', 'bench', 'bicycle_parking', 'shelter', 'waste_basket', 'toilets')
-      THEN g.processed_id END) as poi_match_count
-  FROM risk1.processed_gps g
+      THEN g.point_id END) as poi_match_count
+  FROM risk1.raw_gps g
   LEFT JOIN public_data.osm_poi p ON 1=1
-  WHERE g.is_stationary = TRUE
-    AND g.dwell_time_seconds IS NOT NULL
   GROUP BY g.subid
 ),
 subject_alcohol_exposure AS (
@@ -634,17 +617,14 @@ subject_alcohol_exposure AS (
       WHEN ST_DWithin(g.geom::geography, p.geom::geography, 20)
         AND p.class = 'amenity'
         AND p.type IN ('bar', 'pub', 'nightclub', 'biergarten')
-      THEN g.processed_id END) as alcohol_venue_matches
-  FROM risk1.processed_gps g
+      THEN g.point_id END) as alcohol_venue_matches
+  FROM risk1.raw_gps g
   LEFT JOIN public_data.osm_poi p ON 1=1
-  WHERE g.is_stationary = TRUE
-    AND g.dwell_time_seconds IS NOT NULL
   GROUP BY g.subid
 )
 SELECT
   ss.subid,
   ss.n_points,
-  ROUND(ss.total_hours, 1) as total_hours,
   COALESCE(spm.poi_match_count, 0) as poi_matches,
   ROUND(100.0 * COALESCE(spm.poi_match_count, 0) / ss.n_points, 1) as poi_match_rate_pct,
   COALESCE(sae.alcohol_venue_matches, 0) as alcohol_venue_matches
@@ -658,7 +638,7 @@ LIMIT 20;
 # Show top subjects by data coverage
 subject_profiles |>
   knitr::kable(
-    col.names = c("Subject ID", "GPS Points", "Total Hours", "POI Matches", "Match Rate %", "Alcohol Venues"),
+    col.names = c("Subject ID", "GPS Points", "POI Matches", "Match Rate %", "Alcohol Venues"),
     format.args = list(big.mark = ",")
   )
 ```
@@ -691,7 +671,7 @@ selected_subjects |>
   mutate(profile_label = c("High Alcohol Exposure", "No Alcohol Exposure", "High POI Exposure")[1:n()]) |>
   select(profile_label, everything()) |>
   knitr::kable(
-    col.names = c("Profile", "Subject ID", "GPS Points", "Total Hours", "POI Matches", "Match Rate %", "Alcohol Venues"),
+    col.names = c("Profile", "Subject ID", "GPS Points", "POI Matches", "Match Rate %", "Alcohol Venues"),
     format.args = list(big.mark = ",")
   )
 ```
@@ -707,13 +687,11 @@ analyze_subject_poi <- function(subject_id) {
   subject_poi <- dbGetQuery(con, sprintf("
   WITH gps_points AS (
     SELECT
-      processed_id,
-      time_local,
-      dwell_time_seconds,
+      point_id,
+      time,
       geom
-    FROM risk1.processed_gps
+    FROM risk1.raw_gps
     WHERE subid = %d
-      AND is_stationary = TRUE
   ),
   poi_filtered AS (
     SELECT
@@ -725,10 +703,9 @@ analyze_subject_poi <- function(subject_id) {
     WHERE class NOT IN ('man_made', 'natural', 'military', 'emergency', 'healthcare')
       AND type NOT IN ('parking', 'bench', 'bicycle_parking', 'shelter', 'waste_basket', 'toilets')
   )
-  SELECT DISTINCT ON (g.processed_id)
-    g.processed_id,
-    g.time_local,
-    g.dwell_time_seconds / 3600.0 as dwell_hours,
+  SELECT DISTINCT ON (g.point_id)
+    g.point_id,
+    g.time,
     p.class as nearest_poi_class,
     p.type as nearest_poi_type,
     ST_Distance(g.geom::geography, p.geom::geography) as distance_m
@@ -740,7 +717,7 @@ analyze_subject_poi <- function(subject_id) {
     LIMIT 10
   ) p
   WHERE ST_DWithin(g.geom::geography, p.geom::geography, 20)
-  ORDER BY g.processed_id, distance_m;
+  ORDER BY g.point_id, distance_m;
   ", subject_id))
 
   return(subject_poi)
@@ -787,11 +764,11 @@ if (nrow(subj1_data) > 0) {
 # Sample GPS records with POI context
 if (nrow(subj1_data) > 0) {
   subj1_data |>
-    arrange(time_local) |>
+    arrange(time) |>
     slice_head(n = 15) |>
-    select(time_local, nearest_poi_class, nearest_poi_type, distance_m, dwell_hours) |>
+    select(time, nearest_poi_class, nearest_poi_type, distance_m) |>
     knitr::kable(
-      col.names = c("Date/Time", "POI Class", "POI Type", "Distance (m)", "Dwell (hrs)"),
+      col.names = c("Date/Time", "POI Class", "POI Type", "Distance (m)"),
       digits = 2
     )
 }
@@ -863,11 +840,11 @@ comparison <- selected_subjects |>
   mutate(
     profile = c("High Alcohol", "No Alcohol", "High POI")[1:n()]
   ) |>
-  select(profile, subid, n_points, total_hours, poi_matches, poi_match_rate_pct, alcohol_venue_matches)
+  select(profile, subid, n_points, poi_matches, poi_match_rate_pct, alcohol_venue_matches)
 
 comparison |>
   knitr::kable(
-    col.names = c("Profile", "Subject ID", "GPS Points", "Hours", "POI Matches", "Match Rate %", "Alcohol Venues"),
+    col.names = c("Profile", "Subject ID", "GPS Points", "POI Matches", "Match Rate %", "Alcohol Venues"),
     format.args = list(big.mark = ",")
   )
 ```
