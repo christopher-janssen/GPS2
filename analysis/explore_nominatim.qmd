@@ -1,0 +1,363 @@
+---
+title: "OSM Data Exploration"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+    toc: true
+    toc-depth: 3
+    code-fold: show
+editor_options:
+  chunk_output_type: console
+---
+
+# Overview
+
+This notebook explores the Wisconsin OpenStreetMap (OSM) data in the `public_data` schema of the GPS3 geolocation database. The data includes points of interest (POI) and landuse polygons extracted from OpenStreetMap.
+
+## Setup
+
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+```
+
+## Database Connection
+
+Connect to the geolocation database on the shared VM.
+
+```{r}
+# Connect to database
+con <- connect_to_db()
+
+# Verify connection
+dbGetQuery(con, "SELECT current_database(), current_user, version()")
+```
+
+# Database Overview
+
+## Table Sizes
+
+```{r}
+# Get table sizes for public_data schema
+table_sizes <- dbGetQuery(con, "
+SELECT
+  schemaname,
+  tablename,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+FROM pg_tables
+WHERE schemaname = 'public_data'
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+")
+
+table_sizes |> knitr::kable()
+```
+
+## Overall Statistics
+
+```{r}
+# Get counts for OSM tables
+stats <- dbGetQuery(con, "
+SELECT
+  'OSM Points of Interest' as dataset,
+  COUNT(*) as count
+FROM public_data.osm_poi
+UNION ALL
+SELECT
+  'OSM Landuse Polygons',
+  COUNT(*)
+FROM public_data.osm_landuse;
+")
+
+stats |>
+  knitr::kable(format.args = list(big.mark = ","))
+```
+
+# POI Classification
+
+The `osm_poi` table contains points of interest organized by `class` and `type`. This creates a hierarchical categorization system.
+
+## POI Class-Level Summary
+
+```{r}
+class_summary <- dbGetQuery(con, "
+SELECT
+  class,
+  COUNT(*) as n_places,
+  COUNT(DISTINCT type) as n_types,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct_of_total
+FROM public_data.osm_poi
+GROUP BY class
+ORDER BY n_places DESC;
+")
+
+class_summary |>
+  knitr::kable(
+    col.names = c("Class", "Places", "Types", "% of Total"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Landuse Class Summary
+
+```{r}
+landuse_summary <- dbGetQuery(con, "
+SELECT
+  class,
+  COUNT(*) as n_polygons,
+  COUNT(DISTINCT type) as n_types,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct_of_total
+FROM public_data.osm_landuse
+GROUP BY class
+ORDER BY n_polygons DESC;
+")
+
+landuse_summary |>
+  knitr::kable(
+    col.names = c("Class", "Polygons", "Types", "% of Total"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+# Detailed Type Breakdowns
+
+## Shops
+
+```{r}
+shop_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places,
+  COUNT(CASE WHEN name IS NOT NULL THEN 1 END) as n_with_name
+FROM public_data.osm_poi
+WHERE class = 'shop'
+GROUP BY type
+ORDER BY n_places DESC
+LIMIT 40;
+")
+
+shop_types |>
+  knitr::kable(
+    col.names = c("Shop Type", "Count", "Named"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Amenities
+
+```{r}
+amenity_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places,
+  COUNT(CASE WHEN name IS NOT NULL THEN 1 END) as n_with_name
+FROM public_data.osm_poi
+WHERE class = 'amenity'
+GROUP BY type
+ORDER BY n_places DESC
+LIMIT 40;
+")
+
+amenity_types |>
+  knitr::kable(
+    col.names = c("Amenity Type", "Count", "Named"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Leisure
+
+```{r}
+leisure_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places,
+  COUNT(CASE WHEN name IS NOT NULL THEN 1 END) as n_with_name
+FROM public_data.osm_poi
+WHERE class = 'leisure'
+GROUP BY type
+ORDER BY n_places DESC;
+")
+
+leisure_types |>
+  knitr::kable(
+    col.names = c("Leisure Type", "Count", "Named"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Tourism
+
+```{r}
+tourism_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places,
+  COUNT(CASE WHEN name IS NOT NULL THEN 1 END) as n_with_name
+FROM public_data.osm_poi
+WHERE class = 'tourism'
+GROUP BY type
+ORDER BY n_places DESC;
+")
+
+tourism_types |>
+  knitr::kable(
+    col.names = c("Tourism Type", "Count", "Named"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Healthcare
+
+```{r}
+healthcare_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places,
+  COUNT(CASE WHEN name IS NOT NULL THEN 1 END) as n_with_name
+FROM public_data.osm_poi
+WHERE class = 'healthcare'
+GROUP BY type
+ORDER BY n_places DESC;
+")
+
+healthcare_types |>
+  knitr::kable(
+    col.names = c("Healthcare Type", "Count", "Named"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Places (Named Locations)
+
+```{r}
+place_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places,
+  COUNT(CASE WHEN name IS NOT NULL THEN 1 END) as n_with_name,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
+FROM public_data.osm_poi
+WHERE class = 'place'
+GROUP BY type
+ORDER BY n_places DESC;
+")
+
+place_types |>
+  knitr::kable(
+    col.names = c("Place Type", "Count", "Named", "% of Places"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+# Data Structure
+
+## Key Columns in `osm_poi` Table
+
+The `osm_poi` table has these columns:
+
+- **osm_id**: Original OpenStreetMap identifier
+- **osm_type**: OSM element type (N=node, W=way, R=relation)
+- **class/type**: Categorical classification (e.g., 'amenity'/'restaurant')
+- **name**: POI name (TEXT)
+- **housenumber**: Street number
+- **street**: Street name
+- **city**: City name
+- **postcode**: ZIP/postal code
+- **rank_address**: Hierarchical importance (0-30, lower = more important)
+- **lon/lat**: Longitude and latitude coordinates (DOUBLE PRECISION)
+- **geom**: Point geometry (PostGIS GEOMETRY type, EPSG:4326)
+
+## Example: Viewing POI Data
+
+```{r}
+# Sample amenities with full address data
+sample_addresses <- dbGetQuery(con, "
+SELECT
+  osm_type,
+  class,
+  type,
+  name,
+  street,
+  city,
+  housenumber,
+  postcode,
+  lat,
+  lon
+FROM public_data.osm_poi
+WHERE name IS NOT NULL
+  AND class = 'amenity'
+  AND type IN ('restaurant', 'bar', 'cafe')
+  AND city = 'Madison'
+LIMIT 15;
+")
+
+sample_addresses |> knitr::kable()
+```
+
+# Example Queries
+
+## Finding Specific POI Types
+
+### All bars and restaurants in Madison
+
+```{sql eval=FALSE}
+SELECT
+  name,
+  street,
+  housenumber,
+  postcode,
+  lat,
+  lon
+FROM public_data.osm_poi
+WHERE city = 'Madison'
+  AND class = 'amenity'
+  AND type IN ('bar', 'restaurant', 'pub', 'cafe');
+```
+
+### All healthcare facilities
+
+```{sql eval=FALSE}
+SELECT
+  class,
+  type,
+  name,
+  city,
+  street,
+  lat,
+  lon
+FROM public_data.osm_poi
+WHERE class IN ('healthcare', 'amenity')
+  AND type IN ('hospital', 'clinic', 'doctors', 'dentist', 'pharmacy');
+```
+
+### Schools by type
+
+```{sql eval=FALSE}
+SELECT
+  CASE
+    WHEN type = 'kindergarten' THEN 'Kindergarten'
+    WHEN type = 'school' THEN 'K-12 School'
+    WHEN type = 'college' THEN 'College'
+    WHEN type = 'university' THEN 'University'
+    ELSE type
+  END as school_type,
+  name,
+  city,
+  lat,
+  lon
+FROM public_data.osm_poi
+WHERE class = 'amenity'
+  AND type IN ('kindergarten', 'school', 'college', 'university');
+```
+
+## Cleanup
+
+```{r}
+# Close database connection
+disconnect_db(con)
+```
