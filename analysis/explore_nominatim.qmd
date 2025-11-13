@@ -177,7 +177,7 @@ SELECT
   class,
   type,
   COUNT(*) as n_polygons,
-  ROUND(AVG(area_sqkm), 3) as avg_area_sqkm
+  ROUND(AVG(area_sqkm)::numeric, 3) as avg_area_sqkm
 FROM public_data.osm_landuse
 GROUP BY class, type
 ORDER BY class, n_polygons DESC;
