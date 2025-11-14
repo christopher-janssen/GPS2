@@ -294,27 +294,6 @@ healthcare_types |>
   )
 ```
 
-## Places (Named Locations)
-
-```{r}
-place_types <- dbGetQuery(con, "
-SELECT
-  type,
-  COUNT(*) as n_places,
-  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
-FROM public_data.osm_poi
-WHERE class = 'place'
-GROUP BY type
-ORDER BY n_places DESC;
-")
-
-place_types |>
-  knitr::kable(
-    col.names = c("Place Type", "Count", "% of Places"),
-    format.args = list(big.mark = ",")
-  )
-```
-
 # Data Structure
 
 The actual columns in your loaded tables are shown in the Table Schema section above. Use that as the reference for available fields.
