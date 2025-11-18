@@ -281,8 +281,8 @@ At the equator: - 1° lon = \~ 111km - 1° lat = \~ 111km
 The solution:
 
 ```{r}
-ST_MakePoint(lon, lat) # Creates a point 
-ST_SetSRID(..., 4326) # Tag it: "These are WGS84 lat/lon degrees"
+# ST_MakePoint(lon, lat)  Creates a point 
+# ST_SetSRID(..., 4326)   Tag it: "These are WGS84 lat/lon degrees"
 ```
 
 Now PostGIS knows:
@@ -597,61 +597,6 @@ gps_enriched |>
   count(nearest_recovery_type, sort = TRUE) |>
   knitr::kable()
 ```
-
-## Downstream Analysis: Time-Weighted Aggregation
-
-**Purpose:** These point-level distance measures will be aggregated to create
-subject-level features for lapse prediction modeling.
-
-**Example aggregation strategies:**
-
-```{r eval=FALSE}
-# Example 1: Proportion of time near POI (binary threshold)
-subject_features <- gps_enriched |>
-  group_by(subid) |>
-  summarize(
-    # % of GPS points within 50m of alcohol venues
-    pct_time_near_alcohol_venue = mean(nearest_alcohol_venue_distance_m <= 50, na.rm = TRUE),
-
-    # % of GPS points within 100m of alcohol retail
-    pct_time_near_alcohol_retail = mean(nearest_alcohol_retail_distance_m <= 100, na.rm = TRUE),
-
-    # % of GPS points within 100m of recovery facilities
-    pct_time_near_recovery = mean(nearest_recovery_distance_m <= 100, na.rm = TRUE)
-  )
-
-# Example 2: Average proximity (continuous measure)
-subject_features <- gps_enriched |>
-  group_by(subid) |>
-  summarize(
-    # Mean distance to nearest alcohol venue (when any found)
-    mean_dist_alcohol_venue = mean(nearest_alcohol_venue_distance_m, na.rm = TRUE),
-
-    # Mean distance to nearest alcohol retail
-    mean_dist_alcohol_retail = mean(nearest_alcohol_retail_distance_m, na.rm = TRUE),
-
-    # Mean distance to nearest recovery facility
-    mean_dist_recovery = mean(nearest_recovery_distance_m, na.rm = TRUE)
-  )
-
-# Example 3: Visit frequency (count events)
-subject_features <- gps_enriched |>
-  group_by(subid) |>
-  summarize(
-    # Number of GPS points within 50m of alcohol venues (direct visits)
-    n_alcohol_venue_visits = sum(nearest_alcohol_venue_distance_m <= 50, na.rm = TRUE),
-
-    # Number of GPS points within 50m of alcohol retail
-    n_alcohol_retail_visits = sum(nearest_alcohol_retail_distance_m <= 50, na.rm = TRUE)
-  )
-```
-
-**Sample size check:**
-
-With N=167 subjects and 3 aggregated features:
-- 167 ÷ 3 = **56 observations per feature**
-- Well above minimum threshold of 10-20 obs/feature
-- Can support additional interaction terms or covariates if needed
 
 ## Write Enriched Data
 
