@@ -209,3 +209,11 @@
 - Explore: can locations have multiple shop "types"?
 
 - Try to make the code readable (with assistance / walkthrough)
+
+
+### 11/05
+
+- Migrated project away from Docker and into pSQL for research VM compatability
+- successfully simplified PIP (point-in-polygon) functionality and POI enrichment from Nomanatim
+- continued RTM work
+
