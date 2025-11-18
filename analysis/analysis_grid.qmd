@@ -1,0 +1,133 @@
+---
+title: "Make analysis grid" 
+author: "Kendra Wyant"
+date: "`r lubridate::today()`"
+format: 
+  html: 
+    embed-resources: true
+    toc: true 
+    toc_depth: 4
+editor_options: 
+  chunk_output_type: console
+execute:
+  warning: false
+---   
+
+
+
+```{r}
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(sf)
+library(ggplot2)
+library(tigris)
+library(osmdata)
+library(janitor)
+library(units)
+library(lwgeom)
+
+devtools::source_url("https://github.com/jjcurtin/lab_support/blob/main/format_path.R?raw=true")
+
+path_terrain <- format_path("risk/data_processed/terrain")
+```
+
+### Load and prepare lapses as spatial points
+
+```{r}
+lapses <- read_csv(here::here(path_terrain, "gps_terrain_hour.csv"),
+                   show_col_types = FALSE) 
+
+lapse_sf <- st_as_sf(lapses, 
+                     coords = c("lon", "lat"),
+                     crs = 4326) # WGS84 lon/lat (degrees)
+
+lapse_sf <- st_transform(lapse_sf, crs = 32616) # convert to meters for distance/area calculations
+```
+
+
+### Get Madison boundary using appropriate year
+
+Remove empty grids due to water
+```{r}
+year <- 2015  
+
+madison <- places(state = "WI", year = year, cb = TRUE) |>
+  filter(NAME == "Madison") |> 
+  st_transform(crs = 32616) |>
+  st_make_valid() |>
+  st_union() 
+
+dane_water <- area_water(state = "WI", county = "Dane", year = year) |>
+  st_transform(crs = 32616) |>
+  st_make_valid() |>
+  st_union()  
+
+madison_land <- st_difference(st_buffer(madison, 0), st_buffer(dane_water, 0)) |>
+  st_make_valid()
+
+ggplot() +
+  geom_sf(data = madison_land, fill = "lightgray", color = "black") +
+  theme_classic()
+```
+
+
+### Create analysis grid
+
+Create grid for Madison - raster cell size = 250 feet (1/2 block; 76.2 meters)
+```{r}
+grid_madison <- st_make_grid(madison, cellsize = 76.2, square = TRUE) |>
+  st_sf() |>
+  mutate(cell_id = row_number())
+
+grid_madison <- st_intersection(grid_madison, madison)
+
+
+# Compute land area per cell
+land_by_cell <- st_intersection(
+  grid_madison["cell_id"],
+  madison_land) |>
+  (\(x) x |>
+      mutate(land_area = st_area(sf::st_geometry(x))))() |>
+  st_drop_geometry() |>
+  group_by(cell_id) |>
+  summarise(land_area = sum(land_area), .groups = "drop")
+
+
+# Join land areas to grid and compute fractions
+grid_madison <- grid_madison |>
+  dplyr::left_join(land_by_cell, by = "cell_id") |>
+  (\(x) x |>
+     dplyr::mutate(
+       # keep units
+       land_area = dplyr::coalesce(land_area, units::set_units(0, m^2)),
+       # compute area from the object's geometry explicitly
+       cell_area = sf::st_area(sf::st_geometry(x)),
+       land_frac = as.numeric(land_area / cell_area)
+     ))() |>
+  dplyr::filter(land_area > units::set_units(0, m^2))
+
+
+grid_madison <- st_intersection(grid_madison, madison_land)
+
+ggplot() +
+  geom_sf(data = madison_land, fill = "gray95", color = NA) +
+  geom_sf(data = grid_madison, fill = NA, color = "gray30", linewidth = 0.3) +
+  theme_classic() +
+  labs(title = "Analysis Grid (250 feet) - Water Cells Removed")
+```
+
+### Visualize with lapses
+```{r}
+
+lapse_madison <- st_intersection(lapse_sf, madison)
+
+
+ggplot() +
+  geom_sf(data = grid_madison, fill = "lightgray", color = "black") +
+  geom_sf(data = lapse_madison, color = "red", size = 1.5, alpha = 0.7) +
+  theme_classic() +
+  labs(title = "Lapses in Madison")
+```
+
