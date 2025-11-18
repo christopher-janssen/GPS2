@@ -131,9 +131,11 @@ Check if POI are distributed within our GPS coverage area (bounding box).
 
 ```{r}
 # Sample GPS points to create bounding box (use 10k points for speed)
-gps_sample <- gps_data |>
-  distinct(lat, lon) |>
-  slice_sample(n = min(10000, n()))
+gps_distinct <- gps_data |>
+  distinct(lat, lon)
+
+gps_sample <- gps_distinct |>
+  slice_sample(n = min(10000, nrow(gps_distinct)))
 
 # Write sample to temp table
 dbWriteTable(con, "temp_gps_sample", gps_sample, temporary = TRUE, overwrite = TRUE, row.names = FALSE)
