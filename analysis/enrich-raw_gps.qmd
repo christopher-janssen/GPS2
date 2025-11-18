@@ -156,7 +156,7 @@ SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326);
 # Count POI within GPS bounding box
 spatial_coverage <- dbGetQuery(con, "
 WITH gps_bbox AS (
-  SELECT ST_Extent(geom) as bbox
+  SELECT ST_SetSRID(ST_Extent(geom), 4326) as bbox
   FROM temp_gps_sample
 )
 SELECT
