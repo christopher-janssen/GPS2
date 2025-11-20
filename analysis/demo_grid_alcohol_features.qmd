@@ -1,6 +1,6 @@
 ---
 title: "Demo: Alcohol Outlet Features on Madison Grid"
-author: "GPS3 Project"
+author: "data science party people"
 format: html
 ---
 
@@ -53,8 +53,8 @@ grid_madison <- st_make_grid(
 # Remove water and calculate land area fraction
 grid_madison <- grid_madison |>
   mutate(
-    cell_area = st_area(geometry),
-    water_area = st_area(st_intersection(geometry, st_union(water))),
+    cell_area = st_area(st_geometry(.)),
+    water_area = st_area(st_intersection(st_geometry(.), st_union(water))),
     water_area = ifelse(is.na(water_area), units::set_units(0, "m^2"), water_area),
     land_area = cell_area - water_area,
     land_fraction = as.numeric(land_area / cell_area)
