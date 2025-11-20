@@ -547,7 +547,7 @@ gps_enriched |>
 ```{r}
 gps_enriched |>
   filter(!is.na(poi_category)) |>
-  count(poi_category, type, sort = TRUE) |>
+  count(poi_category, sort = TRUE) |>
   knitr::kable()
 ```
 
