@@ -98,8 +98,12 @@ grid_centroids <- grid_madison |>
     x |>
       mutate(
         lon = coords[, 1],
-        lat = coords[, 2]
-      )
+        lat = coords[, 2],
+        # Convert units to numeric for database compatibility
+        cell_area_m2 = as.numeric(cell_area),
+        land_area_m2 = as.numeric(land_area)
+      ) |>
+      select(-cell_area, -land_area)  # Remove unit columns
   })() |>
   st_drop_geometry()
 
