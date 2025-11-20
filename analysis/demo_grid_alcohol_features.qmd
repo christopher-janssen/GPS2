@@ -166,6 +166,27 @@ dbGetQuery(con, "
 Count alcohol outlets within 500ft, 1000ft, and 1500ft of each grid cell centroid.
 
 ```{r}
+# First, verify alcohol outlets exist in the database
+outlet_check <- dbGetQuery(con, "
+  SELECT
+    COUNT(*) as total_outlets,
+    COUNT(CASE WHEN class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten')
+               THEN 1 END) as on_premise,
+    COUNT(CASE WHEN class = 'shop' AND type IN ('alcohol', 'wine')
+               THEN 1 END) as off_premise_shop,
+    COUNT(CASE WHEN class = 'craft' AND type = 'brewery'
+               THEN 1 END) as brewery
+  FROM public_data.osm_poi
+  WHERE
+    (class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
+    OR (class = 'shop' AND type IN ('alcohol', 'wine'))
+    OR (class = 'craft' AND type = 'brewery')
+")
+
+outlet_check |>
+  knitr::kable(caption = "Alcohol Outlets in Database (All Wisconsin)")
+
+# Calculate density features
 density_features <- dbGetQuery(con, "
   WITH alcohol_outlets AS (
     SELECT
@@ -227,6 +248,27 @@ density_features <- dbGetQuery(con, "
 density_features |>
   select(starts_with("n_")) |>
   summary()
+
+# Detailed diagnostics
+tibble(
+  metric = c(
+    "Total grid cells",
+    "Cells with any outlet in 500ft",
+    "Cells with any outlet in 1000ft",
+    "Cells with any outlet in 1500ft",
+    "Mean outlets in 1500ft (precise)",
+    "Median outlets in 1500ft"
+  ),
+  value = c(
+    nrow(density_features),
+    sum(density_features$n_500ft > 0),
+    sum(density_features$n_1000ft > 0),
+    sum(density_features$n_1500ft > 0),
+    round(mean(density_features$n_1500ft), 3),
+    median(density_features$n_1500ft)
+  )
+) |>
+  knitr::kable()
 ```
 
 # Calculate Proximity Features
