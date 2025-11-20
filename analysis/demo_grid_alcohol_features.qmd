@@ -1,0 +1,538 @@
+---
+title: "Demo: Alcohol Outlet Features on Madison Grid"
+author: "GPS3 Project"
+format: html
+---
+
+# Overview
+
+Demonstration of grid-based feature engineering using alcohol outlets (Priority 1 POI).
+
+**Grid:** 250ft cells covering Madison, Wisconsin
+**Features:** Density (counts within radii) and proximity (distance to nearest)
+**POI:** On-premise (bars, pubs, nightclubs) + Off-premise (liquor stores, wine shops, breweries)
+
+# Setup
+
+```{r}
+library(tidyverse)
+library(sf)
+library(DBI)
+library(RPostgres)
+library(here)
+library(tigris)
+library(tmap)
+
+options(tigris_use_cache = TRUE)
+```
+
+# Load Existing Grid
+
+Using the 250ft grid created in `analysis_grid.qmd`.
+
+```{r}
+# Madison boundary (2015 for consistency with study period)
+madison <- places(state = "WI", year = 2015) |>
+  filter(NAME == "Madison") |>
+  st_transform(32616)  # UTM Zone 16N
+
+# Water bodies to remove
+water <- area_water(state = "WI", county = "Dane", year = 2015) |>
+  st_transform(32616)
+
+# Create 250ft (76.2m) grid
+grid_madison <- st_make_grid(
+  madison,
+  cellsize = 76.2,
+  what = "polygons",
+  square = TRUE
+) |>
+  st_sf() |>
+  mutate(cell_id = row_number())
+
+# Remove water and calculate land area fraction
+grid_madison <- grid_madison |>
+  mutate(
+    cell_area = st_area(geometry),
+    water_area = st_area(st_intersection(geometry, st_union(water))),
+    water_area = ifelse(is.na(water_area), units::set_units(0, "m^2"), water_area),
+    land_area = cell_area - water_area,
+    land_fraction = as.numeric(land_area / cell_area)
+  ) |>
+  filter(land_fraction > 0)  # Remove water-only cells
+
+grid_madison
+```
+
+# Extract Grid Centroids
+
+Convert grid to centroids in WGS84 for database queries.
+
+```{r}
+# Extract centroids and transform to EPSG:4326 (WGS84)
+grid_centroids <- grid_madison |>
+  st_centroid() |>
+  st_transform(4326) |>
+  mutate(
+    lon = st_coordinates(geometry)[, 1],
+    lat = st_coordinates(geometry)[, 2]
+  ) |>
+  st_drop_geometry()
+
+# Preview
+grid_centroids |>
+  select(cell_id, lon, lat) |>
+  slice_head(n = 5) |>
+  knitr::kable()
+```
+
+# Connect to Database
+
+```{r}
+source(here("scripts/r/connection.R"))
+con <- connect_to_db()
+```
+
+# Load Grid to Database
+
+Create temporary table with spatial index.
+
+```{r}
+# Load centroids as temp table
+dbWriteTable(con, "temp_grid_centroids", grid_centroids, temporary = TRUE)
+
+# Add geometry column
+dbExecute(con, "
+  ALTER TABLE temp_grid_centroids
+  ADD COLUMN geom GEOMETRY(Point, 4326)
+")
+
+# Populate geometry from lat/lon
+dbExecute(con, "
+  UPDATE temp_grid_centroids
+  SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326)
+")
+
+# Create spatial index
+dbExecute(con, "
+  CREATE INDEX idx_temp_grid_geom
+  ON temp_grid_centroids
+  USING GIST(geom)
+")
+
+# Analyze for query optimization
+dbExecute(con, "ANALYZE temp_grid_centroids")
+
+# Verify
+dbGetQuery(con, "
+  SELECT COUNT(*) as n_cells,
+         COUNT(geom) as n_with_geom
+  FROM temp_grid_centroids
+") |>
+  knitr::kable()
+```
+
+# Calculate Density Features
+
+Count alcohol outlets within 500ft, 1000ft, and 1500ft of each grid cell centroid.
+
+```{r}
+density_features <- dbGetQuery(con, "
+  WITH alcohol_outlets AS (
+    SELECT
+      osm_id,
+      type,
+      geom,
+      CASE
+        WHEN class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten')
+          THEN 'on_premise'
+        WHEN class = 'shop' AND type IN ('alcohol', 'wine')
+          THEN 'off_premise'
+        WHEN class = 'craft' AND type = 'brewery'
+          THEN 'off_premise'
+        ELSE 'other'
+      END as outlet_category
+    FROM public_data.osm_poi
+    WHERE
+      (class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
+      OR (class = 'shop' AND type IN ('alcohol', 'wine'))
+      OR (class = 'craft' AND type = 'brewery')
+  )
+  SELECT
+    g.cell_id,
+    -- Total counts by radius
+    COUNT(CASE WHEN ST_DWithin(g.geom::geography, a.geom::geography, 152.4)
+               THEN 1 END) as n_500ft,
+    COUNT(CASE WHEN ST_DWithin(g.geom::geography, a.geom::geography, 304.8)
+               THEN 1 END) as n_1000ft,
+    COUNT(CASE WHEN ST_DWithin(g.geom::geography, a.geom::geography, 457.2)
+               THEN 1 END) as n_1500ft,
+    -- On-premise by radius
+    COUNT(CASE WHEN ST_DWithin(g.geom::geography, a.geom::geography, 152.4)
+                    AND a.outlet_category = 'on_premise'
+               THEN 1 END) as n_500ft_onpremise,
+    COUNT(CASE WHEN ST_DWithin(g.geom::geography, a.geom::geography, 304.8)
+                    AND a.outlet_category = 'on_premise'
+               THEN 1 END) as n_1000ft_onpremise,
+    COUNT(CASE WHEN ST_DWithin(g.geom::geography, a.geom::geography, 457.2)
+                    AND a.outlet_category = 'on_premise'
+               THEN 1 END) as n_1500ft_onpremise,
+    -- Off-premise by radius
+    COUNT(CASE WHEN ST_DWithin(g.geom::geography, a.geom::geography, 152.4)
+                    AND a.outlet_category = 'off_premise'
+               THEN 1 END) as n_500ft_offpremise,
+    COUNT(CASE WHEN ST_DWithin(g.geom::geography, a.geom::geography, 304.8)
+                    AND a.outlet_category = 'off_premise'
+               THEN 1 END) as n_1000ft_offpremise,
+    COUNT(CASE WHEN ST_DWithin(g.geom::geography, a.geom::geography, 457.2)
+                    AND a.outlet_category = 'off_premise'
+               THEN 1 END) as n_1500ft_offpremise
+  FROM temp_grid_centroids g
+  LEFT JOIN alcohol_outlets a
+    ON ST_DWithin(g.geom::geography, a.geom::geography, 457.2)
+  GROUP BY g.cell_id
+  ORDER BY g.cell_id
+")
+
+# Summary statistics
+density_features |>
+  select(starts_with("n_")) |>
+  summary()
+```
+
+# Calculate Proximity Features
+
+Distance from each grid cell centroid to nearest alcohol outlet.
+
+```{r}
+proximity_features <- dbGetQuery(con, "
+  WITH alcohol_outlets AS (
+    SELECT
+      osm_id,
+      type,
+      geom,
+      CASE
+        WHEN class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten')
+          THEN 'on_premise'
+        WHEN class = 'shop' AND type IN ('alcohol', 'wine')
+          THEN 'off_premise'
+        WHEN class = 'craft' AND type = 'brewery'
+          THEN 'off_premise'
+        ELSE 'other'
+      END as outlet_category
+    FROM public_data.osm_poi
+    WHERE
+      (class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
+      OR (class = 'shop' AND type IN ('alcohol', 'wine'))
+      OR (class = 'craft' AND type = 'brewery')
+  ),
+  -- Nearest overall
+  nearest_overall AS (
+    SELECT DISTINCT ON (g.cell_id)
+      g.cell_id,
+      ST_Distance(g.geom::geography, a.geom::geography) as dist_nearest_m,
+      a.outlet_category as nearest_category,
+      a.type as nearest_type
+    FROM temp_grid_centroids g
+    CROSS JOIN LATERAL (
+      SELECT geom, outlet_category, type
+      FROM alcohol_outlets
+      ORDER BY geom <-> g.geom
+      LIMIT 1
+    ) a
+    ORDER BY g.cell_id
+  ),
+  -- Nearest on-premise
+  nearest_onpremise AS (
+    SELECT DISTINCT ON (g.cell_id)
+      g.cell_id,
+      ST_Distance(g.geom::geography, a.geom::geography) as dist_nearest_onpremise_m
+    FROM temp_grid_centroids g
+    CROSS JOIN LATERAL (
+      SELECT geom
+      FROM alcohol_outlets
+      WHERE outlet_category = 'on_premise'
+      ORDER BY geom <-> g.geom
+      LIMIT 1
+    ) a
+    ORDER BY g.cell_id
+  ),
+  -- Nearest off-premise
+  nearest_offpremise AS (
+    SELECT DISTINCT ON (g.cell_id)
+      g.cell_id,
+      ST_Distance(g.geom::geography, a.geom::geography) as dist_nearest_offpremise_m
+    FROM temp_grid_centroids g
+    CROSS JOIN LATERAL (
+      SELECT geom
+      FROM alcohol_outlets
+      WHERE outlet_category = 'off_premise'
+      ORDER BY geom <-> g.geom
+      LIMIT 1
+    ) a
+    ORDER BY g.cell_id
+  )
+  SELECT
+    o.cell_id,
+    o.dist_nearest_m,
+    o.nearest_category,
+    o.nearest_type,
+    on_p.dist_nearest_onpremise_m,
+    off_p.dist_nearest_offpremise_m
+  FROM nearest_overall o
+  LEFT JOIN nearest_onpremise on_p ON o.cell_id = on_p.cell_id
+  LEFT JOIN nearest_offpremise off_p ON o.cell_id = off_p.cell_id
+  ORDER BY o.cell_id
+")
+
+# Summary statistics
+proximity_features |>
+  select(ends_with("_m")) |>
+  summary()
+```
+
+# Disconnect Database
+
+```{r}
+disconnect_db(con)
+```
+
+# Join Features to Grid
+
+```{r}
+grid_enriched <- grid_madison |>
+  left_join(density_features, by = "cell_id") |>
+  left_join(proximity_features, by = "cell_id")
+
+# Replace NA counts with 0
+grid_enriched <- grid_enriched |>
+  mutate(across(starts_with("n_"), ~replace_na(.x, 0)))
+
+# Summary
+tibble(
+  feature_type = c("Grid cells", "With any outlet in 1500ft", "With on-premise in 1500ft", "With off-premise in 1500ft"),
+  count = c(
+    nrow(grid_enriched),
+    sum(grid_enriched$n_1500ft > 0),
+    sum(grid_enriched$n_1500ft_onpremise > 0),
+    sum(grid_enriched$n_1500ft_offpremise > 0)
+  )
+) |>
+  knitr::kable()
+```
+
+# Visualizations
+
+## Density: Outlets Within 1000ft
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+
+tm_shape(grid_enriched) +
+  tm_fill(
+    "n_1000ft",
+    palette = "YlOrRd",
+    style = "jenks",
+    title = "Count within 1000ft",
+    legend.hist = TRUE
+  ) +
+  tm_borders(alpha = 0.2, lwd = 0.5) +
+  tm_layout(
+    title = "Alcohol Outlet Density (1000ft radius)",
+    legend.outside = TRUE,
+    legend.hist.width = 1
+  ) +
+  tm_scale_bar(position = c("left", "bottom"))
+```
+
+## Density: On-Premise vs Off-Premise
+
+```{r}
+#| fig-width: 12
+#| fig-height: 5
+
+p_onpremise <- tm_shape(grid_enriched) +
+  tm_fill(
+    "n_1000ft_onpremise",
+    palette = "Blues",
+    style = "jenks",
+    title = "On-Premise\n(1000ft)"
+  ) +
+  tm_borders(alpha = 0.2, lwd = 0.5) +
+  tm_layout(title = "Bars, Pubs, Nightclubs")
+
+p_offpremise <- tm_shape(grid_enriched) +
+  tm_fill(
+    "n_1000ft_offpremise",
+    palette = "Purples",
+    style = "jenks",
+    title = "Off-Premise\n(1000ft)"
+  ) +
+  tm_borders(alpha = 0.2, lwd = 0.5) +
+  tm_layout(title = "Liquor Stores, Wine Shops")
+
+tmap_arrange(p_onpremise, p_offpremise, ncol = 2)
+```
+
+## Proximity: Distance to Nearest Outlet
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+
+# Convert distance to feet for visualization
+grid_enriched_viz <- grid_enriched |>
+  mutate(dist_nearest_ft = dist_nearest_m * 3.28084)
+
+tm_shape(grid_enriched_viz) +
+  tm_fill(
+    "dist_nearest_ft",
+    palette = "-RdYlGn",
+    style = "quantile",
+    title = "Distance (feet)",
+    legend.hist = TRUE
+  ) +
+  tm_borders(alpha = 0.2, lwd = 0.5) +
+  tm_layout(
+    title = "Distance to Nearest Alcohol Outlet",
+    legend.outside = TRUE,
+    legend.hist.width = 1
+  ) +
+  tm_scale_bar(position = c("left", "bottom"))
+```
+
+## Multi-Radius Comparison
+
+```{r}
+#| fig-width: 12
+#| fig-height: 10
+
+p_500ft <- tm_shape(grid_enriched) +
+  tm_fill(
+    "n_500ft",
+    palette = "YlOrRd",
+    style = "jenks",
+    title = "Count"
+  ) +
+  tm_borders(alpha = 0.2, lwd = 0.5) +
+  tm_layout(title = "500ft radius")
+
+p_1000ft <- tm_shape(grid_enriched) +
+  tm_fill(
+    "n_1000ft",
+    palette = "YlOrRd",
+    style = "jenks",
+    title = "Count"
+  ) +
+  tm_borders(alpha = 0.2, lwd = 0.5) +
+  tm_layout(title = "1000ft radius")
+
+p_1500ft <- tm_shape(grid_enriched) +
+  tm_fill(
+    "n_1500ft",
+    palette = "YlOrRd",
+    style = "jenks",
+    title = "Count"
+  ) +
+  tm_borders(alpha = 0.2, lwd = 0.5) +
+  tm_layout(title = "1500ft radius")
+
+tmap_arrange(p_500ft, p_1000ft, p_1500ft, ncol = 2)
+```
+
+# Feature Distributions
+
+```{r}
+#| fig-width: 12
+#| fig-height: 8
+
+# Density distributions
+p1 <- grid_enriched |>
+  st_drop_geometry() |>
+  select(n_500ft, n_1000ft, n_1500ft) |>
+  pivot_longer(everything(), names_to = "radius", values_to = "count") |>
+  ggplot(aes(x = count, fill = radius)) +
+  geom_histogram(binwidth = 1, alpha = 0.7, position = "identity") +
+  facet_wrap(~radius, ncol = 1, scales = "free_y") +
+  labs(
+    title = "Alcohol Outlet Density Distribution",
+    x = "Number of outlets within radius",
+    y = "Number of grid cells"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Proximity distribution
+p2 <- grid_enriched |>
+  st_drop_geometry() |>
+  mutate(dist_nearest_ft = dist_nearest_m * 3.28084) |>
+  ggplot(aes(x = dist_nearest_ft)) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "Distance to Nearest Outlet Distribution",
+    x = "Distance (feet)",
+    y = "Number of grid cells"
+  ) +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+# Summary Statistics Table
+
+```{r}
+# Density summary
+density_summary <- grid_enriched |>
+  st_drop_geometry() |>
+  summarize(
+    across(starts_with("n_"), list(
+      mean = ~mean(.x, na.rm = TRUE),
+      median = ~median(.x, na.rm = TRUE),
+      max = ~max(.x, na.rm = TRUE)
+    ))
+  ) |>
+  pivot_longer(everything(), names_to = "metric", values_to = "value") |>
+  separate(metric, into = c("variable", "stat"), sep = "_(?=[^_]+$)") |>
+  pivot_wider(names_from = stat, values_from = value)
+
+density_summary |>
+  knitr::kable(digits = 2, caption = "Density Metrics Summary")
+```
+
+```{r}
+# Proximity summary
+proximity_summary <- grid_enriched |>
+  st_drop_geometry() |>
+  select(ends_with("_m")) |>
+  pivot_longer(everything(), names_to = "metric", values_to = "distance_m") |>
+  group_by(metric) |>
+  summarize(
+    mean_m = mean(distance_m, na.rm = TRUE),
+    median_m = median(distance_m, na.rm = TRUE),
+    min_m = min(distance_m, na.rm = TRUE),
+    max_m = max(distance_m, na.rm = TRUE),
+    mean_ft = mean_m * 3.28084,
+    median_ft = median_m * 3.28084
+  )
+
+proximity_summary |>
+  knitr::kable(digits = 1, caption = "Proximity Metrics Summary")
+```
+
+# Save Results
+
+```{r}
+# Save enriched grid for future use
+saveRDS(
+  grid_enriched,
+  here("data/processed/grid_madison_alcohol_features.rds")
+)
+
+# Also save as GeoPackage for QGIS visualization
+st_write(
+  grid_enriched,
+  here("data/processed/grid_madison_alcohol_features.gpkg"),
+  delete_dsn = TRUE
+)
+```
