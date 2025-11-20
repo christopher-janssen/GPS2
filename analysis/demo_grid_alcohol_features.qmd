@@ -50,16 +50,36 @@ grid_madison <- st_make_grid(
   st_sf() |>
   mutate(cell_id = row_number())
 
-# Remove water and calculate land area fraction
+# Remove water - use st_difference approach like original
+madison_land <- st_difference(st_buffer(madison, 0), st_buffer(st_union(water), 0)) |>
+  st_make_valid()
+
+# Intersect grid with land boundary
+grid_madison <- st_intersection(grid_madison, madison)
+
+# Compute land area per cell
+land_by_cell <- st_intersection(
+  grid_madison["cell_id"],
+  madison_land) |>
+  (\(x) x |>
+      mutate(land_area = st_area(sf::st_geometry(x))))() |>
+  st_drop_geometry() |>
+  group_by(cell_id) |>
+  summarise(land_area = sum(land_area), .groups = "drop")
+
+# Join land areas to grid and compute fractions
 grid_madison <- grid_madison |>
-  mutate(
-    cell_area = st_area(st_geometry(.)),
-    water_area = st_area(st_intersection(st_geometry(.), st_union(water))),
-    water_area = ifelse(is.na(water_area), units::set_units(0, "m^2"), water_area),
-    land_area = cell_area - water_area,
-    land_fraction = as.numeric(land_area / cell_area)
-  ) |>
-  filter(land_fraction > 0)  # Remove water-only cells
+  left_join(land_by_cell, by = "cell_id") |>
+  (\(x) x |>
+     mutate(
+       land_area = coalesce(land_area, units::set_units(0, m^2)),
+       cell_area = sf::st_area(sf::st_geometry(x)),
+       land_fraction = as.numeric(land_area / cell_area)
+     ))() |>
+  filter(land_area > units::set_units(0, m^2))
+
+# Final intersection with land boundary
+grid_madison <- st_intersection(grid_madison, madison_land)
 
 grid_madison
 ```
