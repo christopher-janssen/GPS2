@@ -244,42 +244,36 @@ density_features <- dbGetQuery(con, "
   ORDER BY g.cell_id
 ")
 
+# Convert integer64 to numeric for proper R handling
+density_features <- density_features |>
+  mutate(across(starts_with("n_"), as.numeric))
+
 # Summary statistics
 density_features |>
   select(starts_with("n_")) |>
   summary()
 
-# Check data types and actual values
-str(density_features)
-
-# Look at cells with outlets
-density_features |>
-  filter(n_1500ft > 0) |>
-  slice_head(n = 10) |>
-  knitr::kable(caption = "Sample cells WITH outlets")
-
-# Calculate mean manually
+# Coverage statistics
 tibble(
-  metric = c(
-    "Total grid cells",
-    "Cells with any outlet in 500ft",
-    "Cells with any outlet in 1000ft",
-    "Cells with any outlet in 1500ft",
-    "Sum of all n_1500ft values",
-    "Mean outlets in 1500ft (manual calc)",
-    "Max outlets in 1500ft"
-  ),
-  value = c(
-    nrow(density_features),
+  radius = c("500ft", "1000ft", "1500ft"),
+  cells_with_outlets = c(
     sum(density_features$n_500ft > 0),
     sum(density_features$n_1000ft > 0),
-    sum(density_features$n_1500ft > 0),
-    sum(density_features$n_1500ft),
-    sum(density_features$n_1500ft) / nrow(density_features),
+    sum(density_features$n_1500ft > 0)
+  ),
+  pct_coverage = round(100 * cells_with_outlets / nrow(density_features), 1),
+  mean_count = round(c(
+    mean(density_features$n_500ft),
+    mean(density_features$n_1000ft),
+    mean(density_features$n_1500ft)
+  ), 2),
+  max_count = c(
+    max(density_features$n_500ft),
+    max(density_features$n_1000ft),
     max(density_features$n_1500ft)
   )
 ) |>
-  knitr::kable(caption = "Detailed Diagnostics")
+  knitr::kable()
 ```
 
 # Calculate Proximity Features
@@ -366,6 +360,10 @@ proximity_features <- dbGetQuery(con, "
   LEFT JOIN nearest_offpremise off_p ON o.cell_id = off_p.cell_id
   ORDER BY o.cell_id
 ")
+
+# Convert numeric columns (distance may already be double, but doesn't hurt)
+proximity_features <- proximity_features |>
+  mutate(across(ends_with("_m"), as.numeric))
 
 # Summary statistics
 proximity_features |>
