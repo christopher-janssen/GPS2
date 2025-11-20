@@ -93,10 +93,14 @@ Convert grid to centroids in WGS84 for database queries.
 grid_centroids <- grid_madison |>
   st_centroid() |>
   st_transform(4326) |>
-  mutate(
-    lon = st_coordinates(geometry)[, 1],
-    lat = st_coordinates(geometry)[, 2]
-  ) |>
+  (\(x) {
+    coords <- st_coordinates(x)
+    x |>
+      mutate(
+        lon = coords[, 1],
+        lat = coords[, 2]
+      )
+  })() |>
   st_drop_geometry()
 
 # Preview
