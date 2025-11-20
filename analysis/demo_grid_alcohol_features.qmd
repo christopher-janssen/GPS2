@@ -249,26 +249,37 @@ density_features |>
   select(starts_with("n_")) |>
   summary()
 
-# Detailed diagnostics
+# Check data types and actual values
+str(density_features)
+
+# Look at cells with outlets
+density_features |>
+  filter(n_1500ft > 0) |>
+  slice_head(n = 10) |>
+  knitr::kable(caption = "Sample cells WITH outlets")
+
+# Calculate mean manually
 tibble(
   metric = c(
     "Total grid cells",
     "Cells with any outlet in 500ft",
     "Cells with any outlet in 1000ft",
     "Cells with any outlet in 1500ft",
-    "Mean outlets in 1500ft (precise)",
-    "Median outlets in 1500ft"
+    "Sum of all n_1500ft values",
+    "Mean outlets in 1500ft (manual calc)",
+    "Max outlets in 1500ft"
   ),
   value = c(
     nrow(density_features),
     sum(density_features$n_500ft > 0),
     sum(density_features$n_1000ft > 0),
     sum(density_features$n_1500ft > 0),
-    round(mean(density_features$n_1500ft), 3),
-    median(density_features$n_1500ft)
+    sum(density_features$n_1500ft),
+    sum(density_features$n_1500ft) / nrow(density_features),
+    max(density_features$n_1500ft)
   )
 ) |>
-  knitr::kable()
+  knitr::kable(caption = "Detailed Diagnostics")
 ```
 
 # Calculate Proximity Features
