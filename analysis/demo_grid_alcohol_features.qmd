@@ -362,7 +362,7 @@ tm_shape(grid_enriched) +
   tm_fill(
     "n_1000ft",
     palette = "YlOrRd",
-    style = "jenks",
+    style = "pretty",
     title = "Count within 1000ft",
     legend.hist = TRUE
   ) +
@@ -385,7 +385,7 @@ p_onpremise <- tm_shape(grid_enriched) +
   tm_fill(
     "n_1000ft_onpremise",
     palette = "Blues",
-    style = "jenks",
+    style = "pretty",
     title = "On-Premise\n(1000ft)"
   ) +
   tm_borders(alpha = 0.2, lwd = 0.5) +
@@ -395,7 +395,7 @@ p_offpremise <- tm_shape(grid_enriched) +
   tm_fill(
     "n_1000ft_offpremise",
     palette = "Purples",
-    style = "jenks",
+    style = "pretty",
     title = "Off-Premise\n(1000ft)"
   ) +
   tm_borders(alpha = 0.2, lwd = 0.5) +
@@ -441,7 +441,7 @@ p_500ft <- tm_shape(grid_enriched) +
   tm_fill(
     "n_500ft",
     palette = "YlOrRd",
-    style = "jenks",
+    style = "pretty",
     title = "Count"
   ) +
   tm_borders(alpha = 0.2, lwd = 0.5) +
@@ -451,7 +451,7 @@ p_1000ft <- tm_shape(grid_enriched) +
   tm_fill(
     "n_1000ft",
     palette = "YlOrRd",
-    style = "jenks",
+    style = "pretty",
     title = "Count"
   ) +
   tm_borders(alpha = 0.2, lwd = 0.5) +
@@ -461,7 +461,7 @@ p_1500ft <- tm_shape(grid_enriched) +
   tm_fill(
     "n_1500ft",
     palette = "YlOrRd",
-    style = "jenks",
+    style = "pretty",
     title = "Count"
   ) +
   tm_borders(alpha = 0.2, lwd = 0.5) +
