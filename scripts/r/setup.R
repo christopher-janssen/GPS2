@@ -19,6 +19,7 @@ source("https://raw.githubusercontent.com/jjcurtin/lab_support/main/format_path.
 path_shared <- format_path("risk/data_processed/shared")
 path_processed <- format_path("risk/data_processed")
 path_gps2 <- format_path("risk/data_processed/gps2")
+path_terrain <- format_path("risk/data_processed/terrain")
 
 # database configuration
 # Uses Unix socket connection for peer authentication on VM

@@ -606,13 +606,13 @@ proximity_summary |>
 # Save enriched grid for future use
 saveRDS(
   grid_enriched,
-  here("data/processed/grid_madison_alcohol_features.rds")
+  here(path_terrain, "grid_madison_alcohol_features.rds")
 )
 
 # Also save as GeoPackage for QGIS visualization
 st_write(
   grid_enriched,
-  here("data/processed/grid_madison_alcohol_features.gpkg"),
+  here(path_terrain, "grid_madison_alcohol_features.gpkg"),
   delete_dsn = TRUE
 )
 ```
