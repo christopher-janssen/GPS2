@@ -403,11 +403,44 @@ tibble(
 
 # Visualizations
 
+## Interactive Map (Zoomable)
+
+For exploring spatial patterns in detail, use this interactive map.
+
+```{r}
+#| fig-width: 12
+#| fig-height: 10
+
+# Switch to interactive view mode
+tmap_mode("view")
+
+# Create interactive map with density overlay
+tm_shape(grid_enriched) +
+  tm_fill(
+    "n_1000ft",
+    palette = "YlOrRd",
+    style = "pretty",
+    title = "Outlets within 1000ft",
+    alpha = 0.7,
+    popup.vars = c(
+      "Cell ID" = "cell_id",
+      "500ft" = "n_500ft",
+      "1000ft" = "n_1000ft",
+      "1500ft" = "n_1500ft",
+      "Nearest (m)" = "dist_nearest_m"
+    )
+  ) +
+  tm_borders(col = "white", lwd = 0.5)
+
+# Reset to plot mode for remaining visualizations
+tmap_mode("plot")
+```
+
 ## Density: Outlets Within 1000ft
 
 ```{r}
-#| fig-width: 10
-#| fig-height: 8
+#| fig-width: 14
+#| fig-height: 11
 
 tm_shape(grid_enriched) +
   tm_fill(
@@ -417,11 +450,14 @@ tm_shape(grid_enriched) +
     title = "Count within 1000ft",
     legend.hist = TRUE
   ) +
-  tm_borders(alpha = 0.2, lwd = 0.5) +
+  tm_borders(alpha = 0.3, lwd = 0.8) +
   tm_layout(
     title = "Alcohol Outlet Density (1000ft radius)",
+    title.size = 1.5,
     legend.outside = TRUE,
-    legend.hist.width = 1
+    legend.hist.width = 1.5,
+    legend.text.size = 1.2,
+    legend.title.size = 1.4
   ) +
   tm_scale_bar(position = c("left", "bottom"))
 ```
@@ -429,8 +465,8 @@ tm_shape(grid_enriched) +
 ## Density: On-Premise vs Off-Premise
 
 ```{r}
-#| fig-width: 12
-#| fig-height: 5
+#| fig-width: 18
+#| fig-height: 9
 
 p_onpremise <- tm_shape(grid_enriched) +
   tm_fill(
@@ -439,8 +475,13 @@ p_onpremise <- tm_shape(grid_enriched) +
     style = "pretty",
     title = "On-Premise\n(1000ft)"
   ) +
-  tm_borders(alpha = 0.2, lwd = 0.5) +
-  tm_layout(title = "Bars, Pubs, Nightclubs")
+  tm_borders(alpha = 0.3, lwd = 0.8) +
+  tm_layout(
+    title = "Bars, Pubs, Nightclubs",
+    title.size = 1.5,
+    legend.text.size = 1.2,
+    legend.title.size = 1.4
+  )
 
 p_offpremise <- tm_shape(grid_enriched) +
   tm_fill(
@@ -449,8 +490,13 @@ p_offpremise <- tm_shape(grid_enriched) +
     style = "pretty",
     title = "Off-Premise\n(1000ft)"
   ) +
-  tm_borders(alpha = 0.2, lwd = 0.5) +
-  tm_layout(title = "Liquor Stores, Wine Shops")
+  tm_borders(alpha = 0.3, lwd = 0.8) +
+  tm_layout(
+    title = "Liquor Stores, Wine Shops",
+    title.size = 1.5,
+    legend.text.size = 1.2,
+    legend.title.size = 1.4
+  )
 
 tmap_arrange(p_onpremise, p_offpremise, ncol = 2)
 ```
@@ -458,8 +504,8 @@ tmap_arrange(p_onpremise, p_offpremise, ncol = 2)
 ## Proximity: Distance to Nearest Outlet
 
 ```{r}
-#| fig-width: 10
-#| fig-height: 8
+#| fig-width: 14
+#| fig-height: 11
 
 # Convert distance to feet for visualization
 grid_enriched_viz <- grid_enriched |>
@@ -468,16 +514,19 @@ grid_enriched_viz <- grid_enriched |>
 tm_shape(grid_enriched_viz) +
   tm_fill(
     "dist_nearest_ft",
-    palette = "-RdYlGn",
+    palette = "viridis",
     style = "quantile",
     title = "Distance (feet)",
     legend.hist = TRUE
   ) +
-  tm_borders(alpha = 0.2, lwd = 0.5) +
+  tm_borders(alpha = 0.3, lwd = 0.8) +
   tm_layout(
     title = "Distance to Nearest Alcohol Outlet",
+    title.size = 1.5,
     legend.outside = TRUE,
-    legend.hist.width = 1
+    legend.hist.width = 1.5,
+    legend.text.size = 1.2,
+    legend.title.size = 1.4
   ) +
   tm_scale_bar(position = c("left", "bottom"))
 ```
@@ -485,8 +534,8 @@ tm_shape(grid_enriched_viz) +
 ## Multi-Radius Comparison
 
 ```{r}
-#| fig-width: 12
-#| fig-height: 10
+#| fig-width: 18
+#| fig-height: 14
 
 p_500ft <- tm_shape(grid_enriched) +
   tm_fill(
@@ -495,8 +544,13 @@ p_500ft <- tm_shape(grid_enriched) +
     style = "pretty",
     title = "Count"
   ) +
-  tm_borders(alpha = 0.2, lwd = 0.5) +
-  tm_layout(title = "500ft radius")
+  tm_borders(alpha = 0.3, lwd = 0.8) +
+  tm_layout(
+    title = "500ft radius",
+    title.size = 1.5,
+    legend.text.size = 1.2,
+    legend.title.size = 1.4
+  )
 
 p_1000ft <- tm_shape(grid_enriched) +
   tm_fill(
@@ -505,8 +559,13 @@ p_1000ft <- tm_shape(grid_enriched) +
     style = "pretty",
     title = "Count"
   ) +
-  tm_borders(alpha = 0.2, lwd = 0.5) +
-  tm_layout(title = "1000ft radius")
+  tm_borders(alpha = 0.3, lwd = 0.8) +
+  tm_layout(
+    title = "1000ft radius",
+    title.size = 1.5,
+    legend.text.size = 1.2,
+    legend.title.size = 1.4
+  )
 
 p_1500ft <- tm_shape(grid_enriched) +
   tm_fill(
@@ -515,8 +574,13 @@ p_1500ft <- tm_shape(grid_enriched) +
     style = "pretty",
     title = "Count"
   ) +
-  tm_borders(alpha = 0.2, lwd = 0.5) +
-  tm_layout(title = "1500ft radius")
+  tm_borders(alpha = 0.3, lwd = 0.8) +
+  tm_layout(
+    title = "1500ft radius",
+    title.size = 1.5,
+    legend.text.size = 1.2,
+    legend.title.size = 1.4
+  )
 
 tmap_arrange(p_500ft, p_1000ft, p_1500ft, ncol = 2)
 ```
@@ -524,8 +588,8 @@ tmap_arrange(p_500ft, p_1000ft, p_1500ft, ncol = 2)
 # Feature Distributions
 
 ```{r}
-#| fig-width: 12
-#| fig-height: 8
+#| fig-width: 16
+#| fig-height: 10
 
 # Density distributions
 p1 <- grid_enriched |>
@@ -540,8 +604,13 @@ p1 <- grid_enriched |>
     x = "Number of outlets within radius",
     y = "Number of grid cells"
   ) +
-  theme_minimal() +
-  theme(legend.position = "none")
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "bold"),
+    axis.title = element_text(size = 14),
+    strip.text = element_text(size = 13)
+  )
 
 # Proximity distribution
 p2 <- grid_enriched |>
@@ -554,7 +623,11 @@ p2 <- grid_enriched |>
     x = "Distance (feet)",
     y = "Number of grid cells"
   ) +
-  theme_minimal()
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    axis.title = element_text(size = 14)
+  )
 
 gridExtra::grid.arrange(p1, p2, ncol = 2)
 ```
