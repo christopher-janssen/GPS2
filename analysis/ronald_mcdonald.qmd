@@ -1,0 +1,489 @@
+---
+title: "McDonald's Proximity Analysis on Madison Grid"
+author: "data science party people"
+format: html
+---
+
+# Overview
+
+Risk terrain modeling proximity analysis for McDonald's locations in Madison, Wisconsin.
+
+**Grid:** 250ft cells covering Madison, Wisconsin
+**Features:** Proximity (distance to nearest McDonald's)
+**Data Source:** McDonald's location API / web scraping
+
+# Setup
+
+```{r}
+library(tidyverse)
+library(sf)
+library(DBI)
+library(RPostgres)
+library(here)
+library(tigris)
+library(tmap)
+library(httr2)
+library(jsonlite)
+
+options(tigris_use_cache = TRUE)
+```
+
+# Load Existing Grid
+
+Using the 250ft grid created in `analysis_grid.qmd`.
+
+```{r}
+# Madison boundary (2015 for consistency with study period)
+madison <- places(state = "WI", year = 2015) |>
+  filter(NAME == "Madison") |>
+  st_transform(32616)  # UTM Zone 16N
+
+# Water bodies to remove
+water <- area_water(state = "WI", county = "Dane", year = 2015) |>
+  st_transform(32616)
+
+# Create 250ft (76.2m) grid
+grid_madison <- st_make_grid(
+  madison,
+  cellsize = 76.2,
+  what = "polygons",
+  square = TRUE
+) |>
+  st_sf() |>
+  mutate(cell_id = row_number())
+
+# Remove water - use st_difference approach like original
+madison_land <- st_difference(st_buffer(madison, 0), st_buffer(st_union(water), 0)) |>
+  st_make_valid()
+
+# Intersect grid with land boundary
+grid_madison <- st_intersection(grid_madison, madison)
+
+# Compute land area per cell
+land_by_cell <- st_intersection(
+  grid_madison["cell_id"],
+  madison_land) |>
+  (\(x) x |>
+      mutate(land_area = st_area(sf::st_geometry(x))))() |>
+  st_drop_geometry() |>
+  group_by(cell_id) |>
+  summarise(land_area = sum(land_area), .groups = "drop")
+
+# Join land areas to grid and compute fractions
+grid_madison <- grid_madison |>
+  left_join(land_by_cell, by = "cell_id") |>
+  (\(x) x |>
+     mutate(
+       land_area = coalesce(land_area, units::set_units(0, m^2)),
+       cell_area = sf::st_area(sf::st_geometry(x)),
+       land_fraction = as.numeric(land_area / cell_area)
+     ))() |>
+  filter(land_area > units::set_units(0, m^2))
+
+# Final intersection with land boundary
+grid_madison <- st_intersection(grid_madison, madison_land)
+
+grid_madison
+```
+
+# Extract Grid Centroids
+
+Convert grid to centroids in WGS84 for database queries.
+
+```{r}
+# Extract centroids and transform to EPSG:4326 (WGS84)
+grid_centroids <- grid_madison |>
+  st_centroid() |>
+  st_transform(4326) |>
+  (\(x) {
+    coords <- st_coordinates(x)
+    x |>
+      mutate(
+        lon = coords[, 1],
+        lat = coords[, 2],
+        # Convert units to numeric for database compatibility
+        cell_area_m2 = as.numeric(cell_area),
+        land_area_m2 = as.numeric(land_area)
+      ) |>
+      select(-cell_area, -land_area)  # Remove unit columns
+  })() |>
+  st_drop_geometry()
+
+# Preview
+grid_centroids |>
+  select(cell_id, lon, lat) |>
+  slice_head(n = 5) |>
+  knitr::kable()
+```
+
+# Get McDonald's Locations
+
+Try multiple methods to obtain McDonald's locations in Madison, WI.
+
+## Method 1: Direct API Call
+
+```{r}
+# Madison, WI center coordinates
+madison_lat <- 43.0731
+madison_lon <- -89.4012
+
+# Function to call McDonald's location API
+get_mcdonalds_api <- function(lat, lon, radius_miles = 15) {
+  tryCatch({
+    # Try the McDonald's location API endpoint
+    response <- request("https://www.mcdonalds.com/googleapps/GoogleRestaurantLocAction.do") |>
+      req_url_query(
+        method = "searchLocation",
+        latitude = lat,
+        longitude = lon,
+        radius = radius_miles,
+        maxResults = 50,
+        country = "us",
+        language = "en-us"
+      ) |>
+      req_headers(
+        "User-Agent" = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+      ) |>
+      req_perform()
+
+    # Parse JSON response
+    locations_data <- response |>
+      resp_body_json()
+
+    # Convert to tibble
+    if (!is.null(locations_data$features)) {
+      mcdonalds <- map_df(locations_data$features, function(feature) {
+        tibble(
+          name = "McDonald's",
+          address = feature$properties$addressLine1,
+          city = feature$properties$addressLine3,
+          lon = feature$geometry$coordinates[[1]],
+          lat = feature$geometry$coordinates[[2]]
+        )
+      })
+
+      return(mcdonalds)
+    } else {
+      return(NULL)
+    }
+  }, error = function(e) {
+    message("API method failed: ", e$message)
+    return(NULL)
+  })
+}
+
+# Try API method
+mcdonalds_locations <- get_mcdonalds_api(madison_lat, madison_lon)
+
+if (!is.null(mcdonalds_locations)) {
+  mcdonalds_locations
+} else {
+  message("API method did not return data")
+}
+```
+
+## Method 2: Manual Addresses with Geocoding
+
+If API fails, use known McDonald's addresses in Madison and geocode them.
+
+```{r}
+# Only run if API method failed
+if (is.null(mcdonalds_locations)) {
+  library(tidygeocoder)
+
+  # Known McDonald's locations in Madison area (from Google Maps)
+  mcdonalds_addresses <- tibble(
+    name = "McDonald's",
+    address = c(
+      "2733 E Washington Ave, Madison, WI 53704",
+      "4502 E Washington Ave, Madison, WI 53704",
+      "1102 Regent St, Madison, WI 53715",
+      "4020 Milwaukee St, Madison, WI 53714",
+      "2003 Red Arrow Trail, Madison, WI 53711",
+      "4500 University Ave, Madison, WI 53705",
+      "2402 S Park St, Madison, WI 53713",
+      "6910 Odana Rd, Madison, WI 53719",
+      "2901 Dryden Dr, Madison, WI 53704",
+      "1402 Williamson St, Madison, WI 53703"
+    )
+  )
+
+  # Geocode using OpenStreetMap (free, no API key needed)
+  mcdonalds_locations <- mcdonalds_addresses |>
+    geocode(address, method = "osm", lat = "lat", long = "lon")
+
+  # Add small delay between requests to be respectful
+  Sys.sleep(1)
+}
+
+# Display locations
+mcdonalds_locations |>
+  knitr::kable()
+```
+
+## Convert to Spatial Object
+
+```{r}
+# Convert to sf object for spatial operations
+mcdonalds_sf <- mcdonalds_locations |>
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+# Quick map to verify locations
+tmap_mode("view")
+tm_shape(mcdonalds_sf) +
+  tm_dots(col = "red", size = 0.5, popup.vars = c("name", "address"))
+```
+
+# Connect to Database
+
+```{r}
+source(here("scripts/r/setup.R"))
+source(here("scripts/r/connection.R"))
+con <- connect_to_db()
+
+# Check connection
+if (is.null(con)) {
+  stop("Database connection failed. ",
+       "If running from Mac, you need to either:\n",
+       "  1. SSH tunnel to VM: ssh -L 5432:localhost:5432 cjanssen3@128.104.50.166\n",
+       "  2. Add host='128.104.50.166' to GPS_DB_PARAMS in setup.R\n",
+       "  3. Run this notebook directly on the VM")
+}
+```
+
+# Load Grid to Database
+
+Create temporary table with spatial index.
+
+```{r}
+# Load centroids as temp table
+dbWriteTable(con, "temp_grid_centroids", grid_centroids, temporary = TRUE)
+
+# Add geometry column
+dbExecute(con, "
+  ALTER TABLE temp_grid_centroids
+  ADD COLUMN geom GEOMETRY(Point, 4326)
+")
+
+# Populate geometry from lat/lon
+dbExecute(con, "
+  UPDATE temp_grid_centroids
+  SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326)
+")
+
+# Create spatial index
+dbExecute(con, "
+  CREATE INDEX idx_temp_grid_geom
+  ON temp_grid_centroids
+  USING GIST(geom)
+")
+
+# Analyze for query optimization
+dbExecute(con, "ANALYZE temp_grid_centroids")
+
+# Verify
+dbGetQuery(con, "
+  SELECT COUNT(*) as n_cells,
+         COUNT(geom) as n_with_geom
+  FROM temp_grid_centroids
+") |>
+  knitr::kable()
+```
+
+# Load McDonald's to Database
+
+Create temporary table for McDonald's locations.
+
+```{r}
+# Prepare data for database
+mcdonalds_db <- mcdonalds_locations |>
+  mutate(location_id = row_number()) |>
+  select(location_id, name, address, lon, lat)
+
+# Load to temp table
+dbWriteTable(con, "temp_mcdonalds", mcdonalds_db, temporary = TRUE)
+
+# Add geometry column
+dbExecute(con, "
+  ALTER TABLE temp_mcdonalds
+  ADD COLUMN geom GEOMETRY(Point, 4326)
+")
+
+# Populate geometry
+dbExecute(con, "
+  UPDATE temp_mcdonalds
+  SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326)
+")
+
+# Create spatial index
+dbExecute(con, "
+  CREATE INDEX idx_temp_mcdonalds_geom
+  ON temp_mcdonalds
+  USING GIST(geom)
+")
+
+# Analyze
+dbExecute(con, "ANALYZE temp_mcdonalds")
+
+# Verify
+dbGetQuery(con, "SELECT COUNT(*) as n_locations FROM temp_mcdonalds") |>
+  knitr::kable()
+```
+
+# Calculate Proximity Features
+
+Distance from each grid cell centroid to nearest McDonald's.
+
+```{r}
+proximity_features <- dbGetQuery(con, "
+  SELECT
+    g.cell_id,
+    ST_Distance(g.geom::geography, m.geom::geography) as dist_mcdonalds_m,
+    m.address as nearest_mcdonalds_address
+  FROM temp_grid_centroids g
+  CROSS JOIN LATERAL (
+    SELECT geom, address
+    FROM temp_mcdonalds
+    ORDER BY geom <-> g.geom
+    LIMIT 1
+  ) m
+  ORDER BY g.cell_id
+")
+
+# Convert to numeric and add feet
+proximity_features <- proximity_features |>
+  mutate(
+    dist_mcdonalds_m = as.numeric(dist_mcdonalds_m),
+    dist_mcdonalds_ft = dist_mcdonalds_m * 3.28084
+  )
+
+# Summary statistics
+proximity_features |>
+  select(dist_mcdonalds_m, dist_mcdonalds_ft) |>
+  summary()
+```
+
+# Disconnect Database
+
+```{r}
+disconnect_db(con)
+```
+
+# Join Features to Grid
+
+```{r}
+grid_enriched <- grid_madison |>
+  left_join(proximity_features, by = "cell_id")
+
+# Summary
+tibble(
+  metric = c("Grid cells", "Mean distance (ft)", "Median distance (ft)", "Max distance (ft)"),
+  value = c(
+    nrow(grid_enriched),
+    round(mean(grid_enriched$dist_mcdonalds_ft, na.rm = TRUE), 0),
+    round(median(grid_enriched$dist_mcdonalds_ft, na.rm = TRUE), 0),
+    round(max(grid_enriched$dist_mcdonalds_ft, na.rm = TRUE), 0)
+  )
+) |>
+  knitr::kable()
+```
+
+# Visualizations
+
+## Distance to Nearest McDonald's
+
+```{r}
+#| fig-width: 14
+#| fig-height: 11
+
+tmap_mode("plot")
+
+tm_shape(grid_enriched) +
+  tm_fill(
+    "dist_mcdonalds_ft",
+    palette = "viridis",
+    style = "pretty",
+    title = "Distance (feet)",
+    legend.hist = TRUE
+  ) +
+  tm_borders(alpha = 0.3, lwd = 0.8) +
+  tm_shape(mcdonalds_sf) +
+  tm_dots(col = "red", size = 0.3, shape = 24) +
+  tm_layout(
+    title = "Distance to Nearest McDonald's",
+    title.size = 1.5,
+    legend.outside = TRUE,
+    legend.hist.width = 1.5,
+    legend.text.size = 1.2,
+    legend.title.size = 1.4
+  ) +
+  tm_scale_bar(position = c("left", "bottom"))
+```
+
+## Distribution Histogram
+
+```{r}
+#| fig-width: 12
+#| fig-height: 8
+
+grid_enriched |>
+  st_drop_geometry() |>
+  ggplot(aes(x = dist_mcdonalds_ft)) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+  geom_vline(
+    xintercept = median(grid_enriched$dist_mcdonalds_ft, na.rm = TRUE),
+    linetype = "dashed",
+    color = "red",
+    linewidth = 1
+  ) +
+  labs(
+    title = "Distribution of Distance to Nearest McDonald's",
+    subtitle = paste0("Median: ", round(median(grid_enriched$dist_mcdonalds_ft, na.rm = TRUE), 0), " feet"),
+    x = "Distance (feet)",
+    y = "Number of grid cells"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 14, color = "red"),
+    axis.title = element_text(size = 14)
+  )
+```
+
+# Summary Statistics
+
+```{r}
+proximity_summary <- grid_enriched |>
+  st_drop_geometry() |>
+  summarize(
+    n_cells = n(),
+    mean_dist_m = mean(dist_mcdonalds_m, na.rm = TRUE),
+    median_dist_m = median(dist_mcdonalds_m, na.rm = TRUE),
+    min_dist_m = min(dist_mcdonalds_m, na.rm = TRUE),
+    max_dist_m = max(dist_mcdonalds_m, na.rm = TRUE),
+    mean_dist_ft = mean_dist_m * 3.28084,
+    median_dist_ft = median_dist_m * 3.28084,
+    min_dist_ft = min_dist_m * 3.28084,
+    max_dist_ft = max_dist_m * 3.28084
+  )
+
+proximity_summary |>
+  knitr::kable(digits = 1, caption = "McDonald's Proximity Summary Statistics")
+```
+
+# Save Results
+
+```{r}
+# Save enriched grid for future use
+saveRDS(
+  grid_enriched,
+  here(path_terrain, "grid_madison_mcdonalds_features.rds")
+)
+
+# Also save as GeoPackage for QGIS visualization
+st_write(
+  grid_enriched,
+  here(path_terrain, "grid_madison_mcdonalds_features.gpkg"),
+  delete_dsn = TRUE
+)
+```
