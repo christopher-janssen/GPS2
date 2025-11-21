@@ -403,39 +403,6 @@ tibble(
 
 # Visualizations
 
-## Interactive Map (Zoomable)
-
-For exploring spatial patterns in detail, use this interactive map.
-
-```{r}
-#| fig-width: 12
-#| fig-height: 10
-
-# Switch to interactive view mode
-tmap_mode("view")
-
-# Create interactive map with density overlay
-tm_shape(grid_enriched) +
-  tm_fill(
-    "n_1000ft",
-    palette = "YlOrRd",
-    style = "pretty",
-    title = "Outlets within 1000ft",
-    alpha = 0.7,
-    popup.vars = c(
-      "Cell ID" = "cell_id",
-      "500ft" = "n_500ft",
-      "1000ft" = "n_1000ft",
-      "1500ft" = "n_1500ft",
-      "Nearest (m)" = "dist_nearest_m"
-    )
-  ) +
-  tm_borders(col = "white", lwd = 0.5)
-
-# Reset to plot mode for remaining visualizations
-tmap_mode("plot")
-```
-
 ## Density: Outlets Within 1000ft
 
 ```{r}
