@@ -17,10 +17,18 @@ editor:
 This notebook enriches GPS data with spatial context from the database:
 
 -   **ADI scores**: Census block group deprivation index
--   **Nearest high-relevance POI**: Hierarchical matching for lapse prediction
+-   **Nearest POI**: Hierarchical matching for environmental context and lapse prediction
+
+    **Tier 1 - Strongest Evidence (Alcohol/Recovery):**
     - Alcohol venues (on-premise): bars, pubs, nightclubs
     - Alcohol retail (off-premise): liquor stores, alcohol shops
     - Recovery facilities: treatment centers, sober living
+
+    **Tier 2 - Moderate Evidence (Environmental Context):**
+    - Restaurants/food: social eating contexts, alcohol availability
+    - Parks/green spaces: protective factor, healthy coping environments
+    - Healthcare facilities: treatment engagement, routine care
+    - Grocery/convenience stores: routine activities, alcohol access points
 
 **POI Matching:** Hierarchical - finds single nearest POI across all categories within 100m
 
@@ -63,10 +71,11 @@ overlap with GPS coverage area.
 ### POI Counts by Target Category
 
 ```{r}
-# Count POI by our target categories
+# Count POI by our target categories (Tier 1 + Tier 2)
 poi_availability <- dbGetQuery(con, "
 SELECT
   CASE
+    -- TIER 1: Alcohol/Recovery (strongest evidence)
     WHEN class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten')
       THEN 'alcohol_venue'
     WHEN (class = 'shop' AND type IN ('alcohol', 'wine'))
@@ -75,6 +84,15 @@ SELECT
     WHEN (class = 'amenity' AND type = 'social_facility')
       OR (class = 'healthcare' AND type IN ('clinic', 'centre'))
       THEN 'recovery_facility'
+    -- TIER 2: Environmental context (moderate evidence)
+    WHEN class = 'amenity' AND type IN ('restaurant', 'cafe', 'fast_food', 'food_court')
+      THEN 'restaurant'
+    WHEN class = 'leisure' AND type IN ('park', 'nature_reserve', 'garden', 'recreation_ground')
+      THEN 'park'
+    WHEN class = 'amenity' AND type IN ('hospital', 'clinic', 'doctors', 'pharmacy')
+      THEN 'healthcare'
+    WHEN class = 'shop' AND type IN ('convenience', 'supermarket', 'general', 'grocery')
+      THEN 'grocery'
     ELSE 'other'
   END as poi_category,
   COUNT(*) as n_poi
@@ -87,6 +105,8 @@ poi_availability
 ```
 
 ### Detailed Breakdown by Type
+
+**TIER 1: Alcohol/Recovery**
 
 **Alcohol Venues:**
 
@@ -127,6 +147,60 @@ ORDER BY count DESC;
 ")
 ```
 
+**TIER 2: Environmental Context**
+
+**Restaurants/Food:**
+
+```{r}
+dbGetQuery(con, "
+SELECT type, COUNT(*) as count
+FROM public_data.osm_poi
+WHERE class = 'amenity'
+  AND type IN ('restaurant', 'cafe', 'fast_food', 'food_court')
+GROUP BY type
+ORDER BY count DESC;
+")
+```
+
+**Parks/Green Spaces:**
+
+```{r}
+dbGetQuery(con, "
+SELECT type, COUNT(*) as count
+FROM public_data.osm_poi
+WHERE class = 'leisure'
+  AND type IN ('park', 'nature_reserve', 'garden', 'recreation_ground')
+GROUP BY type
+ORDER BY count DESC;
+")
+```
+
+**Healthcare Facilities:**
+
+```{r}
+dbGetQuery(con, "
+SELECT type, COUNT(*) as count
+FROM public_data.osm_poi
+WHERE class = 'amenity'
+  AND type IN ('hospital', 'clinic', 'doctors', 'pharmacy')
+GROUP BY type
+ORDER BY count DESC;
+")
+```
+
+**Grocery/Convenience Stores:**
+
+```{r}
+dbGetQuery(con, "
+SELECT type, COUNT(*) as count
+FROM public_data.osm_poi
+WHERE class = 'shop'
+  AND type IN ('convenience', 'supermarket', 'general', 'grocery')
+GROUP BY type
+ORDER BY count DESC;
+")
+```
+
 ### Spatial Coverage Check
 
 Check if POI are distributed within our GPS coverage area (bounding box).
@@ -155,14 +229,16 @@ SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326);
 ```
 
 ```{r}
-# Count POI within GPS bounding box
+# Count POI within GPS bounding box (all tiers)
 spatial_coverage <- dbGetQuery(con, "
 WITH gps_bbox AS (
   SELECT ST_SetSRID(ST_Extent(geom), 4326) as bbox
   FROM temp_gps_sample
 )
+-- TIER 1: Alcohol/Recovery
 SELECT
   'Alcohol Venues' as category,
+  'Tier 1' as tier,
   COUNT(*) as poi_in_study_area
 FROM public_data.osm_poi, gps_bbox
 WHERE class = 'amenity'
@@ -173,6 +249,7 @@ UNION ALL
 
 SELECT
   'Alcohol Retail' as category,
+  'Tier 1' as tier,
   COUNT(*) as poi_in_study_area
 FROM public_data.osm_poi, gps_bbox
 WHERE ((class = 'shop' AND type IN ('alcohol', 'wine'))
@@ -183,11 +260,59 @@ UNION ALL
 
 SELECT
   'Recovery Facilities' as category,
+  'Tier 1' as tier,
   COUNT(*) as poi_in_study_area
 FROM public_data.osm_poi, gps_bbox
 WHERE ((class = 'amenity' AND type = 'social_facility')
     OR (class = 'healthcare' AND type IN ('clinic', 'centre')))
-  AND ST_Intersects(geom, bbox);
+  AND ST_Intersects(geom, bbox)
+
+-- TIER 2: Environmental Context
+UNION ALL
+
+SELECT
+  'Restaurants/Food' as category,
+  'Tier 2' as tier,
+  COUNT(*) as poi_in_study_area
+FROM public_data.osm_poi, gps_bbox
+WHERE class = 'amenity'
+  AND type IN ('restaurant', 'cafe', 'fast_food', 'food_court')
+  AND ST_Intersects(geom, bbox)
+
+UNION ALL
+
+SELECT
+  'Parks/Green Spaces' as category,
+  'Tier 2' as tier,
+  COUNT(*) as poi_in_study_area
+FROM public_data.osm_poi, gps_bbox
+WHERE class = 'leisure'
+  AND type IN ('park', 'nature_reserve', 'garden', 'recreation_ground')
+  AND ST_Intersects(geom, bbox)
+
+UNION ALL
+
+SELECT
+  'Healthcare Facilities' as category,
+  'Tier 2' as tier,
+  COUNT(*) as poi_in_study_area
+FROM public_data.osm_poi, gps_bbox
+WHERE class = 'amenity'
+  AND type IN ('hospital', 'clinic', 'doctors', 'pharmacy')
+  AND ST_Intersects(geom, bbox)
+
+UNION ALL
+
+SELECT
+  'Grocery/Convenience' as category,
+  'Tier 2' as tier,
+  COUNT(*) as poi_in_study_area
+FROM public_data.osm_poi, gps_bbox
+WHERE class = 'shop'
+  AND type IN ('convenience', 'supermarket', 'general', 'grocery')
+  AND ST_Intersects(geom, bbox)
+
+ORDER BY tier, poi_in_study_area DESC;
 ")
 
 spatial_coverage
@@ -379,42 +504,51 @@ adi_results |>
   )
 ```
 
-## Enrich with Nearest High-Relevance POI
+## Enrich with Nearest POI (All Tiers)
 
-**Purpose:** Hierarchical POI matching for time-weighted individual-level lapse prediction.
+**Purpose:** Hierarchical POI matching for environmental contextualization and lapse prediction.
 
-**Approach:** For each GPS point, find the single nearest POI across all high-relevance
-categories (alcohol venues, alcohol retail, recovery facilities). This captures
-**primary exposure** - whichever risk/protective factor is closest.
+**Approach:** For each GPS point, find the single nearest POI across all categories
+(Tier 1 alcohol/recovery + Tier 2 environmental context). This captures **primary exposure** -
+whichever environmental factor is closest.
 
 **Why hierarchical matching?**
-- **Simplicity:** 1 query instead of 3, faster execution
+- **Simplicity:** 1 query instead of 7, much faster execution
 - **Primary exposure:** Most GPS points near only one POI type
-- **Higher match rate:** ~15-20% vs 10% per category
+- **Higher match rate:** ~20-30% vs 5-10% per category
 - **Still allows differential analysis:** Can aggregate by POI category type
+- **Feature reduction flexibility:** Include/exclude categories during modeling phase
 
-**Categories included (HIGH tier evidence):**
+**Categories included:**
+
+**Tier 1 - Strongest Evidence (Alcohol/Recovery):**
 - **Alcohol venues** (bars, pubs, nightclubs) - risky exposure
 - **Alcohol retail** (liquor stores, wine shops) - risky exposure
 - **Recovery facilities** (treatment centers, sober living) - protective exposure
+
+**Tier 2 - Moderate Evidence (Environmental Context):**
+- **Restaurants/food** (restaurants, cafes, fast food) - social context, alcohol availability
+- **Parks/green spaces** (parks, nature reserves) - protective, healthy coping
+- **Healthcare facilities** (hospitals, clinics, pharmacies) - treatment engagement
+- **Grocery/convenience** (supermarkets, convenience stores) - routine activities, alcohol access
 
 **Distance threshold:** 100 meters captures both:
 - Direct visits (20-50m): Person is AT the POI
 - Immediate exposure (50-100m): POI in walkable environment
 
-**Source:** Evidence synthesis from addiction research, environmental epidemiology,
-and CDC alcohol outlet measurement standards. See research_POI.md for full citations.
+**Note:** Feature selection happens during modeling. All categories enriched now,
+then reduce to final feature set based on theory + sample size constraints (10-20 obs/feature).
 
 ### How the Query Works
 
 **R-Equivalent Logic:**
 
 ``` r
-# For each GPS point, find nearest POI of ANY high-relevance type within 100m
+# For each GPS point, find nearest POI of ANY type (all 7 categories) within 100m
 gps_data |>
   group_by(row_id) |>
   mutate(
-    nearest_poi_result = find_closest_poi(this_point, all_high_risk_poi, max_dist = 100)
+    nearest_poi_result = find_closest_poi(this_point, all_poi_categories, max_dist = 100)
   ) |>
   filter(distance <= 100) |>
   slice_head(n = 1)
@@ -423,23 +557,24 @@ gps_data |>
 **SQL Pattern:**
 
 - `CROSS JOIN LATERAL`: For each GPS point, search POI table
-- `WHERE (category1) OR (category2) OR (category3)`: Consider all high-relevance types
+- `WHERE (tier1_cats) OR (tier2_cats)`: Consider all 7 POI types
 - `ORDER BY poi.geom <-> gps.geom`: Use spatial index for fast nearest-neighbor
 - `LIMIT 5`: Get 5 closest candidates for accurate geography filtering
 - `ST_DWithin(..., 100)`: Pre-filter to 100m radius
 - `DISTINCT ON (gps.row_id)`: Return only nearest match per GPS point
-- `CASE`: Categorize result into alcohol_venue, alcohol_retail, or recovery_facility
+- `CASE`: Categorize into 7 types (3 Tier 1, 4 Tier 2)
 
-### Execute Hierarchical POI Query
+### Execute Hierarchical POI Query (All Tiers)
 
 ```{r}
-# Single query for nearest high-relevance POI across all categories
+# Single query for nearest POI across all categories (Tier 1 + Tier 2)
 nearest_poi <- dbGetQuery(con, "
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
     poi.class,
     poi.type,
     CASE
+        -- TIER 1: Alcohol/Recovery (strongest evidence)
         WHEN poi.class = 'amenity' AND poi.type IN ('bar', 'pub', 'nightclub', 'biergarten')
             THEN 'alcohol_venue'
         WHEN (poi.class = 'shop' AND poi.type IN ('alcohol', 'wine'))
@@ -448,6 +583,15 @@ SELECT DISTINCT ON (gps.row_id)
         WHEN (poi.class = 'amenity' AND poi.type = 'social_facility')
             OR (poi.class = 'healthcare' AND poi.type IN ('clinic', 'centre'))
             THEN 'recovery_facility'
+        -- TIER 2: Environmental context (moderate evidence)
+        WHEN poi.class = 'amenity' AND poi.type IN ('restaurant', 'cafe', 'fast_food', 'food_court')
+            THEN 'restaurant'
+        WHEN poi.class = 'leisure' AND poi.type IN ('park', 'nature_reserve', 'garden', 'recreation_ground')
+            THEN 'park'
+        WHEN poi.class = 'amenity' AND poi.type IN ('hospital', 'clinic', 'doctors', 'pharmacy')
+            THEN 'healthcare'
+        WHEN poi.class = 'shop' AND poi.type IN ('convenience', 'supermarket', 'general', 'grocery')
+            THEN 'grocery'
     END as poi_category,
     ROUND(ST_Distance(gps.geom::geography, poi.geom::geography)::numeric, 2) as distance_m
 FROM temp_gps_points gps
@@ -455,14 +599,22 @@ CROSS JOIN LATERAL (
     SELECT class, type, geom
     FROM public_data.osm_poi poi
     WHERE
-        -- Alcohol venues (on-premise)
+        -- TIER 1: Alcohol venues (on-premise)
         (poi.class = 'amenity' AND poi.type IN ('bar', 'pub', 'nightclub', 'biergarten'))
-        -- Alcohol retail (off-premise)
+        -- TIER 1: Alcohol retail (off-premise)
         OR ((poi.class = 'shop' AND poi.type IN ('alcohol', 'wine'))
             OR (poi.class = 'craft' AND poi.type = 'brewery'))
-        -- Recovery facilities
+        -- TIER 1: Recovery facilities
         OR ((poi.class = 'amenity' AND poi.type = 'social_facility')
             OR (poi.class = 'healthcare' AND poi.type IN ('clinic', 'centre')))
+        -- TIER 2: Restaurants/food
+        OR (poi.class = 'amenity' AND poi.type IN ('restaurant', 'cafe', 'fast_food', 'food_court'))
+        -- TIER 2: Parks/green spaces
+        OR (poi.class = 'leisure' AND poi.type IN ('park', 'nature_reserve', 'garden', 'recreation_ground'))
+        -- TIER 2: Healthcare facilities (broader than recovery-specific)
+        OR (poi.class = 'amenity' AND poi.type IN ('hospital', 'clinic', 'doctors', 'pharmacy'))
+        -- TIER 2: Grocery/convenience stores
+        OR (poi.class = 'shop' AND poi.type IN ('convenience', 'supermarket', 'general', 'grocery'))
     ORDER BY poi.geom <-> gps.geom
     LIMIT 5
 ) poi
@@ -526,17 +678,27 @@ gps_enriched |>
   count(poi_category) |>
   mutate(
     match_rate_pct = round(n / nrow(gps_enriched) * 100, 2),
-    category_label = case_when(
-      poi_category == "alcohol_venue" ~ "Alcohol Venues (on-premise)",
-      poi_category == "alcohol_retail" ~ "Alcohol Retail (off-premise)",
-      poi_category == "recovery_facility" ~ "Recovery Facilities"
+    tier = case_when(
+      poi_category %in% c("alcohol_venue", "alcohol_retail", "recovery_facility") ~ "Tier 1",
+      poi_category %in% c("restaurant", "park", "healthcare", "grocery") ~ "Tier 2"
     ),
-    type = case_when(
+    category_label = case_when(
+      poi_category == "alcohol_venue" ~ "Alcohol Venues",
+      poi_category == "alcohol_retail" ~ "Alcohol Retail",
+      poi_category == "recovery_facility" ~ "Recovery Facilities",
+      poi_category == "restaurant" ~ "Restaurants/Food",
+      poi_category == "park" ~ "Parks/Green Spaces",
+      poi_category == "healthcare" ~ "Healthcare Facilities",
+      poi_category == "grocery" ~ "Grocery/Convenience"
+    ),
+    exposure_type = case_when(
       poi_category %in% c("alcohol_venue", "alcohol_retail") ~ "Risky",
-      poi_category == "recovery_facility" ~ "Protective"
+      poi_category %in% c("recovery_facility", "park", "healthcare") ~ "Protective",
+      poi_category %in% c("restaurant", "grocery") ~ "Mixed/Context"
     )
   ) |>
-  select(category_label, type, matches = n, match_rate_pct) |>
+  arrange(tier, desc(n)) |>
+  select(tier, category_label, exposure_type, matches = n, match_rate_pct) |>
   knitr::kable()
 ```
 
@@ -572,21 +734,27 @@ gps_enriched |>
 **Purpose:** These point-level POI matches will be aggregated to create
 subject-level features for lapse prediction modeling.
 
+**Feature selection strategy:** Start with all 7 categories during enrichment,
+then apply theory-driven reduction during modeling to meet sample size constraints
+(10-20 observations per feature with N=167 subjects).
+
 **Example aggregation strategies:**
 
 ```{r eval=FALSE}
-# Example 1: Proportion of time near each POI category
+# Example 1: Proportion of time near each POI category (7 features)
 subject_features <- gps_enriched |>
   group_by(subid) |>
   summarize(
-    # % of GPS points within 50m of alcohol venues
+    # TIER 1: Alcohol/Recovery
     pct_time_near_alcohol_venue = mean(poi_category == "alcohol_venue" & distance_m <= 50, na.rm = TRUE),
-
-    # % of GPS points within 100m of alcohol retail
     pct_time_near_alcohol_retail = mean(poi_category == "alcohol_retail" & distance_m <= 100, na.rm = TRUE),
+    pct_time_near_recovery = mean(poi_category == "recovery_facility" & distance_m <= 100, na.rm = TRUE),
 
-    # % of GPS points within 100m of recovery facilities
-    pct_time_near_recovery = mean(poi_category == "recovery_facility" & distance_m <= 100, na.rm = TRUE)
+    # TIER 2: Environmental context
+    pct_time_near_restaurant = mean(poi_category == "restaurant" & distance_m <= 50, na.rm = TRUE),
+    pct_time_near_park = mean(poi_category == "park" & distance_m <= 100, na.rm = TRUE),
+    pct_time_near_healthcare = mean(poi_category == "healthcare" & distance_m <= 100, na.rm = TRUE),
+    pct_time_near_grocery = mean(poi_category == "grocery" & distance_m <= 50, na.rm = TRUE)
   )
 
 # Example 2: Average proximity by category
@@ -610,26 +778,67 @@ subject_features <- gps_enriched |>
     n_recovery_visits = sum(poi_category == "recovery_facility" & distance_m <= 100, na.rm = TRUE)
   )
 
-# Example 4: Combined exposure metrics
+# Example 4: Combined exposure metrics (reduced feature set)
 subject_features <- gps_enriched |>
   group_by(subid) |>
   summarize(
-    # Any alcohol exposure (venue OR retail)
-    pct_time_near_any_alcohol = mean(poi_category %in% c("alcohol_venue", "alcohol_retail") & distance_m <= 100, na.rm = TRUE),
+    # Composite risky exposure (alcohol venues + retail + some restaurants)
+    pct_time_risky = mean(poi_category %in% c("alcohol_venue", "alcohol_retail") & distance_m <= 100, na.rm = TRUE),
 
-    # Alcohol vs recovery ratio
-    alcohol_points = sum(poi_category %in% c("alcohol_venue", "alcohol_retail"), na.rm = TRUE),
-    recovery_points = sum(poi_category == "recovery_facility", na.rm = TRUE),
-    alcohol_recovery_ratio = if_else(recovery_points > 0, alcohol_points / recovery_points, NA_real_)
+    # Composite protective exposure (recovery + parks + healthcare)
+    pct_time_protective = mean(poi_category %in% c("recovery_facility", "park", "healthcare") & distance_m <= 100, na.rm = TRUE),
+
+    # Risk/protective ratio
+    risky_points = sum(poi_category %in% c("alcohol_venue", "alcohol_retail"), na.rm = TRUE),
+    protective_points = sum(poi_category %in% c("recovery_facility", "park", "healthcare"), na.rm = TRUE),
+    risk_protective_ratio = if_else(protective_points > 0, risky_points / protective_points, NA_real_),
+
+    # Routine activity marker (grocery visits)
+    n_routine_visits = sum(poi_category == "grocery" & distance_m <= 50, na.rm = TRUE)
   )
+
+# Example 5: Theory-driven feature reduction (meets 10-20 obs/feature guideline)
+# N=167 subjects → max 8-16 features at 20-10 obs/feature
+subject_features <- gps_enriched |>
+  group_by(subid) |>
+  summarize(
+    # Core alcohol exposure (MUST include - strongest theory)
+    pct_alcohol_venue = mean(poi_category == "alcohol_venue" & distance_m <= 50, na.rm = TRUE),
+    pct_alcohol_retail = mean(poi_category == "alcohol_retail" & distance_m <= 100, na.rm = TRUE),
+
+    # Recovery engagement
+    pct_recovery = mean(poi_category == "recovery_facility" & distance_m <= 100, na.rm = TRUE),
+
+    # Protective activities (composite to reduce dimensionality)
+    pct_healthy_environment = mean(poi_category %in% c("park", "healthcare") & distance_m <= 100, na.rm = TRUE),
+
+    # Social/routine context (restaurants as alcohol-adjacent)
+    pct_restaurant = mean(poi_category == "restaurant" & distance_m <= 50, na.rm = TRUE)
+  )
+# This creates 5 features → 167/5 = 33 obs/feature (well within guidelines)
 ```
 
 **Sample size check:**
 
-With N=167 subjects and 3 aggregated features:
+With N=167 subjects, multiple aggregation strategies are viable:
+
+**All 7 categories separately:**
+- 167 ÷ 7 = **24 observations per feature**
+- Meets 10-20 obs/feature guideline
+- Use if all categories show meaningful variance
+
+**Reduced to 5 key features (Example 5 approach):**
+- 167 ÷ 5 = **33 observations per feature**
+- Conservative, well above minimum
+- Recommended for initial modeling
+
+**Composite risk/protective only (3 features):**
 - 167 ÷ 3 = **56 observations per feature**
-- Well above minimum threshold of 10-20 obs/feature
-- Can support additional interaction terms or covariates if needed
+- Maximum power for small feature set
+- Can support interaction terms and covariates
+
+**Recommendation:** Enrich with all 7 categories now, decide on final feature set
+during modeling based on variance and theoretical importance.
 
 ## Write Enriched Data
 
