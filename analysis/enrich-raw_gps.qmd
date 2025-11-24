@@ -42,9 +42,6 @@ categories within 100m
 **Distance Limit:** 100 meters (captures direct visits + immediate
 nearby exposure)
 
-**Analysis approach:** Point-level enrichment → time-weighted
-aggregation → subject-level features
-
 ## Setup
 
 ```{r include=FALSE}
