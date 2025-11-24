@@ -674,9 +674,10 @@ gps_enriched <- gps_enriched |>
 gps_enriched <- gps_enriched |>
   left_join(nearest_poi, by = "row_id")
 
-# Remove temporary row_id
+# Remove temporary row_id and fix POI column names
 gps_enriched <- gps_enriched |>
-  select(-row_id)
+  select(-row_id, -type.x) |>
+  rename(type = type.y)
 
 nrow(gps_enriched)
 ```
