@@ -1,7 +1,5 @@
 # scripts/r/recode_poi_categories.R
 #
-# One-time script to recode POI categories in gps_enriched_all.csv
-#
 # Changes:
 # 1. Split recovery_facility → social_facility (new) + healthcare (expanded)
 # 2. Move brewery from alcohol_retail → alcohol_venue
@@ -115,20 +113,7 @@ tibble(
 changes_summary |>
   knitr::kable()
 
-# Create backup and save ----
-# Backup with timestamp
-backup_filename <- str_c("gps_enriched_all_backup_",
-                         format(Sys.time(), "%Y%m%d_%H%M%S"),
-                         ".csv")
-backup_path <- str_c(path_shared, "/", backup_filename)
-write_csv(gps_enriched, backup_path)
-
-tibble(
-  section = "BACKUP CREATED",
-  backup_file = backup_filename,
-  backup_size_mb = round(file.info(backup_path)$size / 1024^2, 2)
-) |>
-  knitr::kable()
+# save ----
 
 # Replace poi_category column
 gps_enriched <- gps_enriched |>
@@ -163,3 +148,4 @@ tibble(
   fast_food_count = sum(gps_enriched$poi_category == "fast_food", na.rm = TRUE)
 ) |>
   knitr::kable()
+
