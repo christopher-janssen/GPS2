@@ -1,0 +1,161 @@
+---
+title: "GPS-Based Contextual Data for Substance Use Recovery Research"
+author: "Christopher Janssen"
+format: 
+  revealjs:
+    theme: default
+    self-contained: true
+    slide-number: true
+    transition: slide
+editor: visual
+---
+
+# Can Location Patterns Predict Substance Use Lapses?
+
+## Research Context
+
+**Our lab develops predictive models for substance use recovery**
+
+Machine learning to forecast high-risk moments
+
+-   Enable just-in-time interventions
+-   Personalize support strategies
+-   Improve recovery outcomes
+
+::: {.callout-warning .fragment}
+## Key Question:
+
+What signals predict lapse risk?
+:::
+
+## Current Gold Standard:
+
+**Ecological Momentary Assessment (EMA)**
+
+4x daily surveys capturing real-time psychological state:
+
+::: nonincremental
+-   Cravings and urges
+
+-   Stress and mood
+
+-   Confidence in resisting
+
+-   Recent trigger exposure
+:::
+
+::: {.callout-tip .fragment}
+## Result:
+
+We can reliably predict *when* someone is at high risk
+:::
+
+## Understanding the "Why?"
+
+Prediction alone isn't enough for intervention
+
+We need diverse explanatory information:
+
+::: incremental
+-   What contexts trigger lapses?
+
+-   Which behaviors are protective
+
+-   What patterns precede high-risk moments?
+:::
+
+::: {.callout-important .fragment}
+## Problem:
+
+Can't expand EMA surveys (already high-burden)
+:::
+
+# How do we increase explanatory power without increasing burden?
+
+## Passive Sensing Through GPS
+
+People only visit \~30 places regularly
+
+-   Manageable to characterize
+-   Stable enough to extract patterns
+-   Rich contextual potential
+
+## Raw GPS Isn't Enough
+
+A typical GPS dataframe looks like:
+
+```{r}
+#| echo: false
+library(tibble)
+
+tibble(
+  subid = c("1", "1", "12", "12"),
+  lat = c(43.0731, 43.0745, 43.0689, 43.0821),
+  lon = c(-89.4012, -89.3998, -89.4156, -89.3742),
+  time = c("08:23:14", "12:45:32", "18:12:09", "14:33:21")
+    )
+```
+
+These can be marginally useful, but we need a way to contextualize the significance of a place to an individuals recovery
+
+## Current Approach: Active Contextualization
+
+**Ask participants to describe their main locations**
+
+For locations that participants visited more than 2x a month:
+
+-   Identify the location (home/work/etc)
+-   Report availability of alcohol
+-   Categorize it as "helpful" or "harmful" for their recovery
+
+## Current Approach: Active Contextualization
+
+:::::: columns
+::: {.column width="40%"}
+Advantages:
+
+-   High specificity
+
+-   Captures personal context
+:::
+
+::: {.column width="10%"}
+<!-- empty column to create gap -->
+:::
+
+::: {.column width="40%"}
+Disadvantages:
+
+-   Adds additional participant burden
+
+-   Only feasible for main locations
+:::
+::::::
+
+## GPS2: Public Data Enrichment
+
+By joining GPS points with public reference data-sets, new levels of analyses become available:
+
+-   **Points of Interests**: Proximity to bars, clinics, parks
+-   **Land use patterns**: Residential, commercial, recreational
+-   **Neighborhood characteristics**: ADI, greenspace
+
+::: {.callout-tip .fragment}
+## But importantly:
+No added participant burden!
+:::
+
+## Planned Analyses:
+
+Minor EDA, show distribution of points, example map, enrichment coverage across the sample
+
+Feature engineering decisions, explain features
+
+## Results Section
+
+Explain results, model comparisons to no context and active context
+
+## Next Steps:
+
+Expand to environmental risk factors, test interactions with time and demographics, add additional sources of public data.
+
