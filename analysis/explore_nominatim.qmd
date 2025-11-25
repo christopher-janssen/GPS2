@@ -1,0 +1,443 @@
+---
+title: "OSM Data Exploration"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+    toc: true
+    toc-depth: 3
+    code-fold: show
+editor_options:
+  chunk_output_type: console
+---
+
+# Overview
+
+This notebook explores the Wisconsin OpenStreetMap (OSM) data in the `public_data` schema of the GPS2 geolocation database. The data includes points of interest (POI) and landuse polygons extracted from OpenStreetMap.
+
+## Setup
+
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+```
+
+## Database Connection
+
+Connect to the geolocation database on the shared VM.
+
+```{r}
+# Connect to database
+con <- connect_to_db()
+
+# Verify connection
+dbGetQuery(con, "SELECT current_database(), current_user, version()")
+```
+
+## Table Schema
+
+Check actual column structure in the loaded tables.
+
+```{r}
+# OSM POI columns
+dbGetQuery(con, "
+SELECT
+    column_name,
+    data_type
+FROM information_schema.columns
+WHERE table_schema = 'public_data' AND table_name = 'osm_poi'
+ORDER BY ordinal_position;
+")
+```
+
+```{r}
+# OSM Landuse columns
+dbGetQuery(con, "
+SELECT
+    column_name,
+    data_type
+FROM information_schema.columns
+WHERE table_schema = 'public_data' AND table_name = 'osm_landuse'
+ORDER BY ordinal_position;
+")
+```
+
+# Database Overview
+
+## Table Sizes
+
+```{r}
+# Get table sizes for public_data schema
+table_sizes <- dbGetQuery(con, "
+SELECT
+  schemaname,
+  tablename,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+FROM pg_tables
+WHERE schemaname = 'public_data'
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+")
+
+table_sizes |> knitr::kable()
+```
+
+## Overall Statistics
+
+```{r}
+# Get counts for OSM tables
+stats <- dbGetQuery(con, "
+SELECT
+  'OSM Points of Interest' as dataset,
+  COUNT(*) as count
+FROM public_data.osm_poi
+UNION ALL
+SELECT
+  'OSM Landuse Polygons',
+  COUNT(*)
+FROM public_data.osm_landuse;
+")
+
+stats |>
+  knitr::kable(format.args = list(big.mark = ","))
+```
+
+# POI Classification
+
+The `osm_poi` table contains points of interest organized by `class` and `type`. This creates a hierarchical categorization system.
+
+## POI Class-Level Summary
+
+The `osm_poi` table contains point features representing specific locations. Common classes:
+
+- **amenity**: Services and facilities (restaurants, schools, hospitals, ATMs, benches)
+- **shop**: Retail locations (grocery stores, clothing, hardware, etc.)
+- **leisure**: Small recreational features (playgrounds, picnic tables, fitness stations)
+- **tourism**: Tourist attractions (hotels, museums, viewpoints, information centers)
+- **healthcare**: Medical facilities (clinics, doctors, dentists, pharmacies)
+
+```{r}
+class_summary <- dbGetQuery(con, "
+SELECT
+  class,
+  COUNT(*) as n_places,
+  COUNT(DISTINCT type) as n_types,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct_of_total
+FROM public_data.osm_poi
+GROUP BY class
+ORDER BY n_places DESC;
+")
+
+class_summary |>
+  knitr::kable(
+    col.names = c("Class", "Places", "Types", "% of Total"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Landuse Class Summary
+
+The `osm_landuse` table contains polygon features representing land areas. Common classes:
+
+- **landuse**: How land is used (residential, commercial, industrial, forest, farmland)
+- **natural**: Natural features (water, wood, grassland, wetland)
+- **leisure**: Large recreational areas (parks, golf courses, sports fields)
+- **amenity**: Large facility areas (parking lots, cemeteries, universities)
+
+```{r}
+landuse_summary <- dbGetQuery(con, "
+SELECT
+  class,
+  COUNT(*) as n_polygons,
+  COUNT(DISTINCT type) as n_types,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct_of_total
+FROM public_data.osm_landuse
+GROUP BY class
+ORDER BY n_polygons DESC;
+")
+
+landuse_summary |>
+  knitr::kable(
+    col.names = c("Class", "Polygons", "Types", "% of Total"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+### Landuse Type Details
+
+See what specific types exist within each landuse class:
+
+```{r}
+# Show types for each landuse class
+landuse_types <- dbGetQuery(con, "
+SELECT
+  class,
+  type,
+  COUNT(*) as n_polygons,
+  ROUND(AVG(area_sqkm)::numeric, 3) as avg_area_sqkm
+FROM public_data.osm_landuse
+GROUP BY class, type
+ORDER BY class, n_polygons DESC;
+")
+
+landuse_types |>
+  knitr::kable(
+    col.names = c("Class", "Type", "Count", "Avg Area (km²)"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+# Detailed Type Breakdowns
+
+## Shops
+
+```{r}
+shop_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places
+FROM public_data.osm_poi
+WHERE class = 'shop'
+GROUP BY type
+ORDER BY n_places DESC
+LIMIT 40;
+")
+
+shop_types |>
+  knitr::kable(
+    col.names = c("Shop Type", "Count"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Amenities
+
+```{r}
+amenity_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places
+FROM public_data.osm_poi
+WHERE class = 'amenity'
+GROUP BY type
+ORDER BY n_places DESC
+LIMIT 40;
+")
+
+amenity_types |>
+  knitr::kable(
+    col.names = c("Amenity Type", "Count"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Leisure
+
+```{r}
+leisure_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places
+FROM public_data.osm_poi
+WHERE class = 'leisure'
+GROUP BY type
+ORDER BY n_places DESC;
+")
+
+leisure_types |>
+  knitr::kable(
+    col.names = c("Leisure Type", "Count"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Tourism
+
+```{r}
+tourism_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places
+FROM public_data.osm_poi
+WHERE class = 'tourism'
+GROUP BY type
+ORDER BY n_places DESC;
+")
+
+tourism_types |>
+  knitr::kable(
+    col.names = c("Tourism Type", "Count"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Healthcare
+
+```{r}
+healthcare_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as n_places
+FROM public_data.osm_poi
+WHERE class = 'healthcare'
+GROUP BY type
+ORDER BY n_places DESC;
+")
+
+healthcare_types |>
+  knitr::kable(
+    col.names = c("Healthcare Type", "Count"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+# Data Structure
+
+The actual columns in your loaded tables are shown in the Table Schema section above. Use that as the reference for available fields.
+
+## Example: Viewing POI Data
+
+```{r}
+# Sample amenities from Madison
+sample_poi <- dbGetQuery(con, "
+SELECT
+  osm_id,
+  osm_type,
+  class,
+  type,
+  city,
+  lat,
+  lon
+FROM public_data.osm_poi
+WHERE class = 'amenity'
+  AND type IN ('restaurant', 'bar', 'cafe')
+  AND city = 'Madison'
+LIMIT 15;
+")
+
+sample_poi |> knitr::kable()
+```
+
+# Example Queries
+
+## Finding Specific POI Types
+
+### All bars and restaurants in Madison
+
+```{sql eval=FALSE}
+SELECT
+  osm_id,
+  class,
+  type,
+  city,
+  lat,
+  lon
+FROM public_data.osm_poi
+WHERE city = 'Madison'
+  AND class = 'amenity'
+  AND type IN ('bar', 'restaurant', 'pub', 'cafe');
+```
+
+### All healthcare facilities
+
+```{sql eval=FALSE}
+SELECT
+  osm_id,
+  class,
+  type,
+  city,
+  lat,
+  lon
+FROM public_data.osm_poi
+WHERE class IN ('healthcare', 'amenity')
+  AND type IN ('hospital', 'clinic', 'doctors', 'dentist', 'pharmacy');
+```
+
+### Schools by type
+
+```{sql eval=FALSE}
+SELECT
+  osm_id,
+  CASE
+    WHEN type = 'kindergarten' THEN 'Kindergarten'
+    WHEN type = 'school' THEN 'K-12 School'
+    WHEN type = 'college' THEN 'College'
+    WHEN type = 'university' THEN 'University'
+    ELSE type
+  END as school_type,
+  city,
+  lat,
+  lon
+FROM public_data.osm_poi
+WHERE class = 'amenity'
+  AND type IN ('kindergarten', 'school', 'college', 'university');
+```
+
+### Spatial query: POI near a location
+
+```{sql eval=FALSE}
+-- Find all amenities within 1km of a specific point
+-- (Example: UW-Madison Memorial Union at 43.0766, -89.3984)
+SELECT
+  osm_id,
+  class,
+  type,
+  city,
+  ST_Distance(
+    geom::geography,
+    ST_SetSRID(ST_MakePoint(-89.3984, 43.0766), 4326)::geography
+  ) as distance_meters
+FROM public_data.osm_poi
+WHERE ST_DWithin(
+  geom::geography,
+  ST_SetSRID(ST_MakePoint(-89.3984, 43.0766), 4326)::geography,
+  1000  -- 1km radius
+)
+ORDER BY distance_meters
+LIMIT 20;
+```
+
+## Working with Landuse Polygons
+
+### Find landuse polygons containing a point
+
+```{sql eval=FALSE}
+-- Find which landuse polygon(s) contain a specific GPS point
+SELECT
+  osm_id,
+  class,
+  type,
+  area_sqkm
+FROM public_data.osm_landuse
+WHERE ST_Contains(
+  geom,
+  ST_SetSRID(ST_MakePoint(-89.3984, 43.0766), 4326)
+)
+ORDER BY area_sqkm;
+```
+
+### Largest landuse polygons by type
+
+```{sql eval=FALSE}
+-- Find the 10 largest parks in Wisconsin
+SELECT
+  osm_id,
+  class,
+  type,
+  city,
+  area_sqkm
+FROM public_data.osm_landuse
+WHERE class = 'leisure' AND type = 'park'
+ORDER BY area_sqkm DESC
+LIMIT 10;
+```
+
+## Cleanup
+
+```{r}
+# Close database connection
+disconnect_db(con)
+```
