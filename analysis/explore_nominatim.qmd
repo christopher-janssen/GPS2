@@ -136,27 +136,6 @@ Types are sorted by count (descending) to highlight the most common features fir
 
 # Detailed Type Breakdowns
 
-## Shop Types
-
-```{r}
-shop_types <- dbGetQuery(con, "
-SELECT
-  type,
-  COUNT(*) as count,
-  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
-FROM public_data.osm_poi
-WHERE class = 'shop'
-GROUP BY type
-ORDER BY count DESC;
-")
-
-shop_types |>
-  knitr::kable(
-    col.names = c("Type", "Count", "% of Class"),
-    format.args = list(big.mark = ",")
-  )
-```
-
 ## Amenity Types
 
 ```{r}
@@ -199,6 +178,48 @@ leisure_types |>
   )
 ```
 
+## Man_Made Types
+
+```{r}
+man_made_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as count,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
+FROM public_data.osm_poi
+WHERE class = 'man_made'
+GROUP BY type
+ORDER BY count DESC;
+")
+
+man_made_types |>
+  knitr::kable(
+    col.names = c("Type", "Count", "% of Class"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Shop Types
+
+```{r}
+shop_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as count,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
+FROM public_data.osm_poi
+WHERE class = 'shop'
+GROUP BY type
+ORDER BY count DESC;
+")
+
+shop_types |>
+  knitr::kable(
+    col.names = c("Type", "Count", "% of Class"),
+    format.args = list(big.mark = ",")
+  )
+```
+
 ## Tourism Types
 
 ```{r}
@@ -214,6 +235,90 @@ ORDER BY count DESC;
 ")
 
 tourism_types |>
+  knitr::kable(
+    col.names = c("Type", "Count", "% of Class"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Historic Types
+
+```{r}
+historic_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as count,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
+FROM public_data.osm_poi
+WHERE class = 'historic'
+GROUP BY type
+ORDER BY count DESC;
+")
+
+historic_types |>
+  knitr::kable(
+    col.names = c("Type", "Count", "% of Class"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Office Types
+
+```{r}
+office_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as count,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
+FROM public_data.osm_poi
+WHERE class = 'office'
+GROUP BY type
+ORDER BY count DESC;
+")
+
+office_types |>
+  knitr::kable(
+    col.names = c("Type", "Count", "% of Class"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Craft Types
+
+```{r}
+craft_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as count,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
+FROM public_data.osm_poi
+WHERE class = 'craft'
+GROUP BY type
+ORDER BY count DESC;
+")
+
+craft_types |>
+  knitr::kable(
+    col.names = c("Type", "Count", "% of Class"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Emergency Types
+
+```{r}
+emergency_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as count,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
+FROM public_data.osm_poi
+WHERE class = 'emergency'
+GROUP BY type
+ORDER BY count DESC;
+")
+
+emergency_types |>
   knitr::kable(
     col.names = c("Type", "Count", "% of Class"),
     format.args = list(big.mark = ",")
@@ -241,20 +346,42 @@ healthcare_types |>
   )
 ```
 
+## Natural Types
+
 ```{r}
-# Example for 'office' class:
-office_types <- dbGetQuery(con, "
+natural_types <- dbGetQuery(con, "
 SELECT
   type,
   COUNT(*) as count,
   ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
 FROM public_data.osm_poi
-WHERE class = 'office'
+WHERE class = 'natural'
 GROUP BY type
 ORDER BY count DESC;
 ")
 
-office_types |>
+natural_types |>
+  knitr::kable(
+    col.names = c("Type", "Count", "% of Class"),
+    format.args = list(big.mark = ",")
+  )
+```
+
+## Military Types
+
+```{r}
+military_types <- dbGetQuery(con, "
+SELECT
+  type,
+  COUNT(*) as count,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as pct
+FROM public_data.osm_poi
+WHERE class = 'military'
+GROUP BY type
+ORDER BY count DESC;
+")
+
+military_types |>
   knitr::kable(
     col.names = c("Type", "Count", "% of Class"),
     format.args = list(big.mark = ",")
