@@ -125,11 +125,7 @@ FROM public_data.osm_poi;
 
 # POI Type Classification
 
-The following sections enumerate all POI types within each class. Use this reference to:
-
-1. **Identify noise types** - Exclude low-value POI (e.g., benches, waste baskets)
-2. **Select analysis targets** - Focus on meaningful locations (e.g., bars, restaurants, parks)
-3. **Understand data coverage** - See which types are common vs rare in Wisconsin
+The following sections enumerate all POI types within each class.
 
 Each table shows:
 - **Type:** Specific POI category (e.g., restaurant, pharmacy)
@@ -245,21 +241,7 @@ healthcare_types |>
   )
 ```
 
-## Other Classes
-
-**Note:** Check the Class Distribution table above to see if there are additional POI classes in the database beyond the ones listed here (amenity, shop, leisure, tourism, healthcare). If additional classes exist with significant POI counts, add sections for them using the same query pattern.
-
-Common OSM classes that may appear:
-- **office**: Business offices, government offices
-- **building**: Generic buildings
-- **place**: Geographic places (cities, towns, neighborhoods)
-- **man_made**: Artificial structures (towers, bridges, water towers)
-- **natural**: Natural features (peaks, springs, trees)
-- **highway**: Points along roads (often noise for POI analysis)
-
-If these or other classes appear in the Class Distribution with meaningful counts, add a section for each using this template:
-
-```r
+```{r}
 # Example for 'office' class:
 office_types <- dbGetQuery(con, "
 SELECT
