@@ -84,19 +84,22 @@ SELECT
     -- TIER 1: Alcohol/Recovery (strongest evidence)
     WHEN class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten')
       THEN 'alcohol_venue'
-    WHEN (class = 'shop' AND type IN ('alcohol', 'wine'))
-      OR (class = 'craft' AND type = 'brewery')
+    WHEN class = 'craft' AND type = 'brewery'
+      THEN 'alcohol_venue'
+    WHEN class = 'shop' AND type IN ('alcohol', 'wine')
       THEN 'alcohol_retail'
-    WHEN (class = 'amenity' AND type = 'social_facility')
+    WHEN class = 'amenity' AND type = 'social_facility'
+      THEN 'social_facility'
+    WHEN (class = 'amenity' AND type IN ('hospital', 'clinic', 'doctors', 'pharmacy'))
       OR (class = 'healthcare' AND type IN ('clinic', 'centre'))
-      THEN 'recovery_facility'
+      THEN 'healthcare'
     -- TIER 2: Environmental context (moderate evidence)
-    WHEN class = 'amenity' AND type IN ('restaurant', 'cafe', 'fast_food', 'food_court')
+    WHEN class = 'amenity' AND type IN ('restaurant', 'cafe')
       THEN 'restaurant'
+    WHEN class = 'amenity' AND type IN ('fast_food', 'food_court')
+      THEN 'fast_food'
     WHEN class = 'leisure' AND type IN ('park', 'nature_reserve', 'garden', 'recreation_ground')
       THEN 'park'
-    WHEN class = 'amenity' AND type IN ('hospital', 'clinic', 'doctors', 'pharmacy')
-      THEN 'healthcare'
     WHEN class = 'shop' AND type IN ('convenience', 'supermarket', 'general', 'grocery')
       THEN 'grocery'
     ELSE 'other'
@@ -133,20 +136,43 @@ ORDER BY count DESC;
 dbGetQuery(con, "
 SELECT class, type, COUNT(*) as count
 FROM public_data.osm_poi
-WHERE (class = 'shop' AND type IN ('alcohol', 'wine'))
-   OR (class = 'craft' AND type = 'brewery')
+WHERE class = 'shop' AND type IN ('alcohol', 'wine')
 GROUP BY class, type
 ORDER BY count DESC;
 ")
 ```
 
-**Recovery Facilities:**
+**Brewery (now in Alcohol Venues):**
 
 ```{r}
 dbGetQuery(con, "
 SELECT class, type, COUNT(*) as count
 FROM public_data.osm_poi
-WHERE (class = 'amenity' AND type = 'social_facility')
+WHERE class = 'craft' AND type = 'brewery'
+GROUP BY class, type
+ORDER BY count DESC;
+")
+```
+
+**Social Facilities:**
+
+```{r}
+dbGetQuery(con, "
+SELECT class, type, COUNT(*) as count
+FROM public_data.osm_poi
+WHERE class = 'amenity' AND type = 'social_facility'
+GROUP BY class, type
+ORDER BY count DESC;
+")
+```
+
+**Healthcare (merged with recovery clinics):**
+
+```{r}
+dbGetQuery(con, "
+SELECT class, type, COUNT(*) as count
+FROM public_data.osm_poi
+WHERE (class = 'amenity' AND type IN ('hospital', 'clinic', 'doctors', 'pharmacy'))
    OR (class = 'healthcare' AND type IN ('clinic', 'centre'))
 GROUP BY class, type
 ORDER BY count DESC;
@@ -155,14 +181,27 @@ ORDER BY count DESC;
 
 **TIER 2: Environmental Context**
 
-**Restaurants/Food:**
+**Restaurants:**
 
 ```{r}
 dbGetQuery(con, "
 SELECT type, COUNT(*) as count
 FROM public_data.osm_poi
 WHERE class = 'amenity'
-  AND type IN ('restaurant', 'cafe', 'fast_food', 'food_court')
+  AND type IN ('restaurant', 'cafe')
+GROUP BY type
+ORDER BY count DESC;
+")
+```
+
+**Fast Food:**
+
+```{r}
+dbGetQuery(con, "
+SELECT type, COUNT(*) as count
+FROM public_data.osm_poi
+WHERE class = 'amenity'
+  AND type IN ('fast_food', 'food_court')
 GROUP BY type
 ORDER BY count DESC;
 ")
@@ -176,19 +215,6 @@ SELECT type, COUNT(*) as count
 FROM public_data.osm_poi
 WHERE class = 'leisure'
   AND type IN ('park', 'nature_reserve', 'garden', 'recreation_ground')
-GROUP BY type
-ORDER BY count DESC;
-")
-```
-
-**Healthcare Facilities:**
-
-```{r}
-dbGetQuery(con, "
-SELECT type, COUNT(*) as count
-FROM public_data.osm_poi
-WHERE class = 'amenity'
-  AND type IN ('hospital', 'clinic', 'doctors', 'pharmacy')
 GROUP BY type
 ORDER BY count DESC;
 ")
@@ -248,8 +274,8 @@ SELECT
   'Tier 1' as tier,
   COUNT(*) as poi_in_study_area
 FROM public_data.osm_poi, gps_bbox
-WHERE class = 'amenity'
-  AND type IN ('bar', 'pub', 'nightclub', 'biergarten')
+WHERE ((class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
+    OR (class = 'craft' AND type = 'brewery'))
   AND ST_Intersects(geom, bbox)
 
 UNION ALL
@@ -259,18 +285,27 @@ SELECT
   'Tier 1' as tier,
   COUNT(*) as poi_in_study_area
 FROM public_data.osm_poi, gps_bbox
-WHERE ((class = 'shop' AND type IN ('alcohol', 'wine'))
-    OR (class = 'craft' AND type = 'brewery'))
+WHERE class = 'shop' AND type IN ('alcohol', 'wine')
   AND ST_Intersects(geom, bbox)
 
 UNION ALL
 
 SELECT
-  'Recovery Facilities' as category,
+  'Social Facilities' as category,
   'Tier 1' as tier,
   COUNT(*) as poi_in_study_area
 FROM public_data.osm_poi, gps_bbox
-WHERE ((class = 'amenity' AND type = 'social_facility')
+WHERE class = 'amenity' AND type = 'social_facility'
+  AND ST_Intersects(geom, bbox)
+
+UNION ALL
+
+SELECT
+  'Healthcare' as category,
+  'Tier 1' as tier,
+  COUNT(*) as poi_in_study_area
+FROM public_data.osm_poi, gps_bbox
+WHERE ((class = 'amenity' AND type IN ('hospital', 'clinic', 'doctors', 'pharmacy'))
     OR (class = 'healthcare' AND type IN ('clinic', 'centre')))
   AND ST_Intersects(geom, bbox)
 
@@ -278,12 +313,23 @@ WHERE ((class = 'amenity' AND type = 'social_facility')
 UNION ALL
 
 SELECT
-  'Restaurants/Food' as category,
+  'Restaurants' as category,
   'Tier 2' as tier,
   COUNT(*) as poi_in_study_area
 FROM public_data.osm_poi, gps_bbox
 WHERE class = 'amenity'
-  AND type IN ('restaurant', 'cafe', 'fast_food', 'food_court')
+  AND type IN ('restaurant', 'cafe')
+  AND ST_Intersects(geom, bbox)
+
+UNION ALL
+
+SELECT
+  'Fast Food' as category,
+  'Tier 2' as tier,
+  COUNT(*) as poi_in_study_area
+FROM public_data.osm_poi, gps_bbox
+WHERE class = 'amenity'
+  AND type IN ('fast_food', 'food_court')
   AND ST_Intersects(geom, bbox)
 
 UNION ALL
@@ -295,17 +341,6 @@ SELECT
 FROM public_data.osm_poi, gps_bbox
 WHERE class = 'leisure'
   AND type IN ('park', 'nature_reserve', 'garden', 'recreation_ground')
-  AND ST_Intersects(geom, bbox)
-
-UNION ALL
-
-SELECT
-  'Healthcare Facilities' as category,
-  'Tier 2' as tier,
-  COUNT(*) as poi_in_study_area
-FROM public_data.osm_poi, gps_bbox
-WHERE class = 'amenity'
-  AND type IN ('hospital', 'clinic', 'doctors', 'pharmacy')
   AND ST_Intersects(geom, bbox)
 
 UNION ALL
@@ -486,9 +521,9 @@ Spatial join to match GPS points with census block group ADI scores.
 adi_results <- dbGetQuery(con, "
 SELECT
     t.row_id,
-    a.fips_2020,
-    a.adi_national_percentile,
-    a.adi_state_decile
+    a.fips_2020 as pass_fips_2020,
+    a.adi_national_percentile as pass_adi_national_percentile,
+    a.adi_state_decile as pass_adi_state_decile
 FROM temp_gps_points t
 LEFT JOIN public_data.adi_scores a
     ON ST_Within(t.geom, a.geometry)
@@ -503,8 +538,8 @@ nrow(adi_results)
 adi_results |>
   summarise(
     total_points = n(),
-    with_adi = sum(!is.na(adi_national_percentile)),
-    match_rate = round(sum(!is.na(adi_national_percentile)) / n() * 100, 2)
+    with_adi = sum(!is.na(pass_adi_national_percentile)),
+    match_rate = round(sum(!is.na(pass_adi_national_percentile)) / n() * 100, 2)
   )
 ```
 
@@ -596,48 +631,53 @@ gps_data |>
 nearest_poi <- dbGetQuery(con, "
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
-    poi.class,
-    poi.type,
+    poi.class as pass_class,
+    poi.type as pass_type,
     CASE
         -- TIER 1: Alcohol/Recovery (strongest evidence)
         WHEN poi.class = 'amenity' AND poi.type IN ('bar', 'pub', 'nightclub', 'biergarten')
             THEN 'alcohol_venue'
-        WHEN (poi.class = 'shop' AND poi.type IN ('alcohol', 'wine'))
-            OR (poi.class = 'craft' AND poi.type = 'brewery')
+        WHEN poi.class = 'craft' AND poi.type = 'brewery'
+            THEN 'alcohol_venue'
+        WHEN poi.class = 'shop' AND poi.type IN ('alcohol', 'wine')
             THEN 'alcohol_retail'
-        WHEN (poi.class = 'amenity' AND poi.type = 'social_facility')
+        WHEN poi.class = 'amenity' AND poi.type = 'social_facility'
+            THEN 'social_facility'
+        WHEN (poi.class = 'amenity' AND poi.type IN ('hospital', 'clinic', 'doctors', 'pharmacy'))
             OR (poi.class = 'healthcare' AND poi.type IN ('clinic', 'centre'))
-            THEN 'recovery_facility'
+            THEN 'healthcare'
         -- TIER 2: Environmental context (moderate evidence)
-        WHEN poi.class = 'amenity' AND poi.type IN ('restaurant', 'cafe', 'fast_food', 'food_court')
+        WHEN poi.class = 'amenity' AND poi.type IN ('restaurant', 'cafe')
             THEN 'restaurant'
+        WHEN poi.class = 'amenity' AND poi.type IN ('fast_food', 'food_court')
+            THEN 'fast_food'
         WHEN poi.class = 'leisure' AND poi.type IN ('park', 'nature_reserve', 'garden', 'recreation_ground')
             THEN 'park'
-        WHEN poi.class = 'amenity' AND poi.type IN ('hospital', 'clinic', 'doctors', 'pharmacy')
-            THEN 'healthcare'
         WHEN poi.class = 'shop' AND poi.type IN ('convenience', 'supermarket', 'general', 'grocery')
             THEN 'grocery'
-    END as poi_category,
-    ROUND(ST_Distance(gps.geom::geography, poi.geom::geography)::numeric, 2) as distance_m
+    END as pass_poi_category,
+    ROUND(ST_Distance(gps.geom::geography, poi.geom::geography)::numeric, 2) as pass_distance_m
 FROM temp_gps_points gps
 CROSS JOIN LATERAL (
     SELECT class, type, geom
     FROM public_data.osm_poi poi
     WHERE
-        -- TIER 1: Alcohol venues (on-premise)
+        -- TIER 1: Alcohol venues (on-premise + brewery)
         (poi.class = 'amenity' AND poi.type IN ('bar', 'pub', 'nightclub', 'biergarten'))
+        OR (poi.class = 'craft' AND poi.type = 'brewery')
         -- TIER 1: Alcohol retail (off-premise)
-        OR ((poi.class = 'shop' AND poi.type IN ('alcohol', 'wine'))
-            OR (poi.class = 'craft' AND poi.type = 'brewery'))
-        -- TIER 1: Recovery facilities
-        OR ((poi.class = 'amenity' AND poi.type = 'social_facility')
-            OR (poi.class = 'healthcare' AND poi.type IN ('clinic', 'centre')))
-        -- TIER 2: Restaurants/food
-        OR (poi.class = 'amenity' AND poi.type IN ('restaurant', 'cafe', 'fast_food', 'food_court'))
+        OR (poi.class = 'shop' AND poi.type IN ('alcohol', 'wine'))
+        -- TIER 1: Social facilities (separate category)
+        OR (poi.class = 'amenity' AND poi.type = 'social_facility')
+        -- TIER 1: Healthcare (merged with recovery facilities)
+        OR (poi.class = 'amenity' AND poi.type IN ('hospital', 'clinic', 'doctors', 'pharmacy'))
+        OR (poi.class = 'healthcare' AND poi.type IN ('clinic', 'centre'))
+        -- TIER 2: Restaurants (cafes only, no fast food)
+        OR (poi.class = 'amenity' AND poi.type IN ('restaurant', 'cafe'))
+        -- TIER 2: Fast food (separate category)
+        OR (poi.class = 'amenity' AND poi.type IN ('fast_food', 'food_court'))
         -- TIER 2: Parks/green spaces
         OR (poi.class = 'leisure' AND poi.type IN ('park', 'nature_reserve', 'garden', 'recreation_ground'))
-        -- TIER 2: Healthcare facilities (broader than recovery-specific)
-        OR (poi.class = 'amenity' AND poi.type IN ('hospital', 'clinic', 'doctors', 'pharmacy'))
         -- TIER 2: Grocery/convenience stores
         OR (poi.class = 'shop' AND poi.type IN ('convenience', 'supermarket', 'general', 'grocery'))
     ORDER BY poi.geom <-> gps.geom
@@ -674,10 +714,9 @@ gps_enriched <- gps_enriched |>
 gps_enriched <- gps_enriched |>
   left_join(nearest_poi, by = "row_id")
 
-# Remove temporary row_id and fix POI column names
+# Remove temporary row_id
 gps_enriched <- gps_enriched |>
-  select(-row_id, -type.x) |>
-  rename(type = type.y)
+  select(-row_id)
 
 nrow(gps_enriched)
 ```
@@ -690,8 +729,8 @@ nrow(gps_enriched)
 gps_enriched |>
   summarise(
     total_points = n(),
-    with_adi = sum(!is.na(adi_national_percentile)),
-    match_rate_pct = round(sum(!is.na(adi_national_percentile)) / n() * 100, 2)
+    with_adi = sum(!is.na(pass_adi_national_percentile)),
+    match_rate_pct = round(sum(!is.na(pass_adi_national_percentile)) / n() * 100, 2)
   ) |>
   knitr::kable()
 ```
@@ -700,27 +739,28 @@ gps_enriched |>
 
 ```{r}
 gps_enriched |>
-  filter(!is.na(poi_category)) |>
-  count(poi_category) |>
+  filter(!is.na(pass_poi_category)) |>
+  count(pass_poi_category) |>
   mutate(
     match_rate_pct = round(n / nrow(gps_enriched) * 100, 2),
     tier = case_when(
-      poi_category %in% c("alcohol_venue", "alcohol_retail", "recovery_facility") ~ "Tier 1",
-      poi_category %in% c("restaurant", "park", "healthcare", "grocery") ~ "Tier 2"
+      pass_poi_category %in% c("alcohol_venue", "alcohol_retail", "social_facility", "healthcare") ~ "Tier 1",
+      pass_poi_category %in% c("restaurant", "fast_food", "park", "grocery") ~ "Tier 2"
     ),
     category_label = case_when(
-      poi_category == "alcohol_venue" ~ "Alcohol Venues",
-      poi_category == "alcohol_retail" ~ "Alcohol Retail",
-      poi_category == "recovery_facility" ~ "Recovery Facilities",
-      poi_category == "restaurant" ~ "Restaurants/Food",
-      poi_category == "park" ~ "Parks/Green Spaces",
-      poi_category == "healthcare" ~ "Healthcare Facilities",
-      poi_category == "grocery" ~ "Grocery/Convenience"
+      pass_poi_category == "alcohol_venue" ~ "Alcohol Venues",
+      pass_poi_category == "alcohol_retail" ~ "Alcohol Retail",
+      pass_poi_category == "social_facility" ~ "Social Facilities",
+      pass_poi_category == "healthcare" ~ "Healthcare",
+      pass_poi_category == "restaurant" ~ "Restaurants",
+      pass_poi_category == "fast_food" ~ "Fast Food",
+      pass_poi_category == "park" ~ "Parks/Green Spaces",
+      pass_poi_category == "grocery" ~ "Grocery/Convenience"
     ),
     exposure_type = case_when(
-      poi_category %in% c("alcohol_venue", "alcohol_retail") ~ "Risky",
-      poi_category %in% c("recovery_facility", "park", "healthcare") ~ "Protective",
-      poi_category %in% c("restaurant", "grocery") ~ "Mixed/Context"
+      pass_poi_category %in% c("alcohol_venue", "alcohol_retail") ~ "Risky",
+      pass_poi_category %in% c("social_facility", "healthcare", "park") ~ "Protective",
+      pass_poi_category %in% c("restaurant", "fast_food", "grocery") ~ "Mixed/Context"
     )
   ) |>
   arrange(tier, desc(n)) |>
@@ -734,8 +774,8 @@ gps_enriched |>
 
 ```{r}
 gps_enriched |>
-  filter(!is.na(poi_category)) |>
-  count(poi_category, sort = TRUE) |>
+  filter(!is.na(pass_poi_category)) |>
+  count(pass_poi_category, sort = TRUE) |>
   knitr::kable()
 ```
 
@@ -743,14 +783,14 @@ gps_enriched |>
 
 ```{r}
 gps_enriched |>
-  filter(!is.na(poi_category)) |>
-  group_by(poi_category) |>
+  filter(!is.na(pass_poi_category)) |>
+  group_by(pass_poi_category) |>
   summarise(
     total_matches = n(),
-    mean_distance_m = round(mean(distance_m, na.rm = TRUE), 1),
-    median_distance_m = round(median(distance_m, na.rm = TRUE), 1),
-    min_distance_m = round(min(distance_m, na.rm = TRUE), 1),
-    max_distance_m = round(max(distance_m, na.rm = TRUE), 1)
+    mean_distance_m = round(mean(pass_distance_m, na.rm = TRUE), 1),
+    median_distance_m = round(median(pass_distance_m, na.rm = TRUE), 1),
+    min_distance_m = round(min(pass_distance_m, na.rm = TRUE), 1),
+    max_distance_m = round(max(pass_distance_m, na.rm = TRUE), 1)
   ) |>
   knitr::kable()
 ```
