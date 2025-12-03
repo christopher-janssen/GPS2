@@ -66,7 +66,8 @@ dbExecute(con, "
       'dog_toilet', 'dog_wash', 'brake_check_area', 'pet_relief_area',
       'bicycle_rental', 'motorcycle_parking', 'moped_parking',
       'parcel_locker', 'public_bookcase', 'library_dropoff',
-      'polling_station', 'outdoor_seating', 'bell', 'waste_transfer_station'
+      'polling_station', 'outdoor_seating', 'bell', 'waste_transfer_station',
+      'baking_oven', 'street_vendor', 'car_sharing'
     )) OR
 
     -- Exclude specific leisure types (field markings/furniture)

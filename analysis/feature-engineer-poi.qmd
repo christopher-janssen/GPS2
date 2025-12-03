@@ -139,8 +139,7 @@ gps_enriched <- gps_enriched |>
 
       # 14. Transportation
       (pass_class == "amenity" & pass_type %in% c(
-        "bicycle_rental", "car_rental", "car_sharing", "bus_station",
-        "taxi", "ferry_terminal", "boat_rental"
+        "car_rental", "bus_station", "taxi", "ferry_terminal", "boat_rental"
       )) ~ "transportation",
 
       # 15. Automotive Services
@@ -172,17 +171,7 @@ gps_enriched <- gps_enriched |>
         "student_accommodation", "fraternity", "sorority", "coworking_space"
       )) ~ "residential_social",
 
-      # 20. Parking (kept separate - may indicate car-based mobility)
-      (pass_class == "amenity" & pass_type %in% c(
-        "motorcycle_parking", "moped_parking", "parcel_locker"
-      )) ~ "parking",
-
-      # 21. Street/Mobile Vendors
-      (pass_class == "amenity" & pass_type %in% c(
-        "street_vendor", "marketplace", "baking_oven"
-      )) ~ "street_vendors",
-
-      # 22. Miscellaneous
+      # 20. Miscellaneous
       TRUE ~ "other"
     )
   )
