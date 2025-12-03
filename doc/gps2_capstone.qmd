@@ -142,20 +142,23 @@ By joining GPS points with public reference data-sets, new levels of analyses be
 
 ::: {.callout-tip .fragment}
 ## But importantly:
+
 No added participant burden!
 :::
 
 ## Planned Analyses:
 
-Minor EDA, show distribution of points, example map, enrichment coverage across the sample
+Passive XGBoost Model
 
-Feature engineering decisions, explain features
+Model Comparison: Passive vs Active Model
 
-## Results Section
+## Limitations
 
-Explain results, model comparisons to no context and active context
+-  Mismatched temporal data
+-  Quality issues involving GPS data collection during study
 
 ## Next Steps:
 
-Expand to environmental risk factors, test interactions with time and demographics, add additional sources of public data.
-
+-   Expand to environmental risk factors
+-   Test interactions with time and demographics
+-   Add additional sources of public data.

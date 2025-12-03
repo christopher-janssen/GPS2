@@ -1,0 +1,153 @@
+---
+title: "Create Visitable POI MV"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+```{r}
+library(DBI)
+library(RPostgres)
+     
+source(here::here("scripts/r/connection.R"))
+
+con <- connect_to_db()
+```
+
+```{r}
+# Drop view if exists (for re-runs)
+dbExecute(con, "DROP MATERIALIZED VIEW IF EXISTS public_data.osm_poi_visitable;")
+```
+
+```{r}
+# Create materialized view with exclusion filters
+dbExecute(con, "
+     CREATE MATERIALIZED VIEW public_data.osm_poi_visitable AS
+     SELECT
+         osm_id,
+         osm_type,
+         class,
+         type,
+         housenumber,
+         street,
+         city,
+         postcode,
+         rank_address,
+         lon,
+         lat,
+         geom
+     FROM public_data.osm_poi
+     WHERE NOT (
+         -- Exclude entire classes
+         (class = 'man_made') OR
+         (class = 'military') OR
+
+         -- Exclude specific amenity types (furniture/infrastructure)
+         (class = 'amenity' AND type IN (
+             'parking', 'bench', 'bicycle_parking', 'shelter', 
+     'toilets',
+             'waste_basket', 'waste_disposal', 'recycling', 
+     'post_box',
+             'vending_machine', 'atm', 'charging_station', 
+     'loading_dock',
+             'drinking_water', 'fountain', 'bicycle_repair_station', 
+     'clock',
+             'post_depot', 'letter_box', 'telephone', 'trolley_bay',
+             'hunting_stand', 'compressed_air', 'vacuum_cleaner',
+             'payment_terminal', 'water_point', 'dressing_room', 
+     'shower',
+             'weighbridge', 'sanitary_dump_station', 'boat_storage',
+             'bbq', 'lounger', 'smoking_area', 'grit_bin', 
+     'give_box',
+             'reception_desk', 'binoculars', 'check_in', 
+     'watering_place',
+             'water', 'table', 'fridge', 'kitchen', 'stage', 'piano',
+             'dog_toilet', 'dog_wash', 'brake_check_area', 
+     'pet_relief_area'
+         )) OR
+
+         -- Exclude specific leisure types (field markings/furniture)
+         (class = 'leisure' AND type IN (
+             'pitch', 'bleachers', 'picnic_table', 'slipway', 
+     'firepit',
+             'fitness_station', 'bicycle_rental', 'yes', 
+     'scoreboard',
+             'diving_board', 'practice_pitch', 'lazy_river', 'pit',
+             'long_jump', 'paddling_pool'
+         )) OR
+
+         -- Exclude tourism information signs
+         (class = 'tourism' AND type = 'information') OR
+
+         -- Exclude historic markers (keep only physical structures)
+         (class = 'historic' AND type IN (
+             'railway', 'memorial', 'maritime', 'monument', 'marker',
+             'police_phone', 'police_telephone', 'wayside_shrine', 
+     'bell'
+         )) OR
+
+         -- Exclude emergency equipment (keep stations)
+         (class = 'emergency' AND type IN (
+             'phone', 'siren', 'designated', 'psap', 'lifeguard',
+             'life_ring', 'defibrillator', 'access_point',
+             'fire_service_inlet', 'fire_extinguisher', 'water_tank',
+             'assembly_point', 'first_aid_kit', 'suction_point',
+             'fire_training'
+         )) OR
+
+         -- Exclude natural objects (keep features)
+         (class = 'natural' AND type IN ('tree', 'rock', 'stone')) OR
+
+         -- Exclude vacant shops
+         (class = 'shop' AND type = 'vacant')
+     );
+     ")
+```
+
+```{r}
+# Create spatial index on materialized view
+dbExecute(con, "
+     CREATE INDEX idx_osm_poi_visitable_geom
+     ON public_data.osm_poi_visitable
+     USING GIST (geom);
+     ")
+```
+
+```{r}
+# Create index on class/type for analysis
+dbExecute(con, "
+     CREATE INDEX idx_osm_poi_visitable_class_type
+     ON public_data.osm_poi_visitable (class, type);
+     ")
+```
+
+```{r}
+# Verify counts
+dbGetQuery(con, "
+     SELECT
+         'Original POI' as source, COUNT(*) as count
+     FROM public_data.osm_poi
+     UNION ALL
+     SELECT
+         'Visitable POI' as source, COUNT(*) as count
+     FROM public_data.osm_poi_visitable
+     UNION ALL
+     SELECT
+         'Excluded POI' as source,
+         (SELECT COUNT(*) FROM public_data.osm_poi) -
+         (SELECT COUNT(*) FROM public_data.osm_poi_visitable) as 
+     count;
+     ") |> knitr::kable()
+```
+
+```{r}
+dbDisconnect(con)
+```
+
