@@ -37,9 +37,9 @@ This notebook enriches GPS data with spatial context from the database:
         points
 
 **POI Matching:** Hierarchical - finds single nearest POI across all
-categories within 100m
+categories within 50m
 
-**Distance Limit:** 100 meters (captures direct visits + immediate
+**Distance Limit:** 50 meters (captures direct visits + immediate
 nearby exposure)
 
 ## Setup
@@ -592,47 +592,41 @@ closest.
 -   **Grocery/convenience** (supermarkets, convenience stores) - routine
     activities, alcohol access
 
-**Distance threshold:** 100 meters captures both:
-
--   Direct visits (20-50m): Person is AT the POI
-
--   Immediate exposure (50-100m): POI in walkable environment
+**Distance threshold:** 50 meters captures direct visits where person is AT or very near the POI
 
 ### How the Query Works
 
 **R-Equivalent Logic:**
 
 ``` r
-# For each GPS point, find nearest POI of ANY type (all 7 categories) within 100m
+# For each GPS point, find nearest POI of ANY type within 50m
 gps_data |>
   group_by(row_id) |>
   mutate(
-    nearest_poi_result = find_closest_poi(this_point, all_poi_categories, max_dist = 100)
+    nearest_poi_result = find_closest_poi(this_point, all_poi_categories, max_dist = 50)
   ) |>
-  filter(distance <= 100) |>
+  filter(distance <= 50) |>
   slice_head(n = 1)
 ```
 
 **SQL Pattern:**
 
 -   `CROSS JOIN LATERAL`: For each GPS point, search POI table
--   `WHERE (tier1_cats) OR (tier2_cats)`: Consider all 7 POI types
 -   `ORDER BY poi.geom <-> gps.geom`: Use spatial index for fast
     nearest-neighbor
 -   `LIMIT 5`: Get 5 closest candidates for accurate geography filtering
--   `ST_DWithin(..., 100)`: Pre-filter to 100m radius
+-   `ST_DWithin(..., 50)`: Pre-filter to 50m radius
 -   `DISTINCT ON (gps.row_id)`: Return only nearest match per GPS point
--   `CASE`: Categorize into 7 types (3 Tier 1, 4 Tier 2)
 
-### Execute Hierarchical POI Query (All Tiers)
+### Execute POI Query
 
 ```{r}
 nearest_poi <- dbGetQuery(con, str_c("
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
-    poi.class as nearest_poi_class,
-    poi.type as nearest_poi_type,
-    ROUND(ST_Distance(gps.geom::geography, poi.geom::geography)::numeric, 2) as nearest_poi_distance_m
+    poi.class as pass_class,
+    poi.type as pass_type,
+    ROUND(ST_Distance(gps.geom::geography, poi.geom::geography)::numeric, 2) as pass_distance_m
 FROM temp_gps_points gps
 CROSS JOIN LATERAL (
     SELECT class, type, geom
@@ -692,62 +686,14 @@ gps_enriched |>
   knitr::kable()
 ```
 
-### POI Coverage by Category
+### POI Coverage
 
 ```{r}
 gps_enriched |>
-  filter(!is.na(pass_poi_category)) |>
-  count(pass_poi_category) |>
-  mutate(
-    match_rate_pct = round(n / nrow(gps_enriched) * 100, 2),
-    tier = case_when(
-      pass_poi_category %in% c("alcohol_venue", "alcohol_retail", "social_facility", "healthcare") ~ "Tier 1",
-      pass_poi_category %in% c("restaurant", "fast_food", "park", "grocery") ~ "Tier 2"
-    ),
-    category_label = case_when(
-      pass_poi_category == "alcohol_venue" ~ "Alcohol Venues",
-      pass_poi_category == "alcohol_retail" ~ "Alcohol Retail",
-      pass_poi_category == "social_facility" ~ "Social Facilities",
-      pass_poi_category == "healthcare" ~ "Healthcare",
-      pass_poi_category == "restaurant" ~ "Restaurants",
-      pass_poi_category == "fast_food" ~ "Fast Food",
-      pass_poi_category == "park" ~ "Parks/Green Spaces",
-      pass_poi_category == "grocery" ~ "Grocery/Convenience"
-    ),
-    exposure_type = case_when(
-      pass_poi_category %in% c("alcohol_venue", "alcohol_retail") ~ "Risky",
-      pass_poi_category %in% c("social_facility", "healthcare", "park") ~ "Protective",
-      pass_poi_category %in% c("restaurant", "fast_food", "grocery") ~ "Mixed/Context"
-    )
-  ) |>
-  arrange(tier, desc(n)) |>
-  select(tier, category_label, exposure_type, matches = n, match_rate_pct) |>
-  knitr::kable()
-```
-
-### POI Type Distribution
-
-**All POI by Specific Type:**
-
-```{r}
-gps_enriched |>
-  filter(!is.na(pass_poi_category)) |>
-  count(pass_poi_category, sort = TRUE) |>
-  knitr::kable()
-```
-
-**Summary by Category:**
-
-```{r}
-gps_enriched |>
-  filter(!is.na(pass_poi_category)) |>
-  group_by(pass_poi_category) |>
   summarise(
-    total_matches = n(),
-    mean_distance_m = round(mean(pass_distance_m, na.rm = TRUE), 1),
-    median_distance_m = round(median(pass_distance_m, na.rm = TRUE), 1),
-    min_distance_m = round(min(pass_distance_m, na.rm = TRUE), 1),
-    max_distance_m = round(max(pass_distance_m, na.rm = TRUE), 1)
+    total_points = n(),
+    with_poi = sum(!is.na(pass_class)),
+    match_rate_pct = round(sum(!is.na(pass_class)) / n() * 100, 2)
   ) |>
   knitr::kable()
 ```
