@@ -21,6 +21,7 @@ This notebook creates theory-driven POI categories from raw OSM class/type data 
 ```{r}
 library(tidyverse)
 source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
 ```
 
 ## Load Enriched Data

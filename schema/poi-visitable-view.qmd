@@ -74,7 +74,7 @@ dbExecute(con, "
       'pitch', 'bleachers', 'picnic_table', 'slipway', 'firepit',
       'fitness_station', 'bicycle_rental', 'yes', 'scoreboard',
       'diving_board', 'practice_pitch', 'lazy_river', 'pit',
-      'long_jump', 'paddling_pool'
+      'long_jump', 'paddling_pool', 'outdoor_seating'
     )) OR
 
     -- Exclude tourism information signs
