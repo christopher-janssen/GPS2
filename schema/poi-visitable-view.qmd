@@ -16,6 +16,7 @@ editor:
 library(DBI)
 library(RPostgres)
      
+source(here::here("scripts/r/setup.R"))
 source(here::here("scripts/r/connection.R"))
 
 con <- connect_to_db()

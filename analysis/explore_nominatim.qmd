@@ -16,16 +16,18 @@ editor_options:
 
 This notebook provides a comprehensive classification reference for all Points of Interest (POI) in the Wisconsin OpenStreetMap dataset (`public_data.osm_poi`).
 
-**Purpose:** Manual review and filtering of POI types for GPS proximity analysis. For each OSM class, all type values are enumerated with counts and percentages to support decisions about which POI types are relevant for research (e.g., keeping "restaurant" but excluding "waste_basket").
+This document was designed for manual review and filtering of POI types for GPS proximity analysis. For each OSM class, all type values are enumerated with counts and percentages to support decisions about which POI types are relevant for research (e.g., keeping "restaurant" but excluding "waste_basket").
 
 **Data Structure:** OSM POI are organized hierarchically:
-- **Class:** High-level category (e.g., amenity, shop, tourism)
-- **Type:** Specific feature within class (e.g., restaurant, pharmacy, museum)
+
+-   **Class:** High-level category (e.g., amenity, shop, tourism)
+-   **Type:** Specific feature within class (e.g., restaurant, pharmacy, museum)
 
 Each table shows types sorted by frequency (most common first) with:
-- **Type:** Specific POI category
-- **Count:** Number of POI with this type in Wisconsin
-- **% of Class:** Percentage this type represents within its class
+
+-   **Type:** Specific POI category
+-   **Count:** Number of POI with this type in Wisconsin
+-   **% of Class:** Percentage this type represents within its class
 
 ## Setup
 
@@ -64,7 +66,6 @@ WHERE table_schema = 'public_data' AND table_name = 'osm_poi'
 ORDER BY ordinal_position;
 ")
 ```
-
 
 # Database Overview
 
@@ -128,9 +129,10 @@ FROM public_data.osm_poi;
 The following sections enumerate all POI types within each class.
 
 Each table shows:
-- **Type:** Specific POI category (e.g., restaurant, pharmacy)
-- **Count:** Number of POI with this type
-- **% of Class:** Percentage this type represents within its class
+
+-   **Type:** Specific POI category (e.g., restaurant, pharmacy)
+-   **Count:** Number of POI with this type
+-   **% of Class:** Percentage this type represents within its class
 
 Types are sorted by count (descending) to highlight the most common features first.
 

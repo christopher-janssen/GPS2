@@ -627,65 +627,22 @@ gps_data |>
 ### Execute Hierarchical POI Query (All Tiers)
 
 ```{r}
-# Single query for nearest POI across all categories (Tier 1 + Tier 2)
-nearest_poi <- dbGetQuery(con, "
+nearest_poi <- dbGetQuery(con, str_c("
 SELECT DISTINCT ON (gps.row_id)
     gps.row_id,
-    poi.class as pass_class,
-    poi.type as pass_type,
-    CASE
-        -- TIER 1: Alcohol/Recovery (strongest evidence)
-        WHEN poi.class = 'amenity' AND poi.type IN ('bar', 'pub', 'nightclub', 'biergarten')
-            THEN 'alcohol_venue'
-        WHEN poi.class = 'craft' AND poi.type = 'brewery'
-            THEN 'alcohol_venue'
-        WHEN poi.class = 'shop' AND poi.type IN ('alcohol', 'wine')
-            THEN 'alcohol_retail'
-        WHEN poi.class = 'amenity' AND poi.type = 'social_facility'
-            THEN 'social_facility'
-        WHEN (poi.class = 'amenity' AND poi.type IN ('hospital', 'clinic', 'doctors', 'pharmacy'))
-            OR (poi.class = 'healthcare' AND poi.type IN ('clinic', 'centre'))
-            THEN 'healthcare'
-        -- TIER 2: Environmental context (moderate evidence)
-        WHEN poi.class = 'amenity' AND poi.type IN ('restaurant', 'cafe')
-            THEN 'restaurant'
-        WHEN poi.class = 'amenity' AND poi.type IN ('fast_food', 'food_court')
-            THEN 'fast_food'
-        WHEN poi.class = 'leisure' AND poi.type IN ('park', 'nature_reserve', 'garden', 'recreation_ground')
-            THEN 'park'
-        WHEN poi.class = 'shop' AND poi.type IN ('convenience', 'supermarket', 'general', 'grocery')
-            THEN 'grocery'
-    END as pass_poi_category,
-    ROUND(ST_Distance(gps.geom::geography, poi.geom::geography)::numeric, 2) as pass_distance_m
+    poi.class as nearest_poi_class,
+    poi.type as nearest_poi_type,
+    ROUND(ST_Distance(gps.geom::geography, poi.geom::geography)::numeric, 2) as nearest_poi_distance_m
 FROM temp_gps_points gps
 CROSS JOIN LATERAL (
     SELECT class, type, geom
-    FROM public_data.osm_poi poi
-    WHERE
-        -- TIER 1: Alcohol venues (on-premise + brewery)
-        (poi.class = 'amenity' AND poi.type IN ('bar', 'pub', 'nightclub', 'biergarten'))
-        OR (poi.class = 'craft' AND poi.type = 'brewery')
-        -- TIER 1: Alcohol retail (off-premise)
-        OR (poi.class = 'shop' AND poi.type IN ('alcohol', 'wine'))
-        -- TIER 1: Social facilities (separate category)
-        OR (poi.class = 'amenity' AND poi.type = 'social_facility')
-        -- TIER 1: Healthcare (merged with recovery facilities)
-        OR (poi.class = 'amenity' AND poi.type IN ('hospital', 'clinic', 'doctors', 'pharmacy'))
-        OR (poi.class = 'healthcare' AND poi.type IN ('clinic', 'centre'))
-        -- TIER 2: Restaurants (cafes only, no fast food)
-        OR (poi.class = 'amenity' AND poi.type IN ('restaurant', 'cafe'))
-        -- TIER 2: Fast food (separate category)
-        OR (poi.class = 'amenity' AND poi.type IN ('fast_food', 'food_court'))
-        -- TIER 2: Parks/green spaces
-        OR (poi.class = 'leisure' AND poi.type IN ('park', 'nature_reserve', 'garden', 'recreation_ground'))
-        -- TIER 2: Grocery/convenience stores
-        OR (poi.class = 'shop' AND poi.type IN ('convenience', 'supermarket', 'general', 'grocery'))
+    FROM public_data.osm_poi_visitable poi
     ORDER BY poi.geom <-> gps.geom
     LIMIT 5
 ) poi
-WHERE ST_DWithin(poi.geom::geography, gps.geom::geography, 100)
+WHERE ST_DWithin(poi.geom::geography, gps.geom::geography, 50)
 ORDER BY gps.row_id, poi.geom <-> gps.geom;
-")
+"))
 
 nrow(nearest_poi)
 ```
