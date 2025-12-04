@@ -111,8 +111,9 @@ plot_gps_points <- function(con, subid, movement_filter = NULL,
   if (show_movement_colors) {
     gps_data <- gps_data |>
       mutate(
-        movement_state = ifelse(is.na(movement_state), "unknown", movement_state),
-        color = movement_colors[movement_state]
+        movement_state = ifelse(is.na(movement_state), "unknown",
+                                movement_state),
+        color = unname(movement_colors[movement_state])
       )
   } else {
     gps_data$color <- "#2196f3"  # Default blue
@@ -123,7 +124,7 @@ plot_gps_points <- function(con, subid, movement_filter = NULL,
   center_lon <- mean(gps_data$lon, na.rm = TRUE)
 
   # Create popups
-  popups <- purrr::map_chr(1:nrow(gps_data), function(i) {
+  popups <- purrr::map_chr(seq_len(nrow(gps_data)), function(i) {
     create_gps_popup(gps_data[i, ], show_speed = show_speed)
   })
 
@@ -137,7 +138,7 @@ plot_gps_points <- function(con, subid, movement_filter = NULL,
       color = ~color,
       fillColor = ~color,
       fillOpacity = 0.7,
-      radius = 5,
+      radius = 3,
       weight = 1,
       popup = popups
     )
@@ -145,10 +146,11 @@ plot_gps_points <- function(con, subid, movement_filter = NULL,
   # Add legend if showing movement colors
   if (show_movement_colors) {
     unique_states <- unique(gps_data$movement_state)
+    legend_colors <- unname(movement_colors[unique_states])
     map <- map |>
       addLegend(
         position = "bottomright",
-        colors = movement_colors[unique_states],
+        colors = legend_colors,
         labels = unique_states,
         title = "Movement State",
         opacity = 0.7
@@ -243,12 +245,12 @@ plot_poi_map <- function(con, class_types = NULL, bbox = NULL, show_names = TRUE
       }
 
       # Get color for this category
-      color <- ifelse(category_name %in% names(poi_colors),
-                      poi_colors[category_name],
-                      poi_colors["Default"])
+      color <- unname(ifelse(category_name %in% names(poi_colors),
+                             poi_colors[category_name],
+                             poi_colors["Default"]))
 
       # Create popups
-      popups <- purrr::map_chr(1:nrow(poi_data), function(i) {
+      popups <- purrr::map_chr(seq_len(nrow(poi_data)), function(i) {
         create_poi_popup(poi_data[i, ], category_name = category_name)
       })
 
@@ -261,7 +263,7 @@ plot_poi_map <- function(con, class_types = NULL, bbox = NULL, show_names = TRUE
           color = color,
           fillColor = color,
           fillOpacity = 0.6,
-          radius = 6,
+          radius = 4,
           weight = 1,
           popup = popups,
           group = category_name
@@ -318,10 +320,10 @@ plot_poi_map <- function(con, class_types = NULL, bbox = NULL, show_names = TRUE
       }
 
       # Use default color
-      color <- poi_colors["Default"]
+      color <- unname(poi_colors["Default"])
 
       # Create popups
-      popups <- purrr::map_chr(1:nrow(poi_data), function(i) {
+      popups <- purrr::map_chr(seq_len(nrow(poi_data)), function(i) {
         create_poi_popup(poi_data[i, ], category_name = NULL)
       })
 
@@ -334,7 +336,7 @@ plot_poi_map <- function(con, class_types = NULL, bbox = NULL, show_names = TRUE
           color = color,
           fillColor = color,
           fillOpacity = 0.6,
-          radius = 6,
+          radius = 4,
           weight = 1,
           popup = popups,
           group = poi_class
@@ -443,13 +445,15 @@ plot_landuse_map <- function(con, landuse_types = NULL, bbox = NULL, show_areas 
       # Get color for this category (try to match type)
       # Use first type in the category types list
       first_type <- category$type[1]
-      color <- ifelse(first_type %in% names(landuse_colors),
-                      landuse_colors[first_type],
-                      landuse_colors["default"])
+      color <- unname(ifelse(first_type %in% names(landuse_colors),
+                             landuse_colors[first_type],
+                             landuse_colors["default"]))
 
       # Create popups
-      popups <- purrr::map_chr(1:nrow(landuse_data), function(i) {
-        create_landuse_popup(landuse_data[i, ], category_name = category_name, show_area = show_areas)
+      popups <- purrr::map_chr(seq_len(nrow(landuse_data)), function(i) {
+        create_landuse_popup(landuse_data[i, ],
+                             category_name = category_name,
+                             show_area = show_areas)
       })
 
       # Add polygons to map
@@ -517,13 +521,15 @@ plot_landuse_map <- function(con, landuse_types = NULL, bbox = NULL, show_areas 
       }
 
       # Get color for this type
-      color <- ifelse(landuse_type %in% names(landuse_colors),
-                      landuse_colors[landuse_type],
-                      landuse_colors["default"])
+      color <- unname(ifelse(landuse_type %in% names(landuse_colors),
+                             landuse_colors[landuse_type],
+                             landuse_colors["default"]))
 
       # Create popups
-      popups <- purrr::map_chr(1:nrow(landuse_data), function(i) {
-        create_landuse_popup(landuse_data[i, ], category_name = NULL, show_area = show_areas)
+      popups <- purrr::map_chr(seq_len(nrow(landuse_data)), function(i) {
+        create_landuse_popup(landuse_data[i, ],
+                             category_name = NULL,
+                             show_area = show_areas)
       })
 
       # Add polygons to map
@@ -621,7 +627,7 @@ plot_adi_map <- function(con, metric = "state_decile", bbox = NULL, show_legend 
   pal <- get_adi_palette(metric)
 
   # Create popups
-  popups <- purrr::map_chr(1:nrow(adi_data), function(i) {
+  popups <- purrr::map_chr(seq_len(nrow(adi_data)), function(i) {
     create_adi_popup(adi_data[i, ], metric = metric)
   })
 
