@@ -121,60 +121,35 @@ gps_enriched <- gps_enriched |>
         "arts_centre", "community_centre", "conference_centre", "studio"
       )) ~ "entertainment_culture",
 
-      # 12. Civic & Community Services
+      # 12. Services (civic, financial, transportation, automotive, personal, professional)
       (pass_class == "amenity" & pass_type %in% c(
         "townhall", "courthouse", "fire_station", "police", "post_office",
         "public_building", "marketplace", "polling_station", "prison",
         "ranger_station", "grave_yard", "social_centre", "public_bookcase",
-        "library_dropoff", "bell", "waste_transfer_station"
+        "library_dropoff", "bell", "waste_transfer_station",
+        "bank", "car_rental", "bus_station", "taxi", "ferry_terminal",
+        "boat_rental", "car_wash", "animal_boarding", "animal_shelter", "brothel"
       )) |
       (pass_class == "emergency" & pass_type == "water_rescue") |
-      (pass_class == "office" & pass_type %in% c(
-        "government", "political_party", "ngo", "foundation", "charity"
-      )) ~ "civic_community",
-
-      # 13. Financial Services
-      (pass_class == "amenity" & pass_type %in% c("bank", "atm")) |
-      (pass_class == "office" & pass_type %in% c(
-        "financial", "financial_advisor", "accountant", "tax_advisor"
-      )) |
-      (pass_class == "shop" & pass_type == "money_lender") ~ "financial_services",
-
-      # 14. Transportation
-      (pass_class == "amenity" & pass_type %in% c(
-        "car_rental", "bus_station", "taxi", "ferry_terminal", "boat_rental"
-      )) ~ "transportation",
-
-      # 15. Automotive Services
-      (pass_class == "amenity" & pass_type == "car_wash") |
       (pass_class == "shop" & pass_type %in% c(
-        "car_repair", "car", "car_parts", "tyres", "motorcycle",
-        "motorcycle_parts", "motorcycle_repair", "boat"
-      )) ~ "automotive",
-
-      # 16. Personal Services
-      (pass_class == "shop" & pass_type %in% c(
+        "money_lender", "car_repair", "car", "car_parts", "tyres",
+        "motorcycle", "motorcycle_parts", "motorcycle_repair", "boat",
         "hairdresser", "beauty", "tattoo", "massage", "cosmetics",
         "laundry", "dry_cleaning", "tailor", "optician", "shoe_repair",
         "pet_grooming", "hairdresser_supply", "piercing"
       )) |
-      (pass_class == "amenity" & pass_type %in% c(
-        "animal_boarding", "animal_shelter", "brothel"
-      )) ~ "personal_services",
-
-      # 17. Professional Services & Offices
       (pass_class == "office") |
-      (pass_class == "craft") ~ "professional_services",
+      (pass_class == "craft") ~ "services",
 
-      # 18. Retail General (all other shops)
+      # 13. Retail General (all other shops)
       (pass_class == "shop") ~ "retail_general",
 
-      # 19. Residential & Student Housing
+      # 14. Residential & Student Housing
       (pass_class == "amenity" & pass_type %in% c(
         "student_accommodation", "fraternity", "sorority", "coworking_space"
       )) ~ "residential_social",
 
-      # 20. Miscellaneous
+      # 15. Miscellaneous
       TRUE ~ "other"
     )
   )
