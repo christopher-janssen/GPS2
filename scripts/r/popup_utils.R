@@ -54,7 +54,10 @@ create_gps_popup <- function(row, show_speed = FALSE) {
 #' @return HTML string for popup
 create_poi_popup <- function(row, category_name = NULL) {
   # Build address string
-  address_parts <- c(row$street, row$city)
+  address_parts <- c(
+    if ("street" %in% names(row)) row$street else NULL,
+    if ("city" %in% names(row)) row$city else NULL
+  )
   address <- paste(address_parts[!is.na(address_parts)], collapse = ", ")
 
   popup_html <- "<div style='font-size: 13px; line-height: 1.5;'>"
@@ -65,7 +68,7 @@ create_poi_popup <- function(row, category_name = NULL) {
   }
 
   # Add POI name if available
-  if (!is.na(row$name) && row$name != "") {
+  if ("name" %in% names(row) && !is.na(row$name) && row$name != "") {
     popup_html <- paste0(popup_html, "<strong>", row$name, "</strong><br/>")
   }
 
@@ -109,7 +112,7 @@ create_landuse_popup <- function(row, category_name = NULL, show_area = TRUE) {
   }
 
   # Add name or type label
-  if (!is.na(row$name) && row$name != "") {
+  if ("name" %in% names(row) && !is.na(row$name) && row$name != "") {
     popup_html <- paste0(popup_html, "<strong>", row$name, "</strong><br/>")
   } else {
     popup_html <- paste0(
@@ -125,7 +128,7 @@ create_landuse_popup <- function(row, category_name = NULL, show_area = TRUE) {
   )
 
   # Add area if requested
-  if (show_area && !is.na(row$area_sqkm)) {
+  if (show_area && "area_sqkm" %in% names(row) && !is.na(row$area_sqkm)) {
     popup_html <- paste0(
       popup_html,
       "<strong>Area:</strong> ", round(row$area_sqkm, 3), " km²<br/>"
