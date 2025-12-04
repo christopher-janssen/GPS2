@@ -148,14 +148,14 @@ No added participant burden!
 
 ## Planned Analyses:
 
-Passive XGBoost Model
+Passive XGBoost(?) Modessl
 
 Model Comparison: Passive vs Active Model
 
 ## Limitations
 
--  Mismatched temporal data
--  Quality issues involving GPS data collection during study
+-   Mismatched temporal data
+-   Quality issues involving GPS data collection during study
 
 ## Next Steps:
 
