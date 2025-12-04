@@ -16,49 +16,92 @@ source(here::here("scripts/r/popup_utils.R"))
 
 #' Plot GPS Points for a Subject
 #'
-#' Creates an interactive Leaflet map displaying GPS points from the processed_gps table.
-#' Points can be colored by movement state and include dwell time and speed information.
+#' Creates an interactive Leaflet map displaying GPS points from the
+#' processed_gps table. Points can be colored by movement state and
+#' include dwell time and speed information.
 #'
 #' @param con Database connection object from connect_to_db()
 #' @param subid Subject ID (integer) to visualize
-#' @param show_movement_colors Logical. Color points by movement_state if TRUE (default TRUE)
-#' @param show_speed Logical. Include speed information in popups if TRUE (default FALSE)
+#' @param movement_filter Optional filter for movement state:
+#'   "stationary", "transition", or NULL for all (default NULL)
+#' @param bbox Optional bounding box c(min_lon, min_lat, max_lon, max_lat)
+#' @param show_movement_colors Logical. Color points by movement_state
+#'   if TRUE (default TRUE)
+#' @param show_speed Logical. Include speed information in popups if
+#'   TRUE (default FALSE)
 #'
 #' @return A Leaflet map object
 #'
 #' @examples
 #' con <- connect_to_db()
 #' plot_gps_points(con, subid = 1)
-#' plot_gps_points(con, subid = 1, show_movement_colors = TRUE, show_speed = TRUE)
+#' # Only stationary points
+#' plot_gps_points(con, subid = 1, movement_filter = "stationary")
+#' # Madison area only
+#' madison_bbox <- c(-89.5, 43.0, -89.2, 43.15)
+#' plot_gps_points(con, subid = 1, bbox = madison_bbox)
 #'
 #' @export
-plot_gps_points <- function(con, subid, show_movement_colors = TRUE, show_speed = FALSE) {
+plot_gps_points <- function(con, subid, movement_filter = NULL,
+                            bbox = NULL, show_movement_colors = TRUE,
+                            show_speed = FALSE) {
   # Validate connection
   validate_connection(con)
+  validate_bbox(bbox)
+
+  # Validate movement_filter
+  if (!is.null(movement_filter) &&
+      !movement_filter %in% c("stationary", "transition")) {
+    stop("movement_filter must be 'stationary', 'transition', or NULL",
+         call. = FALSE)
+  }
 
   # Check if subid exists
   subid_exists <- dbGetQuery(
     con,
-    glue::glue_sql("SELECT COUNT(*) as n FROM risk1.subjects WHERE subid = {subid}", .con = con)
+    glue::glue_sql(
+      "SELECT COUNT(*) as n FROM risk1.subjects WHERE subid = {subid}",
+      .con = con
+    )
   )
 
   if (subid_exists$n == 0) {
     stop("Subject ID ", subid, " not found in database.", call. = FALSE)
   }
 
-  # Query GPS data
-  gps_data <- dbGetQuery(
-    con,
-    glue::glue_sql("SELECT subid, lat, lon, time, time_local, movement_state,
-                           speed_mph, dist_miles, dwell_time_seconds
-                    FROM risk1.processed_gps
-                    WHERE subid = {subid}
-                    ORDER BY time", .con = con)
-  )
+  # Build query with optional movement filter and bbox
+  base_query <- "
+    SELECT subid, lat, lon, time, time_local, movement_state,
+           speed_mph, dist_miles, dwell_time_seconds
+    FROM risk1.processed_gps
+    WHERE subid = {subid}
+  "
+
+  # Add movement filter
+  if (!is.null(movement_filter)) {
+    base_query <- paste0(base_query,
+                         " AND movement_state = {movement_filter}")
+  }
+
+  # Add bbox filter
+  if (!is.null(bbox)) {
+    base_query <- paste0(base_query,
+      " AND ST_MakePoint(lon, lat) && ",
+      "ST_MakeEnvelope({bbox[1]}, {bbox[2]}, {bbox[3]}, {bbox[4]}, 4326)")
+  }
+
+  base_query <- paste0(base_query, " ORDER BY time")
+
+  # Execute query
+  gps_data <- dbGetQuery(con, glue::glue_sql(base_query, .con = con))
 
   # Check if data exists
   if (nrow(gps_data) == 0) {
-    stop("No GPS data found for subject ID ", subid, call. = FALSE)
+    msg <- "No"
+    if (!is.null(movement_filter)) msg <- paste(msg, movement_filter)
+    msg <- paste(msg, "GPS data found for subject ID", subid)
+    if (!is.null(bbox)) msg <- paste(msg, "in specified bounding box")
+    stop(msg, call. = FALSE)
   }
 
   # Get movement colors
