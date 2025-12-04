@@ -665,3 +665,9 @@ plot_adi_map <- function(con, metric = "state_decile", bbox = NULL, show_legend 
 
   return(map)
 }
+
+
+# Bounding Boxes :)
+
+dane_bbox <- c(-89.9, 42.8, -89.0, 43.4)
+madison_bbox <- c(-89.55, 43.0, -89.25, 43.15)
