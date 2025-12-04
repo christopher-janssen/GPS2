@@ -52,14 +52,15 @@ gps_enriched <- gps_enriched |>
 
       # 3. Potential alcohol exposure
       (pass_class == "amenity" & pass_type %in% c(
-        "fuel", "restaurant", "theatre", "cinema", "events_venue"
+        "fuel", "restaurant", "theatre", "cinema", "events_venue",
+        "restaurant;cafe"
       )) |
       (pass_class == "shop" & pass_type %in% c("supermarket", "convenience")) |
       (pass_class == "leisure" & pass_type %in% c("stadium", "arts_centre")) ~ "potential_alcohol",
 
       # 4. Food casual (lower alcohol context)
       (pass_class == "amenity" & pass_type %in% c(
-        "cafe", "fast_food", "food_court", "ice_cream"
+        "cafe", "fast_food", "food_court", "ice_cream", "ice_cream;fast_food"
       )) ~ "food_casual",
 
       # 5. Healthcare
@@ -78,7 +79,7 @@ gps_enriched <- gps_enriched |>
         "ice_rink", "bowling_alley", "golf_course", "marina", "sauna",
         "dance", "amusement_arcade", "miniature_golf", "track", "water_park",
         "trampoline_park", "escape_game", "indoor_play", "hackerspace",
-        "horse_riding", "bandstand"
+        "horse_riding", "bandstand", "resort"
       )) |
       (pass_class == "amenity" & pass_type %in% c(
         "dojo", "ski_school", "swimming_school", "driving_school"
@@ -87,7 +88,7 @@ gps_enriched <- gps_enriched |>
       # 7. Parks/outdoor (green space)
       (pass_class == "leisure" & pass_type %in% c(
         "garden", "playground", "dog_park", "park", "nature_reserve",
-        "fishing", "swimming_area", "outdoor_seating", "common"
+        "fishing", "swimming_area", "outdoor_seating", "common", "schoolyard"
       )) |
       (pass_class == "tourism" & pass_type %in% c("picnic_site", "camp_pitch")) |
       (pass_class == "natural" & pass_type %in% c("cave_entrance", "spring")) ~ "parks_outdoor",
@@ -107,7 +108,8 @@ gps_enriched <- gps_enriched |>
       (pass_class == "tourism" & pass_type %in% c(
         "hotel", "motel", "guest_house", "hostel", "camp_site", "apartment",
         "chalet", "caravan_site"
-      )) ~ "tourism_lodging",
+      )) |
+      (pass_class == "amenity" & pass_type == "internet_cafe") ~ "tourism_lodging",
 
       # 11. Entertainment & Culture (non-alcohol attractions)
       (pass_class == "tourism" & pass_type %in% c(
@@ -116,7 +118,7 @@ gps_enriched <- gps_enriched |>
       )) |
       (pass_class == "historic") |
       (pass_class == "amenity" & pass_type %in% c(
-        "arts_centre", "community_centre", "conference_centre"
+        "arts_centre", "community_centre", "conference_centre", "studio"
       )) ~ "entertainment_culture",
 
       # 12. Civic & Community Services
@@ -126,6 +128,7 @@ gps_enriched <- gps_enriched |>
         "ranger_station", "grave_yard", "social_centre", "public_bookcase",
         "library_dropoff", "bell", "waste_transfer_station"
       )) |
+      (pass_class == "emergency" & pass_type == "water_rescue") |
       (pass_class == "office" & pass_type %in% c(
         "government", "political_party", "ngo", "foundation", "charity"
       )) ~ "civic_community",

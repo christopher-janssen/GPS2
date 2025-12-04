@@ -67,7 +67,7 @@ dbExecute(con, "
       'bicycle_rental', 'motorcycle_parking', 'moped_parking',
       'parcel_locker', 'public_bookcase', 'library_dropoff',
       'polling_station', 'outdoor_seating', 'bell', 'waste_transfer_station',
-      'baking_oven', 'street_vendor', 'car_sharing'
+      'baking_oven', 'street_vendor', 'car_sharing', 'Isolation tank'
     )) OR
 
     -- Exclude specific leisure types (field markings/furniture)
@@ -75,7 +75,7 @@ dbExecute(con, "
       'pitch', 'bleachers', 'picnic_table', 'slipway', 'firepit',
       'fitness_station', 'bicycle_rental', 'yes', 'scoreboard',
       'diving_board', 'practice_pitch', 'lazy_river', 'pit',
-      'long_jump', 'paddling_pool', 'outdoor_seating'
+      'long_jump', 'paddling_pool', 'outdoor_seating', 'hot_tub'
     )) OR
 
     -- Exclude tourism information signs
