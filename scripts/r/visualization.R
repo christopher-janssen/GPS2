@@ -216,7 +216,7 @@ plot_poi_map <- function(con, class_types = NULL, bbox = NULL, show_names = TRUE
         poi_data <- dbGetQuery(
           con,
           glue::glue_sql("
-            SELECT osm_id, class, type, name, street, city, lat, lon
+            SELECT osm_id, class, type, lat, lon
             FROM public_data.osm_poi
             WHERE class = {category$class} AND type = ANY({type_list}::text[])
               AND ST_MakePoint(lon, lat) && ST_MakeEnvelope({bbox[1]}, {bbox[2]}, {bbox[3]}, {bbox[4]}, 4326)
@@ -226,7 +226,7 @@ plot_poi_map <- function(con, class_types = NULL, bbox = NULL, show_names = TRUE
         poi_data <- dbGetQuery(
           con,
           glue::glue_sql("
-            SELECT osm_id, class, type, name, street, city, lat, lon
+            SELECT osm_id, class, type, lat, lon
             FROM public_data.osm_poi
             WHERE class = {category$class} AND type = ANY({type_list}::text[])
           ", .con = con)
@@ -291,7 +291,7 @@ plot_poi_map <- function(con, class_types = NULL, bbox = NULL, show_names = TRUE
         poi_data <- dbGetQuery(
           con,
           glue::glue_sql("
-            SELECT osm_id, class, type, name, street, city, lat, lon
+            SELECT osm_id, class, type, lat, lon
             FROM public_data.osm_poi
             WHERE class = {poi_class}
               AND ST_MakePoint(lon, lat) && ST_MakeEnvelope({bbox[1]}, {bbox[2]}, {bbox[3]}, {bbox[4]}, 4326)
@@ -301,7 +301,7 @@ plot_poi_map <- function(con, class_types = NULL, bbox = NULL, show_names = TRUE
         poi_data <- dbGetQuery(
           con,
           glue::glue_sql("
-            SELECT osm_id, class, type, name, street, city, lat, lon
+            SELECT osm_id, class, type, lat, lon
             FROM public_data.osm_poi
             WHERE class = {poi_class}
           ", .con = con)
@@ -412,7 +412,7 @@ plot_landuse_map <- function(con, landuse_types = NULL, bbox = NULL, show_areas 
         landuse_data <- st_read(
           con,
           query = glue::glue_sql("
-            SELECT osm_id, class, type, name, area_sqkm, geom
+            SELECT osm_id, class, type, area_sqkm, geom
             FROM public_data.osm_landuse
             WHERE class = {category$class} AND type = ANY({type_list}::text[])
               AND geom && ST_MakeEnvelope({bbox[1]}, {bbox[2]}, {bbox[3]}, {bbox[4]}, 4326)
@@ -423,7 +423,7 @@ plot_landuse_map <- function(con, landuse_types = NULL, bbox = NULL, show_areas 
         landuse_data <- st_read(
           con,
           query = glue::glue_sql("
-            SELECT osm_id, class, type, name, area_sqkm, geom
+            SELECT osm_id, class, type, area_sqkm, geom
             FROM public_data.osm_landuse
             WHERE class = {category$class} AND type = ANY({type_list}::text[])
           ", .con = con),
@@ -490,7 +490,7 @@ plot_landuse_map <- function(con, landuse_types = NULL, bbox = NULL, show_areas 
         landuse_data <- st_read(
           con,
           query = glue::glue_sql("
-            SELECT osm_id, class, type, name, area_sqkm, geom
+            SELECT osm_id, class, type, area_sqkm, geom
             FROM public_data.osm_landuse
             WHERE type = {landuse_type}
               AND geom && ST_MakeEnvelope({bbox[1]}, {bbox[2]}, {bbox[3]}, {bbox[4]}, 4326)
@@ -501,7 +501,7 @@ plot_landuse_map <- function(con, landuse_types = NULL, bbox = NULL, show_areas 
         landuse_data <- st_read(
           con,
           query = glue::glue_sql("
-            SELECT osm_id, class, type, name, area_sqkm, geom
+            SELECT osm_id, class, type, area_sqkm, geom
             FROM public_data.osm_landuse
             WHERE type = {landuse_type}
           ", .con = con),

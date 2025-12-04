@@ -53,41 +53,27 @@ create_gps_popup <- function(row, show_speed = FALSE) {
 #' @param category_name Optional category name to display
 #' @return HTML string for popup
 create_poi_popup <- function(row, category_name = NULL) {
-  # Build address string
-  address_parts <- c(
-    if ("street" %in% names(row)) row$street else NULL,
-    if ("city" %in% names(row)) row$city else NULL
-  )
-  address <- paste(address_parts[!is.na(address_parts)], collapse = ", ")
-
   popup_html <- "<div style='font-size: 13px; line-height: 1.5;'>"
 
   # Add category name if provided
   if (!is.null(category_name)) {
-    popup_html <- paste0(popup_html, "<strong>", category_name, "</strong><br/>")
-  }
-
-  # Add POI name if available
-  if ("name" %in% names(row) && !is.na(row$name) && row$name != "") {
-    popup_html <- paste0(popup_html, "<strong>", row$name, "</strong><br/>")
+    popup_html <- paste0(popup_html,
+                         "<strong>", category_name, "</strong><br/>")
   }
 
   # Add class/type
   popup_html <- paste0(
     popup_html,
-    "<em>", row$class, " - ", row$type, "</em><br/>"
+    "<strong>", stringr::str_to_title(row$class), " - ",
+    stringr::str_to_title(row$type), "</strong><br/>"
   )
-
-  # Add address if available
-  if (address != "") {
-    popup_html <- paste0(popup_html, address, "<br/>")
-  }
 
   # Add OSM ID and coordinates
   popup_html <- paste0(
     popup_html,
     "<strong>ID:</strong> ", row$osm_id, "<br/>",
-    "<strong>Coords:</strong> ", round(row$lat, 4), ", ", round(row$lon, 4),
+    "<strong>Coords:</strong> ", round(row$lat, 4), ", ",
+    round(row$lon, 4),
     "</div>"
   )
 
@@ -108,27 +94,19 @@ create_landuse_popup <- function(row, category_name = NULL, show_area = TRUE) {
 
   # Add category name if provided
   if (!is.null(category_name)) {
-    popup_html <- paste0(popup_html, "<strong>", category_name, "</strong><br/>")
+    popup_html <- paste0(popup_html,
+                         "<strong>", category_name, "</strong><br/>")
   }
 
-  # Add name or type label
-  if ("name" %in% names(row) && !is.na(row$name) && row$name != "") {
-    popup_html <- paste0(popup_html, "<strong>", row$name, "</strong><br/>")
-  } else {
-    popup_html <- paste0(
-      popup_html,
-      "<strong>", stringr::str_to_title(row$type), " Area</strong><br/>"
-    )
-  }
-
-  # Add class/type
+  # Add type label
   popup_html <- paste0(
     popup_html,
-    "<em>", row$class, " - ", row$type, "</em><br/>"
+    "<strong>", stringr::str_to_title(row$class), " - ",
+    stringr::str_to_title(row$type), "</strong><br/>"
   )
 
   # Add area if requested
-  if (show_area && "area_sqkm" %in% names(row) && !is.na(row$area_sqkm)) {
+  if (show_area && !is.na(row$area_sqkm)) {
     popup_html <- paste0(
       popup_html,
       "<strong>Area:</strong> ", round(row$area_sqkm, 3), " km²<br/>"
