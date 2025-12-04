@@ -39,8 +39,7 @@ plot_gps_points <- function(con, subid, show_movement_colors = TRUE, show_speed 
   # Check if subid exists
   subid_exists <- dbGetQuery(
     con,
-    "SELECT COUNT(*) as n FROM risk1.subjects WHERE subid = $1",
-    params = list(subid)
+    glue::glue_sql("SELECT COUNT(*) as n FROM risk1.subjects WHERE subid = {subid}", .con = con)
   )
 
   if (subid_exists$n == 0) {
@@ -50,12 +49,11 @@ plot_gps_points <- function(con, subid, show_movement_colors = TRUE, show_speed 
   # Query GPS data
   gps_data <- dbGetQuery(
     con,
-    "SELECT subid, lat, lon, time, time_local, movement_state,
-            speed_mph, dist_miles, dwell_time_seconds
-     FROM risk1.processed_gps
-     WHERE subid = $1
-     ORDER BY time",
-    params = list(subid)
+    glue::glue_sql("SELECT subid, lat, lon, time, time_local, movement_state,
+                           speed_mph, dist_miles, dwell_time_seconds
+                    FROM risk1.processed_gps
+                    WHERE subid = {subid}
+                    ORDER BY time", .con = con)
   )
 
   # Check if data exists
@@ -165,29 +163,28 @@ plot_poi_map <- function(con, class_types = NULL, bbox = NULL, show_names = TRUE
     for (category_name in names(class_types)) {
       category <- class_types[[category_name]]
 
-      # Build query
-      query <- "
-        SELECT osm_id, class, type, name, street, city, lat, lon
-        FROM public_data.osm_poi
-        WHERE class = $1 AND type = ANY($2::text[])
-      "
+      # Build query with type array
+      type_list <- paste0("ARRAY['", paste(category$type, collapse = "','"), "']")
 
-      # Add bbox filter if provided
+      # Query with or without bbox
       if (!is.null(bbox)) {
-        query <- paste0(
-          query,
-          " AND ST_MakePoint(lon, lat) && ST_MakeEnvelope($3, $4, $5, $6, 4326)"
-        )
         poi_data <- dbGetQuery(
           con,
-          query,
-          params = list(category$class, category$type, bbox[1], bbox[2], bbox[3], bbox[4])
+          glue::glue_sql("
+            SELECT osm_id, class, type, name, street, city, lat, lon
+            FROM public_data.osm_poi
+            WHERE class = {category$class} AND type = ANY({type_list}::text[])
+              AND ST_MakePoint(lon, lat) && ST_MakeEnvelope({bbox[1]}, {bbox[2]}, {bbox[3]}, {bbox[4]}, 4326)
+          ", .con = con)
         )
       } else {
         poi_data <- dbGetQuery(
           con,
-          query,
-          params = list(category$class, category$type)
+          glue::glue_sql("
+            SELECT osm_id, class, type, name, street, city, lat, lon
+            FROM public_data.osm_poi
+            WHERE class = {category$class} AND type = ANY({type_list}::text[])
+          ", .con = con)
         )
       }
 
@@ -244,29 +241,25 @@ plot_poi_map <- function(con, class_types = NULL, bbox = NULL, show_names = TRUE
     classes <- dbGetQuery(con, classes_query)$class
 
     for (poi_class in classes) {
-      # Build query
-      query <- "
-        SELECT osm_id, class, type, name, street, city, lat, lon
-        FROM public_data.osm_poi
-        WHERE class = $1
-      "
-
-      # Add bbox filter if provided
+      # Query with or without bbox
       if (!is.null(bbox)) {
-        query <- paste0(
-          query,
-          " AND ST_MakePoint(lon, lat) && ST_MakeEnvelope($2, $3, $4, $5, 4326)"
-        )
         poi_data <- dbGetQuery(
           con,
-          query,
-          params = list(poi_class, bbox[1], bbox[2], bbox[3], bbox[4])
+          glue::glue_sql("
+            SELECT osm_id, class, type, name, street, city, lat, lon
+            FROM public_data.osm_poi
+            WHERE class = {poi_class}
+              AND ST_MakePoint(lon, lat) && ST_MakeEnvelope({bbox[1]}, {bbox[2]}, {bbox[3]}, {bbox[4]}, 4326)
+          ", .con = con)
         )
       } else {
         poi_data <- dbGetQuery(
           con,
-          query,
-          params = list(poi_class)
+          glue::glue_sql("
+            SELECT osm_id, class, type, name, street, city, lat, lon
+            FROM public_data.osm_poi
+            WHERE class = {poi_class}
+          ", .con = con)
         )
       }
 
@@ -366,30 +359,29 @@ plot_landuse_map <- function(con, landuse_types = NULL, bbox = NULL, show_areas 
     for (category_name in names(landuse_types)) {
       category <- landuse_types[[category_name]]
 
-      # Build query
-      query <- "
-        SELECT osm_id, class, type, name, area_sqkm, geom
-        FROM public_data.osm_landuse
-        WHERE class = $1 AND type = ANY($2::text[])
-      "
+      # Build query with type array
+      type_list <- paste0("ARRAY['", paste(category$type, collapse = "','"), "']")
 
-      # Add bbox filter if provided
+      # Query with or without bbox
       if (!is.null(bbox)) {
-        query <- paste0(
-          query,
-          " AND geom && ST_MakeEnvelope($3, $4, $5, $6, 4326)"
-        )
         landuse_data <- st_read(
           con,
-          query = query,
-          params = list(category$class, category$type, bbox[1], bbox[2], bbox[3], bbox[4]),
+          query = glue::glue_sql("
+            SELECT osm_id, class, type, name, area_sqkm, geom
+            FROM public_data.osm_landuse
+            WHERE class = {category$class} AND type = ANY({type_list}::text[])
+              AND geom && ST_MakeEnvelope({bbox[1]}, {bbox[2]}, {bbox[3]}, {bbox[4]}, 4326)
+          ", .con = con),
           quiet = TRUE
         )
       } else {
         landuse_data <- st_read(
           con,
-          query = query,
-          params = list(category$class, category$type),
+          query = glue::glue_sql("
+            SELECT osm_id, class, type, name, area_sqkm, geom
+            FROM public_data.osm_landuse
+            WHERE class = {category$class} AND type = ANY({type_list}::text[])
+          ", .con = con),
           quiet = TRUE
         )
       }
@@ -446,30 +438,26 @@ plot_landuse_map <- function(con, landuse_types = NULL, bbox = NULL, show_areas 
     types <- dbGetQuery(con, types_query)$type
 
     for (landuse_type in types) {
-      # Build query
-      query <- "
-        SELECT osm_id, class, type, name, area_sqkm, geom
-        FROM public_data.osm_landuse
-        WHERE type = $1
-      "
-
-      # Add bbox filter if provided
+      # Query with or without bbox
       if (!is.null(bbox)) {
-        query <- paste0(
-          query,
-          " AND geom && ST_MakeEnvelope($2, $3, $4, $5, 4326)"
-        )
         landuse_data <- st_read(
           con,
-          query = query,
-          params = list(landuse_type, bbox[1], bbox[2], bbox[3], bbox[4]),
+          query = glue::glue_sql("
+            SELECT osm_id, class, type, name, area_sqkm, geom
+            FROM public_data.osm_landuse
+            WHERE type = {landuse_type}
+              AND geom && ST_MakeEnvelope({bbox[1]}, {bbox[2]}, {bbox[3]}, {bbox[4]}, 4326)
+          ", .con = con),
           quiet = TRUE
         )
       } else {
         landuse_data <- st_read(
           con,
-          query = query,
-          params = list(landuse_type),
+          query = glue::glue_sql("
+            SELECT osm_id, class, type, name, area_sqkm, geom
+            FROM public_data.osm_landuse
+            WHERE type = {landuse_type}
+          ", .con = con),
           quiet = TRUE
         )
       }
@@ -559,28 +547,24 @@ plot_adi_map <- function(con, metric = "state_decile", bbox = NULL, show_legend 
     stop("metric must be 'state_decile' or 'national_percentile'", call. = FALSE)
   }
 
-  # Build query
-  query <- "
-    SELECT fips_2020, adi_state_decile, adi_national_percentile, area_sqm, geometry
-    FROM public_data.adi_scores
-  "
-
-  # Add bbox filter if provided
+  # Query with or without bbox
   if (!is.null(bbox)) {
-    query <- paste0(
-      query,
-      " WHERE geometry && ST_MakeEnvelope($1, $2, $3, $4, 4326)"
-    )
     adi_data <- st_read(
       con,
-      query = query,
-      params = list(bbox[1], bbox[2], bbox[3], bbox[4]),
+      query = glue::glue_sql("
+        SELECT fips_2020, adi_state_decile, adi_national_percentile, area_sqm, geometry
+        FROM public_data.adi_scores
+        WHERE geometry && ST_MakeEnvelope({bbox[1]}, {bbox[2]}, {bbox[3]}, {bbox[4]}, 4326)
+      ", .con = con),
       quiet = TRUE
     )
   } else {
     adi_data <- st_read(
       con,
-      query = query,
+      query = "
+        SELECT fips_2020, adi_state_decile, adi_national_percentile, area_sqm, geometry
+        FROM public_data.adi_scores
+      ",
       quiet = TRUE
     )
   }
