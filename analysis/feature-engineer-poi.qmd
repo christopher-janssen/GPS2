@@ -35,45 +35,80 @@ nrow(gps_enriched)
 
 ## Create POI Categories
 
+Categories created:
+1. alcohol_on_premise - Bars, pubs, nightclubs, breweries
+2. alcohol_off_premise - Liquor stores, wine shops
+3. potential_alcohol - Restaurants, gas stations, supermarkets
+4. food_casual - Cafes, fast food, ice cream
+5. healthcare - Hospitals, clinics, pharmacies
+6. recreation_active - Gyms, sports centers, pools
+7. parks_outdoor - Parks, gardens, playgrounds
+8. religious - Places of worship
+9. education - Schools, colleges, libraries
+10. tourism_lodging - Hotels, motels, hostels
+11. entertainment_culture - Museums, galleries, attractions
+12. services - Civic, financial, automotive, personal services
+13. retail_general - All other retail shops
+14. residential_social - Student housing, fraternities
+15. other - Uncategorized
+
 ```{r}
 gps_enriched <- gps_enriched |>
   mutate(
     pass_poi_category = case_when(
       is.na(pass_class) ~ NA_character_,
 
-      # 1. Alcohol on-premise (consumption venues)
+
+      # CATEGORY 1: alcohol_on_premise
+      # Consumption venues (bars, pubs, nightclubs, breweries)
       (pass_class == "amenity" & pass_type %in% c(
         "bar", "pub", "nightclub", "biergarten", "casino", "stripclub"
       )) |
-      (pass_class == "craft" & pass_type %in% c("brewery", "distillery", "winery")) ~ "alcohol_on_premise",
+      (pass_class == "craft" & pass_type %in% c(
+        "brewery", "distillery", "winery"
+      )) ~ "alcohol_on_premise",
 
-      # 2. Alcohol off-premise (retail)
-      (pass_class == "shop" & pass_type %in% c("alcohol", "wine")) ~ "alcohol_off_premise",
 
-      # 3. Potential alcohol exposure
+      # CATEGORY 2: alcohol_off_premise
+      # Retail alcohol sales (liquor stores, wine shops)
+      (pass_class == "shop" & pass_type %in% c(
+        "alcohol", "wine"
+      )) ~ "alcohol_off_premise",
+
+
+      # CATEGORY 3: potential_alcohol
+      # Venues where alcohol may be available
       (pass_class == "amenity" & pass_type %in% c(
-        "fuel", "restaurant", "theatre", "cinema", "events_venue",
-        "restaurant;cafe"
+        "fuel", "restaurant", "theatre", "cinema", "events_venue", "restaurant;cafe"
       )) |
-      (pass_class == "shop" & pass_type %in% c("supermarket", "convenience")) |
-      (pass_class == "leisure" & pass_type %in% c("stadium", "arts_centre")) ~ "potential_alcohol",
+      (pass_class == "shop" & pass_type %in% c(
+        "supermarket", "convenience"
+      )) |
+      (pass_class == "leisure" & pass_type %in% c(
+        "stadium", "arts_centre"
+      )) ~ "potential_alcohol",
 
-      # 4. Food casual (lower alcohol context)
+
+      # CATEGORY 4: food_casual
+      # Lower alcohol context food venues
       (pass_class == "amenity" & pass_type %in% c(
         "cafe", "fast_food", "food_court", "ice_cream", "ice_cream;fast_food"
       )) ~ "food_casual",
 
-      # 5. Healthcare
+
+      # CATEGORY 5: healthcare
+      # Medical facilities and services
       (pass_class == "amenity" & pass_type %in% c(
-        "hospital", "clinic", "doctors", "dentist", "pharmacy",
-        "social_facility", "veterinary", "nursing_home"
+        "hospital", "clinic", "doctors", "dentist", "pharmacy", "social_facility", "veterinary", "nursing_home"
       )) |
       (pass_class == "healthcare") |
       (pass_class == "emergency" & pass_type %in% c(
         "emergency_ward_entrance", "ambulance_station"
       )) ~ "healthcare",
 
-      # 6. Recreation/fitness (active)
+
+      # CATEGORY 6: recreation_active
+      # Active recreation and fitness facilities
       (pass_class == "leisure" & pass_type %in% c(
         "fitness_centre", "sports_centre", "swimming_pool", "sports_hall",
         "ice_rink", "bowling_alley", "golf_course", "marina", "sauna",
@@ -85,18 +120,28 @@ gps_enriched <- gps_enriched |>
         "dojo", "ski_school", "swimming_school", "driving_school"
       )) ~ "recreation_active",
 
-      # 7. Parks/outdoor (green space)
+
+      # CATEGORY 7: parks_outdoor
+      # Parks, gardens, and outdoor green spaces
       (pass_class == "leisure" & pass_type %in% c(
         "garden", "playground", "dog_park", "park", "nature_reserve",
         "fishing", "swimming_area", "outdoor_seating", "common", "schoolyard"
       )) |
-      (pass_class == "tourism" & pass_type %in% c("picnic_site", "camp_pitch")) |
-      (pass_class == "natural" & pass_type %in% c("cave_entrance", "spring")) ~ "parks_outdoor",
+      (pass_class == "tourism" & pass_type %in% c(
+        "picnic_site", "camp_pitch"
+      )) |
+      (pass_class == "natural" & pass_type %in% c(
+        "cave_entrance", "spring"
+      )) ~ "parks_outdoor",
 
-      # 8. Religious
+
+      # CATEGORY 8: religious
+      # Places of worship
       (pass_class == "amenity" & pass_type == "place_of_worship") ~ "religious",
 
-      # 9. Education
+
+      # CATEGORY 9: education
+      # Educational institutions and facilities
       (pass_class == "amenity" & pass_type %in% c(
         "school", "college", "university", "kindergarten", "library",
         "music_school", "prep_school", "childcare", "training",
@@ -104,14 +149,18 @@ gps_enriched <- gps_enriched |>
       )) |
       (pass_class == "office" & pass_type == "educational_institution") ~ "education",
 
-      # 10. Tourism & Lodging
+
+      # CATEGORY 10: tourism_lodging
+      # Hotels, motels, and temporary accommodations
       (pass_class == "tourism" & pass_type %in% c(
         "hotel", "motel", "guest_house", "hostel", "camp_site", "apartment",
         "chalet", "caravan_site"
       )) |
       (pass_class == "amenity" & pass_type == "internet_cafe") ~ "tourism_lodging",
 
-      # 11. Entertainment & Culture (non-alcohol attractions)
+
+      # CATEGORY 11: entertainment_culture
+      # Museums, attractions, cultural venues (non-alcohol)
       (pass_class == "tourism" & pass_type %in% c(
         "museum", "gallery", "attraction", "viewpoint", "zoo", "aquarium",
         "theme_park", "artwork", "haunted", "monument"
@@ -121,19 +170,25 @@ gps_enriched <- gps_enriched |>
         "arts_centre", "community_centre", "conference_centre", "studio"
       )) ~ "entertainment_culture",
 
-      # 12. Services (civic, financial, transportation, automotive, personal, professional)
+
+      # CATEGORY 12: services
+      # Civic, financial, transportation, automotive, personal, professional services
       (pass_class == "amenity" & pass_type %in% c(
+        # Civic services
         "townhall", "courthouse", "fire_station", "police", "post_office",
         "public_building", "marketplace", "polling_station", "prison",
         "ranger_station", "grave_yard", "social_centre", "public_bookcase",
         "library_dropoff", "bell", "waste_transfer_station",
+        # Financial & transportation
         "bank", "car_rental", "bus_station", "taxi", "ferry_terminal",
         "boat_rental", "car_wash", "animal_boarding", "animal_shelter", "brothel"
       )) |
       (pass_class == "emergency" & pass_type == "water_rescue") |
       (pass_class == "shop" & pass_type %in% c(
+        # Automotive services
         "money_lender", "car_repair", "car", "car_parts", "tyres",
         "motorcycle", "motorcycle_parts", "motorcycle_repair", "boat",
+        # Personal services
         "hairdresser", "beauty", "tattoo", "massage", "cosmetics",
         "laundry", "dry_cleaning", "tailor", "optician", "shoe_repair",
         "pet_grooming", "hairdresser_supply", "piercing"
@@ -141,15 +196,21 @@ gps_enriched <- gps_enriched |>
       (pass_class == "office") |
       (pass_class == "craft") ~ "services",
 
-      # 13. Retail General (all other shops)
+
+      # CATEGORY 13: retail_general
+      # All other retail shops not already categorized
       (pass_class == "shop") ~ "retail_general",
 
-      # 14. Residential & Student Housing
+
+      # CATEGORY 14: residential_social
+      # Student housing and residential social spaces
       (pass_class == "amenity" & pass_type %in% c(
         "student_accommodation", "fraternity", "sorority", "coworking_space"
       )) ~ "residential_social",
 
-      # 15. Miscellaneous
+
+      # CATEGORY 15: other
+      # Everything else not captured above
       TRUE ~ "other"
     )
   )
