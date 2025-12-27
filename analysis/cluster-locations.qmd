@@ -1,0 +1,276 @@
+---
+title: "Spatial Clustering of Stay-Points"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Spatial Clustering
+
+This notebook performs spatial clustering of stay-points to identify
+distinct locations visited by each subject. Clustering is performed
+per-subject using DBSCAN with Haversine distance.
+
+Current Parameters:
+
+-   Distance threshold (`eps`): 50 meters
+-   Minimum stays per cluster (`minPts`): 1
+
+Features:
+
+-   Number of clusters (distinct locations visited)
+-   Location entropy (distribution of time across locations)
+
+## Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+
+# Additional packages
+library(geosphere)
+library(dbscan)
+library(leaflet)
+```
+
+## Parameters
+
+```{r}
+# DBSCAN clustering parameters
+EPS_METERS <- 50      # distance threshold (same location)
+MIN_STAYS <- 1        # minimum stays to form cluster
+```
+
+## Load Stay-Points
+
+```{r}
+# Load stays detected in previous step
+stays <- read_csv(here::here(path_gps2, "data/stays.csv"), show_col_types = FALSE)
+
+nrow(stays)
+```
+
+```{r}
+# check
+stays |>
+  select(stay_id, subid, start_time, end_time, dwell_mins, lat, lon) |>
+  slice_head(n = 10)
+```
+
+```{r}
+# Subject-level summary
+stays |>
+  count(subid, name = "n_stays") |>
+  arrange(desc(n_stays)) |>
+  slice_head(n = 10) |>
+  knitr::kable()
+```
+
+## Spatial Clustering with DBSCAN
+
+### Per-Subject Clustering
+
+```{r}
+stays_clustered <- stays |>
+  group_by(subid) |>
+  group_modify(~{
+    # extract coords
+    coords <- cbind(.x$lon, .x$lat)
+
+    # calculate Haversine distance matrix
+    dist_mat <- distm(coords, coords, fun = distHaversine)
+
+    # DBSCAN clustering
+    # cluster 0 = noise, cluster 1+ = identified locations
+    clusters <- dbscan(as.dist(dist_mat), eps = EPS_METERS, minPts = MIN_STAYS)
+
+    # add cluster assignments
+    .x |> mutate(cluster_id = clusters$cluster)
+  }) |>
+  ungroup()
+
+# check
+stays_clustered |>
+  select(stay_id, subid, cluster_id, dwell_mins, lat, lon) |>
+  slice_head(n = 20)
+```
+
+### Cluster Summary
+
+```{r}
+#| echo: false
+
+# Overall clustering summary
+tibble(
+  metric = c(
+    "Total stays",
+    "Stays in clusters",
+    "Noise stays (cluster 0)",
+    "Unique clusters (all subjects)"
+  ),
+  value = c(
+    nrow(stays_clustered),
+    nrow(stays_clustered |> filter(cluster_id > 0)),
+    nrow(stays_clustered |> filter(cluster_id == 0)),
+    stays_clustered |>
+      filter(cluster_id > 0) |>
+      distinct(subid, cluster_id) |>
+      nrow()
+  )
+) |>
+  knitr::kable()
+```
+
+```{r}
+# Per-subject cluster counts
+subject_clusters <- stays_clustered |>
+  filter(cluster_id > 0) |>
+  group_by(subid) |>
+  summarize(
+    n_clusters = n_distinct(cluster_id),
+    n_stays = n(),
+    total_dwell_mins = sum(dwell_mins),
+    .groups = "drop"
+  ) |>
+  arrange(desc(n_clusters))
+
+subject_clusters |>
+  slice_head(n = 10) |>
+  knitr::kable()
+```
+
+```{r}
+# Distribution of clusters per subject
+subject_clusters |>
+  ggplot(aes(x = n_clusters)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "Distribution of Location Clusters per Subject",
+    x = "Number of Clusters",
+    y = "Number of Subjects"
+  ) +
+  theme_minimal()
+```
+
+### Cluster-level Characteristics
+
+```{r}
+cluster_summary <- stays_clustered |>
+  filter(cluster_id > 0) |>
+  group_by(subid, cluster_id) |>
+  summarize(
+    n_stays = n(),
+    total_dwell_mins = sum(dwell_mins),
+    mean_dwell_mins = mean(dwell_mins),
+    # cluster centroid (median location)
+    lat = median(lat),
+    lon = median(lon),
+    .groups = "drop"
+  )
+
+# check
+cluster_summary |>
+  arrange(desc(total_dwell_mins)) |>
+  slice_head(n = 10) |>
+  knitr::kable()
+```
+
+```{r}
+# Distribution of stays per cluster
+cluster_summary |>
+  ggplot(aes(x = n_stays)) +
+  geom_histogram(bins = 50, fill = "coral", alpha = 0.7) +
+  scale_x_log10() +
+  labs(
+    title = "Distribution of Stays per Cluster",
+    x = "Stays per Cluster (log scale)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Distribution of total dwell time per cluster
+cluster_summary |>
+  ggplot(aes(x = total_dwell_mins)) +
+  geom_histogram(bins = 50, fill = "darkgreen", alpha = 0.7) +
+  scale_x_log10() +
+  labs(
+    title = "Distribution of Total Dwell Time per Cluster",
+    x = "Total Dwell Time (minutes, log scale)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+## Visualize Clusters
+
+```{r}
+# Visualize clusters for a single subject
+sample_subject_id <- stays_clustered |> pull(subid) |> last()
+
+sample_stays <- stays_clustered |>
+  filter(subid == sample_subject_id)
+
+sample_clusters <- cluster_summary |>
+  filter(subid == sample_subject_id)
+
+# Map with both stays (small) and cluster centroids (large, labeled)
+leaflet() |>
+  addTiles() |>
+  # individual stays (small gray points)
+  addCircleMarkers(
+    data = sample_stays,
+    lng = ~lon,
+    lat = ~lat,
+    radius = 3,
+    color = "black",
+    fillOpacity = 0.4,
+    stroke = FALSE,
+    popup = ~paste0(
+      "<b>Stay ID:</b> ", stay_id, "<br>",
+      "<b>Cluster:</b> ", cluster_id, "<br>",
+      "<b>Dwell:</b> ", round(dwell_mins, 1), " mins<br>",
+      "<b>Time:</b> ", start_time
+    )
+  ) |>
+  # cluster centroids (larger, labeled)
+  addCircleMarkers(
+    data = sample_clusters,
+    lng = ~lon,
+    lat = ~lat,
+    radius = ~sqrt(total_dwell_mins) / 3,
+    color = "steelblue",
+    fillColor = "steelblue",
+    fillOpacity = 0.6,
+    stroke = TRUE,
+    weight = 2,
+    label = ~paste0("Cluster ", cluster_id),
+    popup = ~paste0(
+      "<b>Cluster:</b> ", cluster_id, "<br>",
+      "<b>Stays:</b> ", n_stays, "<br>",
+      "<b>Total Dwell:</b> ", round(total_dwell_mins, 1), " mins<br>",
+      "<b>Mean Dwell:</b> ", round(mean_dwell_mins, 1), " mins"
+    )
+  )
+```
+
+## Save Results
+
+```{r}
+# Save clustered stays
+write_csv(stays_clustered, here::here(path_gps2, "data/stays_clustered.csv"))
+
+# Save cluster summaries
+write_csv(cluster_summary, here::here(path_gps2, "data/cluster_summary.csv"))
+write_csv(subject_clusters, here::here(path_gps2, "data/subject_cluster_counts.csv"))
+
+```

@@ -1,0 +1,576 @@
+---
+title: "Calculate Location Entropy Features"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Location Entropy Features
+
+This notebook calculates GPS mobility features from clustered
+stay-points at two temporal resolutions:
+
+1.  **Daily Features** - Calculated per subject-day (≥3 stays minimum)
+2.  **Rolling 7-Day Features** - Calculated over 7-day windows (≥5 stays
+    minimum)
+
+**Features calculated:**
+
+-   **n_clusters:** Number of distinct location clusters
+-   **location_entropy:** Shannon entropy of dwell time distribution
+-   **normalized_entropy:** Entropy scaled by theoretical maximum
+
+## Background
+
+Location Entropy Formula:
+
+```         
+H = -Σ(p_i * log(p_i))
+```
+
+where:
+
+-   p_i = proportion of total time spent at location i
+-   log = natural logarithm
+
+**Interpretation:**
+
+-   **High entropy (2.5-3.5):** Time spread across many locations, novel
+    behavior
+-   **Low entropy (0.5-1.5):** Time concentrated in few locations,
+    routine behavior
+-   **Theoretical range:** 0 (all time in one place) to log(n_clusters)
+    (equal time everywhere)
+
+**Why two time-frames?**
+
+-   **Daily:** Matches daily EMA, detects day-to-day variation
+
+-   **Rolling 7-day:** Smooths daily noise, captures weekly patterns
+
+## Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+
+theme_set(theme_bw())
+```
+
+## Load Clustered Data
+
+```{r}
+# Load cluster summaries (one row per subject-cluster)
+cluster_summary <- read_csv(here::here(path_gps2, "data/cluster_summary.csv"), show_col_types = FALSE)
+
+# Load individual stays for temporal analysis
+stays_clustered <- read_csv(here::here(path_gps2, "data/stays_clustered.csv"), show_col_types = FALSE)
+
+nrow(cluster_summary)
+nrow(stays_clustered)
+```
+
+```{r}
+# check
+cluster_summary |>
+  arrange(subid, desc(total_dwell_mins)) |>
+  slice_head(n = 20) |>
+  knitr::kable()
+```
+
+## Temporal Resolution: Stays Per Day
+
+```{r}
+# Calculate stays per subject-day
+stays_per_day <- stays_clustered |>
+  mutate(date = as.Date(start_time)) |>
+  group_by(subid, date) |>
+  summarize(
+    n_stays = n(),
+    n_clusters = n_distinct(cluster_id),
+    total_dwell_mins = sum(dwell_mins),
+    .groups = "drop"
+  )
+
+# Overall distribution
+stays_per_day |>
+  count(n_stays) |>
+  mutate(
+    percent = round(n / sum(n) * 100, 1),
+    cumulative_percent = round(cumsum(n) / sum(n) * 100, 1)
+  ) |>
+  knitr::kable(caption = "Distribution of Stays Per Day")
+```
+
+```{r}
+#| echo: false
+
+# Summary statistics
+tibble(
+  metric = c(
+    "Total subject-days",
+    "Days with 0 stays",
+    "Days with 1 stay",
+    "Days with 2-4 stays",
+    "Days with 5+ stays",
+    "Mean stays per day",
+    "Median stays per day"
+  ),
+  value = c(
+    nrow(stays_per_day),
+    nrow(stays_per_day |> filter(n_stays == 0)),
+    nrow(stays_per_day |> filter(n_stays == 1)),
+    nrow(stays_per_day |> filter(n_stays >= 2 & n_stays <= 4)),
+    nrow(stays_per_day |> filter(n_stays >= 5)),
+    round(mean(stays_per_day$n_stays), 1),
+    round(median(stays_per_day$n_stays), 0)
+  )
+) |>
+  knitr::kable()
+```
+
+```{r}
+# Histogram of stays per day
+stays_per_day |>
+  ggplot(aes(x = n_stays)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", alpha = 0.7) +
+  scale_x_continuous(breaks = seq(0, max(stays_per_day$n_stays), by = 2)) +
+  labs(
+    title = "Distribution of Stays Per Day",
+    x = "Number of Stays",
+    y = "Number of Days"
+  )
+```
+
+```{r}
+# Per-subject summary
+subject_daily_summary <- stays_per_day |>
+  group_by(subid) |>
+  summarize(
+    n_days = n(),
+    mean_stays_per_day = mean(n_stays),
+    median_stays_per_day = median(n_stays),
+    days_with_3plus_stays = sum(n_stays >= 3),
+    .groups = "drop"
+  ) |>
+  arrange(desc(mean_stays_per_day))
+
+subject_daily_summary |>
+  slice_head(n = 10) |>
+  knitr::kable(digits = 1, caption = "Top 10 Subjects by Mean Stays Per Day")
+```
+
+```{r}
+# How many days have sufficient data for entropy?
+# (Common threshold: ~≥3 stays/clusters for meaningful entropy)
+tibble(
+  metric = c(
+    "Days with ≥3 stays",
+    "Days with ≥5 stays",
+    "Percent days with ≥3 stays",
+    "Percent days with ≥5 stays"
+  ),
+  value = c(
+    nrow(stays_per_day |> filter(n_stays >= 3)),
+    nrow(stays_per_day |> filter(n_stays >= 5)),
+    paste0(round(nrow(stays_per_day |> filter(n_stays >= 3)) / nrow(stays_per_day) * 100, 1), "%"),
+    paste0(round(nrow(stays_per_day |> filter(n_stays >= 5)) / nrow(stays_per_day) * 100, 1), "%")
+  )
+) |>
+  knitr::kable(caption = "Data Sufficiency for Daily Entropy")
+```
+
+## Calculate Daily Features (≥3 Stay Minimum)
+
+```{r}
+daily_features <- stays_clustered |>
+  mutate(date = as.Date(start_time)) |>
+  group_by(subid, date) |>
+  # calculate metrics for this day
+  summarize(
+    n_stays = n(),
+    n_clusters = n_distinct(cluster_id[cluster_id > 0]),  # exclude noise
+    total_dwell_mins = sum(dwell_mins),
+    .groups = "drop"
+  ) |>
+  # only keep days with sufficient data
+  filter(n_stays >= 3, n_clusters >= 2) |>
+  # join back to get stay-level data for entropy calculation
+  left_join(
+    stays_clustered |>
+      mutate(date = as.Date(start_time)) |>
+      select(subid, date, cluster_id, dwell_mins),
+    by = c("subid", "date"),
+    relationship = "one-to-many"
+  ) |>
+  filter(cluster_id > 0) |>  # exclude noise clusters
+  # calculate entropy per day
+  group_by(subid, date, n_stays, n_clusters, total_dwell_mins) |>
+  summarize(
+    # calculate proportion of time at each cluster
+    cluster_dwell = list(dwell_mins),
+    .groups = "drop"
+  ) |>
+  rowwise() |>
+  mutate(
+    # shannon entropy for this day
+    p_i = list(cluster_dwell / sum(cluster_dwell)),
+    location_entropy = -sum(p_i * log(p_i)),
+
+    # normalized entropy
+    normalized_entropy = if_else(n_clusters > 1,
+                                  location_entropy / log(n_clusters),
+                                  0)
+  ) |>
+  select(subid, date, n_stays, n_clusters, total_dwell_mins,
+         location_entropy, normalized_entropy) |>
+  ungroup()
+
+# check
+daily_features |>
+  arrange(desc(location_entropy)) |>
+  slice_head(n = 10) |>
+  knitr::kable(digits = 3)
+```
+
+```{r}
+#| echo: false
+
+# Daily feature summary
+tibble(
+  metric = c(
+    "Total subject-days (≥3 stays)",
+    "Mean days per subject",
+    "Mean clusters per day",
+    "Mean entropy per day",
+    "Mean normalized entropy per day"
+  ),
+  value = c(
+    nrow(daily_features),
+    round(daily_features |> count(subid) |> pull(n) |> mean(), 1),
+    round(mean(daily_features$n_clusters), 1),
+    round(mean(daily_features$location_entropy), 3),
+    round(mean(daily_features$normalized_entropy), 3)
+  )
+) |>
+  knitr::kable()
+```
+
+## Calculate Rolling 7-Day Window Features
+
+```{r}
+# prepare stays data with date
+stays_with_date <- stays_clustered |>
+  filter(cluster_id > 0) |>
+  mutate(stay_date = as.Date(start_time)) |>
+  select(subid, stay_date, cluster_id, dwell_mins)
+
+# get all dates for each subject
+date_range <- stays_with_date |>
+  group_by(subid) |>
+  summarize(
+    min_date = min(stay_date),
+    max_date = max(stay_date),
+    .groups = "drop"
+  )
+
+# create rolling window features
+rolling_features <- stays_with_date |>
+  distinct(subid, stay_date) |>
+  rename(date = stay_date) |>
+  # join with all stays to get 7-day windows
+  left_join(
+    stays_with_date,
+    by = "subid",
+    relationship = "many-to-many"
+  ) |>
+  # keep only stays within 7-day window ending on 'date'
+  filter(stay_date >= (date - 6) & stay_date <= date) |>
+  # calculate window-level metrics
+  group_by(subid, date) |>
+  summarize(
+    n_stays = n(),
+    n_clusters = n_distinct(cluster_id),
+    total_dwell_mins = sum(dwell_mins),
+    .groups = "drop"
+  ) |>
+  # only keep windows with sufficient data
+  filter(n_stays >= 5, n_clusters >= 2) |>
+  # rejoin to calculate entropy
+  left_join(
+    stays_with_date,
+    by = "subid",
+    relationship = "many-to-many"
+  ) |>
+  filter(stay_date >= (date - 6) & stay_date <= date) |>
+  # calculate cluster-level dwell times
+  group_by(subid, date, n_stays, n_clusters, total_dwell_mins, cluster_id) |>
+  summarize(
+    cluster_dwell_mins = sum(dwell_mins),
+    .groups = "drop_last"
+  ) |>
+  mutate(
+    p_i = cluster_dwell_mins / sum(cluster_dwell_mins)
+  ) |>
+  summarize(
+    n_stays = first(n_stays),
+    n_clusters = first(n_clusters),
+    total_dwell_mins = first(total_dwell_mins),
+    location_entropy = -sum(p_i * log(p_i)),
+    normalized_entropy = if_else(n_clusters > 1,
+                                  location_entropy / log(n_clusters),
+                                  0),
+    .groups = "drop"
+  )
+
+# check
+rolling_features |>
+  arrange(desc(location_entropy)) |>
+  slice_head(n = 10) |>
+  knitr::kable(digits = 3)
+```
+
+```{r}
+#| echo: false
+
+# Rolling window summary
+tibble(
+  metric = c(
+    "Total subject-days (7-day windows)",
+    "Mean days per subject",
+    "Mean clusters per window",
+    "Mean stays per window",
+    "Mean entropy per window",
+    "Mean normalized entropy per window"
+  ),
+  value = c(
+    nrow(rolling_features),
+    round(rolling_features |> count(subid) |> pull(n) |> mean(), 1),
+    round(mean(rolling_features$n_clusters), 1),
+    round(mean(rolling_features$n_stays), 1),
+    round(mean(rolling_features$location_entropy), 3),
+    round(mean(rolling_features$normalized_entropy), 3)
+  )
+) |>
+  knitr::kable()
+```
+
+## Compare Daily vs Rolling Features
+
+```{r}
+# Compare distributions
+comparison <- bind_rows(
+  daily_features |>
+    summarize(
+      timeframe = "Daily (≥3 stays)",
+      n_observations = n(),
+      mean_clusters = mean(n_clusters),
+      mean_entropy = mean(location_entropy),
+      mean_normalized = mean(normalized_entropy),
+      sd_entropy = sd(location_entropy)
+    ),
+  rolling_features |>
+    summarize(
+      timeframe = "Rolling 7-day",
+      n_observations = n(),
+      mean_clusters = mean(n_clusters),
+      mean_entropy = mean(location_entropy),
+      mean_normalized = mean(normalized_entropy),
+      sd_entropy = sd(location_entropy)
+    )
+)
+
+comparison |>
+  knitr::kable(digits = 3, caption = "Daily vs Rolling Window Features")
+```
+
+```{r}
+# Correlation: Daily features
+daily_features |>
+  select(n_clusters, location_entropy, normalized_entropy, total_dwell_mins) |>
+  cor() |>
+  round(3) |>
+  knitr::kable(caption = "Correlations: Daily Features")
+```
+
+```{r}
+# Correlation: Rolling features
+rolling_features |>
+  select(n_clusters, location_entropy, normalized_entropy, total_dwell_mins) |>
+  cor() |>
+  round(3) |>
+  knitr::kable(caption = "Correlations: Rolling 7-Day Features")
+```
+
+## Visualizations
+
+### Daily Features
+
+```{r}
+# Distribution of daily entropy
+daily_features |>
+  ggplot(aes(x = location_entropy)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "Distribution of Daily Location Entropy",
+    x = "Location Entropy",
+    y = "Number of Days"
+  )
+```
+
+```{r}
+#| message: false
+#| warning: false
+# Daily clusters vs entropy
+daily_features |>
+  ggplot(aes(x = n_clusters, y = location_entropy)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_smooth(method = "loess", se = TRUE, color = "coral") +
+  labs(
+    title = "Daily: Clusters vs. Entropy",
+    x = "Number of Clusters",
+    y = "Location Entropy"
+  )
+```
+
+### Rolling 7-Day Features
+
+```{r}
+# Distribution of rolling window entropy
+rolling_features |>
+  ggplot(aes(x = location_entropy)) +
+  geom_histogram(bins = 30, fill = "coral", alpha = 0.7) +
+  labs(
+    title = "Distribution of Rolling 7-Day Location Entropy",
+    x = "Location Entropy",
+    y = "Number of Windows"
+  )
+```
+
+```{r}
+# Rolling clusters vs entropy
+rolling_features |>
+  ggplot(aes(x = n_clusters, y = location_entropy)) +
+  geom_point(alpha = 0.3, color = "coral") +
+  geom_smooth(method = "loess", se = TRUE, color = "steelblue") +
+  labs(
+    title = "Rolling 7-Day: Clusters vs. Entropy",
+    x = "Number of Clusters",
+    y = "Location Entropy"
+  )
+```
+
+### Comparison
+
+```{r}
+# Compare daily vs rolling distributions
+bind_rows(
+  daily_features |> mutate(timeframe = "Daily"),
+  rolling_features |> mutate(timeframe = "Rolling 7-day")
+) |>
+  ggplot(aes(x = location_entropy, fill = timeframe)) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(values = c("Daily" = "steelblue", "Rolling 7-day" = "coral")) +
+  labs(
+    title = "Entropy Distribution: Daily vs Rolling 7-Day",
+    x = "Location Entropy",
+    y = "Density",
+    fill = "Timeframe"
+  )
+```
+
+## Temporal Patterns: Example Subject
+
+```{r}
+# Pick a subject with good data coverage
+example_subid <- daily_features |>
+  count(subid) |>
+  arrange(desc(n)) |>
+  slice_head(n = 1) |>
+  pull(subid)
+
+# Get their daily and rolling features
+example_daily <- daily_features |> filter(subid == example_subid)
+example_rolling <- rolling_features |> filter(subid == example_subid)
+
+# Show time series
+bind_rows(
+  example_daily |> mutate(timeframe = "Daily"),
+  example_rolling |> mutate(timeframe = "Rolling 7-day")
+) |>
+  ggplot(aes(x = date, y = location_entropy, color = timeframe)) +
+  geom_line(alpha = 0.7) +
+  geom_point(alpha = 0.4, size = 1) +
+  scale_color_manual(values = c("Daily" = "steelblue", "Rolling 7-day" = "coral")) +
+  labs(
+    title = paste0("Location Entropy Over Time: Subject ", example_subid),
+    subtitle = "Daily values (blue) vs Rolling 7-day average (orange)",
+    x = "Date",
+    y = "Location Entropy",
+    color = "Timeframe"
+  )
+```
+
+```{r}
+# Show clusters over time
+example_daily |>
+  ggplot(aes(x = date, y = n_clusters)) +
+  geom_line(color = "steelblue", alpha = 0.7) +
+  geom_point(color = "steelblue", alpha = 0.5, size = 2) +
+  labs(
+    title = paste0("Number of Clusters Per Day: Subject ", example_subid),
+    x = "Date",
+    y = "Number of Clusters"
+  )
+```
+
+## Save Features
+
+```{r}
+# Save daily features
+write_csv(daily_features, here::here(path_gps2, "data/gps_features_daily.csv"))
+
+# Save rolling 7-day features
+write_csv(rolling_features, here::here(path_gps2, "data/gps_features_rolling7day.csv"))
+```
+
+```{r}
+# Preview saved daily features
+daily_features |>
+  slice_head(n = 10) |>
+  knitr::kable(caption = "Daily Features (first 10 rows)")
+```
+
+```{r}
+# Preview saved rolling features
+rolling_features |>
+  slice_head(n = 10) |>
+  knitr::kable(caption = "Rolling 7-Day Features (first 10 rows)")
+```
+
+## Feature Definitions
+
+**Daily features saved to `data/gps_features_daily.csv`:**
+
+| Feature | Definition | Threshold | Interpretation |
+|-----------------|-----------------|-----------------|---------------------|
+| `subid` | Subject ID | \- | \- |
+| `date` | Calendar date | \- | \- |
+| `n_stays` | Number of stays this day | ≥3 | Days with \<3 stays excluded |
+| `n_clusters` | Number of distinct location clusters | ≥2 | Days with \<2 clusters excluded |
+| `total_dwell_mins` | Total dwell time across all stays | Minutes | Total observation time |
+| `location_entropy` | Shannon entropy of time distribution | 0 to log(n_clusters) | Higher = more evenly distributed across locations |
+| `normalized_entropy` | Entropy scaled by max possible | 0 to 1 | 0 = all time in one place, 1 = equal time everywhere |
+
+**Rolling 7-day features saved to `data/gps_features_rolling7day.csv`:**
+
+Same features as daily, but calculated over 7-day windows ending on each
+date. Windows with \<5 stays or \<2 clusters excluded.

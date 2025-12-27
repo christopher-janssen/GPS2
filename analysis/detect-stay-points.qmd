@@ -1,0 +1,343 @@
+---
+title: "Detect Stay-Points Using Time-Distance Threshold"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Stay-Point Detection
+
+This notebook detects stay-points from processed GPS data using the
+time-distance threshold method, which is effective regardless of the adaptive sampling GPS collection techinques of FollowMe/Moves.
+
+Parameters:
+
+-   Distance threshold: 50 meters
+-   Minimum dwell time: 10 minutes
+-   Maximum dwell time: 12 hours
+-   Maximum temporal gap: 60 minutes
+
+Algorithm:
+
+1.  For each subject, process GPS points in temporal order
+2.  Group consecutive points within distance threshold (50m)
+3.  Calculate dwell time using wall-clock time (first to last point)
+4.  Retain stays meeting time thresholds (10 min - 12 hours)
+
+## Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+
+# Additional package for distance calculations
+library(geosphere)
+library(leaflet)
+```
+
+## Parameters
+
+```{r}
+# Time-distance threshold parameters
+DIST_THRESHOLD <- 50   # meters (for us, it's prob 50-100)
+TIME_THRESHOLD <- 10   # minutes (minimum dwell to count as stay)
+MAX_GAP <- 60          # minutes (max gap to stay in same stay)
+MAX_STAY_HOURS <- 12   # hours (maximum stay duration to filter outliers/noise)
+```
+
+## Load Processed GPS Data
+
+```{r}
+data <- read_csv(here::here(path_gps2, "data/processed_gps.csv"), show_col_types = FALSE)
+```
+
+```{r}
+# check
+data |>
+  select(subid, time_local, lat, lon, is_stationary, speed_mph) |>
+  slice_head(n = 10)
+```
+
+## Stay-Point Detection
+
+### Calculate Movement Metrics
+
+```{r}
+# calculate distance and time gaps between consecutive points
+data <- data |>
+  group_by(subid) |>
+  mutate(
+    # distance from previous point (Haversine!!!)
+    dist_from_prev = if_else(
+      row_number() == 1,
+      NA_real_,
+      distHaversine(cbind(lag(lon), lag(lat)), cbind(lon, lat))
+    ),
+
+    # time gap from previous point (minutes)
+    time_gap_mins = if_else(
+      row_number() == 1,
+      NA_real_,
+      as.numeric(difftime(time_local, lag(time_local), units = "mins"))
+    )
+  ) |>
+  ungroup()
+
+# check
+data |>
+  filter(!is.na(dist_from_prev)) |>
+  select(subid, time_local, dist_from_prev, time_gap_mins) |>
+  slice_head(n = 10)
+```
+
+### Identify Stay Boundaries
+
+```{r}
+# mark start of new stays
+gps_with_stays <- data |>
+  group_by(subid) |>
+  mutate(
+    # Start new stay if:
+    # 1. First point for subject
+    # 2. Moved beyond distance threshold
+    # 3. Temporal gap too large (GPS dropout, device off)
+    is_new_stay = row_number() == 1 |
+      dist_from_prev > DIST_THRESHOLD |
+      time_gap_mins > MAX_GAP,
+
+    # assign stay_id (cumulative sum within subject)
+    stay_id_subject = cumsum(is_new_stay)
+  ) |>
+  ungroup()
+
+# check
+gps_with_stays |>
+  select(subid, time_local, dist_from_prev, time_gap_mins, is_new_stay, stay_id_subject) |>
+  slice_head(n = 20)
+```
+
+### Aggregate to Stay-Level
+
+```{r}
+# Create stay-level records
+stays_raw <- gps_with_stays |>
+  group_by(subid, stay_id_subject) |>
+  summarize(
+    start_time = min(time_local),
+    end_time = max(time_local),
+
+    # Dwell time: wall-clock time from first to last point
+    dwell_mins = as.numeric(difftime(max(time_local), min(time_local), units = "mins")),
+
+    # Point count (diagnostic)
+    n_points = n(),
+
+    # Stay location: median lat/lon (robust to outliers)
+    lat = median(lat),
+    lon = median(lon),
+
+    .groups = "drop"
+  )
+
+# check
+stays_raw |>
+  arrange(subid, start_time) |>
+  slice_head(n = 10)
+```
+
+### Filter by Dwell Time
+
+```{r}
+# Retain only stays meeting minimum and maximum time thresholds
+stays <- stays_raw |>
+  filter(dwell_mins >= TIME_THRESHOLD & dwell_mins <= MAX_STAY_HOURS * 60) |>
+  # Create global stay_id across all subjects
+  mutate(stay_id = row_number()) |>
+  select(stay_id, subid, start_time, end_time, dwell_mins, n_points, lat, lon)
+
+# check
+stays |>
+  slice_head(n = 10)
+```
+
+## Summary Statistics
+
+```{r}
+#| echo: false
+
+# Overall summary
+tibble(
+  metric = c(
+    "Total GPS points",
+    "Total stays detected",
+    "Stays too short (< 10 min)",
+    "Stays too long (> 12 hours)",
+    "Stays retained",
+    "Points in stays (%)",
+    "Median dwell time (mins)",
+    "Mean dwell time (mins)",
+    "Median points per stay",
+    "Mean points per stay"
+  ),
+  value = c(
+    nrow(data),
+    nrow(stays_raw),
+    nrow(stays_raw |> filter(dwell_mins < TIME_THRESHOLD)),
+    nrow(stays_raw |> filter(dwell_mins > MAX_STAY_HOURS * 60)),
+    nrow(stays),
+    paste0(round(sum(stays$n_points) / nrow(data) * 100, 1), "%"),
+    round(median(stays$dwell_mins), 1),
+    round(mean(stays$dwell_mins), 1),
+    round(median(stays$n_points), 0),
+    round(mean(stays$n_points), 1)
+  )
+) |>
+  knitr::kable()
+```
+
+```{r}
+#| echo: false
+
+# per-subject summary
+subject_summary <- stays |>
+  group_by(subid) |>
+  summarize(
+    n_stays = n(),
+    total_dwell_mins = sum(dwell_mins),
+    median_dwell_mins = median(dwell_mins),
+    total_points = sum(n_points),
+    .groups = "drop"
+  ) |>
+  arrange(desc(n_stays))
+
+subject_summary |>
+  slice_head(n = 10) |>
+  knitr::kable()
+```
+
+```{r}
+# super long stays?
+stays |>
+  arrange(desc(dwell_mins)) |>
+  select(stay_id, subid, dwell_mins, n_points, start_time, end_time) |>
+  slice_head(n = 10) |>
+  knitr::kable()
+```
+
+## Distribution of Dwell Times
+
+```{r}
+# Dwell time distribution
+stays |>
+  ggplot(aes(x = dwell_mins)) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+  scale_x_log10() +
+  labs(
+    title = "Distribution of Stay Dwell Times",
+    x = "Dwell Time (minutes, log scale)",
+    y = "Count"
+  )
+```
+
+```{r}
+# Points per stay distribution
+stays |>
+  ggplot(aes(x = n_points)) +
+  geom_histogram(bins = 50, fill = "coral", alpha = 0.7) +
+  scale_x_log10() +
+  labs(
+    title = "Distribution of Points per Stay",
+    x = "Points per Stay (log scale)",
+    y = "Count"
+  )
+```
+
+## Visualize Stay Points
+
+```{r}
+# Sample stays for visualization
+stays_sample <- stays
+
+# Create color palette based on dwell time
+pal <- colorNumeric(
+  palette = "viridis",
+  domain = stays_sample$dwell_mins
+)
+
+# Create leaflet map
+leaflet(stays_sample) |>
+  addTiles() |>
+  addCircleMarkers(
+    lng = ~lon,
+    lat = ~lat,
+    radius = ~sqrt(dwell_mins) / 2,  # size by dwell time
+    color = ~pal(dwell_mins),
+    fillOpacity = 0.6,
+    stroke = TRUE,
+    weight = 1,
+    popup = ~paste0(
+      "<b>Stay ID:</b> ", stay_id, "<br>",
+      "<b>Subject:</b> ", subid, "<br>",
+      "<b>Dwell Time:</b> ", round(dwell_mins, 1), " mins<br>",
+      "<b>Points:</b> ", n_points, "<br>",
+      "<b>Start:</b> ", start_time, "<br>",
+      "<b>End:</b> ", end_time
+    )
+  ) |>
+  addLegend(
+    "bottomright",
+    pal = pal,
+    values = ~dwell_mins,
+    title = "Dwell Time (mins)",
+    opacity = 1
+  )
+```
+
+```{r}
+# Visualize stays for a single subject
+single_subject <- stays |>
+  filter(subid == last(subid))
+
+leaflet(single_subject) |>
+  addTiles() |>
+  addCircleMarkers(
+    lng = ~lon,
+    lat = ~lat,
+    radius = ~sqrt(dwell_mins) / 2,
+    color = ~pal(dwell_mins),
+    fillOpacity = 0.7,
+    stroke = TRUE,
+    weight = 2,
+    label = ~paste0("Dwell: ", round(dwell_mins, 1), " mins"),
+    popup = ~paste0(
+      "<b>Stay ID:</b> ", stay_id, "<br>",
+      "<b>Subject:</b> ", subid, "<br>",
+      "<b>Dwell Time:</b> ", round(dwell_mins, 1), " mins<br>",
+      "<b>Points:</b> ", n_points, "<br>",
+      "<b>Start:</b> ", start_time, "<br>",
+      "<b>End:</b> ", end_time
+    )
+  ) |>
+  addLegend(
+    "bottomright",
+    pal = pal,
+    values = ~dwell_mins,
+    title = "Dwell Time (mins)",
+    opacity = 1
+  )
+```
+
+## Save Results
+
+```{r}
+write_csv(stays, here::here(path_gps2, "data/stays.csv"))
+```
