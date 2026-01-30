@@ -348,12 +348,17 @@ gt_deduped <- locs_gt |>
 ```{r}
 gt_all <- gt_deduped
 gt_intake <- gt_deduped |> filter(intake == 1)
+gt_no_intake <- gt_deduped |> filter(intake == 0)
 
 tibble(
-  gt_set = c("All locations", "Intake only"),
-  n_locations = c(nrow(gt_all), nrow(gt_intake)),
-  n_subjects = c(n_distinct(gt_all$subid), n_distinct(gt_intake$subid))
-) |>
+  gt_set = c("All locations", "Intake only", "No Intake"),
+  n_locations = c(nrow(gt_all), nrow(gt_intake), nrow(gt_no_intake)),
+  n_subjects = c(
+    n_distinct(gt_all$subid),
+    n_distinct(gt_intake$subid),
+    n_distinct(gt_no_intake$subid)
+    )
+  ) |>
   knitr::kable()
 ```
 
@@ -387,12 +392,21 @@ filter_gt_by_proximity <- function(gt_df, stays_df,
 stays_ref <- stays_by_threshold[["10"]]
 gt_all <- filter_gt_by_proximity(gt_all, stays_ref)
 gt_intake <- filter_gt_by_proximity(gt_intake, stays_ref)
+gt_no_intake <- filter_gt_by_proximity(gt_no_intake, stays_ref)
+
 
 tibble(
-  gt_set = c("All locations (proximity-filtered)",
-             "Intake only (proximity-filtered)"),
-  n_locations = c(nrow(gt_all), nrow(gt_intake)),
-  n_subjects = c(n_distinct(gt_all$subid), n_distinct(gt_intake$subid))
+  gt_set = c(
+    "All locations (proximity-filtered)",
+    "Intake only (proximity-filtered)",
+    "No Intake (proximity-filtered)"
+  ),
+  n_locations = c(nrow(gt_all), nrow(gt_intake), nrow(gt_no_intake)),
+  n_subjects = c(
+    n_distinct(gt_all$subid),
+    n_distinct(gt_intake$subid),
+    n_distinct(gt_no_intake$subid)
+  )
 ) |>
   knitr::kable()
 ```
@@ -431,9 +445,14 @@ comparison <- bind_rows(
   map_dfr(as.character(DWELL_THRESHOLDS),
           \(t) evaluate_threshold(t, gt_all, "All Locations")),
   map_dfr(as.character(DWELL_THRESHOLDS),
-          \(t) evaluate_threshold(t, gt_intake, "Intake Only"))
+          \(t) evaluate_threshold(t, gt_intake, "Intake Only")),
+  map_dfr(as.character(DWELL_THRESHOLDS),
+          \(t) evaluate_threshold(t, gt_no_intake, "No Intake"))
 )
 
+comparison <- comparison |>
+  mutate(gt_type = factor(gt_type,
+                          levels = c("All Locations", "Intake Only", "No Intake")))
 nrow(comparison)
 ```
 
