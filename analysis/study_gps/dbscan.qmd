@@ -1,0 +1,540 @@
+---
+title: "DBSCAN Stay Hyperparameter Sensitivity Analysis"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Dwell Time Sensitivity
+
+How does the minimum dwell time threshold for stay detection affect
+DBSCAN clustering performance against ground truth? We test 2, 5, 10,
+and 15 minute thresholds using the full study period, evaluating
+separately for all reported locations vs intake-only locations.
+
+## Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+
+library(geosphere)
+library(leaflet)
+
+theme_set(theme_minimal())
+```
+
+## Parameters
+
+```{r}
+# Dwell time thresholds to test
+DWELL_THRESHOLDS <- c(2, 5, 10, 15)
+
+# DBSCAN clustering parameters
+EPS_METERS <- 50
+MIN_STAYS <- 3
+
+# Ground truth and matching
+PROXIMITY_THRESHOLD <- 100
+DEDUPE_THRESHOLD <- 50
+
+# Stay detection parameters
+DIST_THRESHOLD <- 50
+MAX_GAP <- 60
+MAX_STAY_HOURS <- 12
+```
+
+## Load & Filter Data
+
+```{r}
+study_dates <- read_csv(
+  here::here(path_shared, "study_dates_gps.csv"),
+  show_col_types = FALSE
+) |>
+  mutate(
+    study_start = as_date(study_start),
+    study_end = as_date(study_end)
+  )
+
+subids_dates <- study_dates |>
+  pull(subid) |>
+  unique()
+```
+
+```{r}
+gps_data <- read_csv(
+  here::here(path_gps2, "data/processed_gps.csv"),
+  show_col_types = FALSE
+) |>
+  filter(subid %in% subids_dates)
+
+nrow(gps_data)
+```
+
+```{r}
+locs_gt <- read_csv(
+  here::here(path_gps2, "data/locs_gt.csv"),
+  show_col_types = FALSE
+) |>
+  mutate(subid = as.numeric(subid)) |>
+  filter(subid %in% subids_dates)
+
+nrow(locs_gt)
+```
+
+## Helper Functions
+
+### Stay Detection
+
+Encapsulates the stay detection pipeline from
+`detect-stay-points.qmd`: calculate movement metrics, identify stay
+boundaries, aggregate to stay-level, filter by dwell time.
+
+```{r}
+detect_stays <- function(gps_data, dist_threshold = DIST_THRESHOLD,
+                         time_threshold = 10, max_gap = MAX_GAP,
+                         max_hours = MAX_STAY_HOURS) {
+  # Movement metrics
+  data <- gps_data |>
+    group_by(subid) |>
+    mutate(
+      dist_from_prev = if_else(
+        row_number() == 1,
+        NA_real_,
+        distHaversine(cbind(lag(lon), lag(lat)), cbind(lon, lat))
+      ),
+      time_gap_mins = if_else(
+        row_number() == 1,
+        NA_real_,
+        as.numeric(difftime(time_local, lag(time_local), units = "mins"))
+      )
+    ) |>
+    ungroup()
+
+  # Stay boundaries
+  data <- data |>
+    group_by(subid) |>
+    mutate(
+      is_new_stay = row_number() == 1 |
+        dist_from_prev > dist_threshold |
+        time_gap_mins > max_gap,
+      stay_id_subject = cumsum(is_new_stay)
+    ) |>
+    ungroup()
+
+  # Aggregate to stay-level
+  stays_raw <- data |>
+    group_by(subid, stay_id_subject) |>
+    summarize(
+      start_time = min(time_local),
+      end_time = max(time_local),
+      dwell_mins = as.numeric(difftime(max(time_local),
+                                       min(time_local), units = "mins")),
+      n_points = n(),
+      lat = median(lat),
+      lon = median(lon),
+      .groups = "drop"
+    )
+
+  # Filter by dwell time
+  stays_raw |>
+    filter(dwell_mins >= time_threshold & dwell_mins <= max_hours * 60) |>
+    mutate(stay_id = row_number()) |>
+    select(stay_id, subid, start_time, end_time, dwell_mins, n_points,
+           lat, lon)
+}
+```
+
+### DBSCAN Clustering
+
+```{r}
+run_dbscan <- function(coords, eps = EPS_METERS, min_pts = MIN_STAYS) {
+  if (nrow(coords) < 2) {
+    return(list(
+      cluster = rep(1, nrow(coords)),
+      n_clusters = 1,
+      n_noise = 0
+    ))
+  }
+
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+  result <- dbscan(as.dist(dist_mat), eps = eps, minPts = min_pts)
+
+  list(
+    cluster = result$cluster,
+    n_clusters = max(result$cluster),
+    n_noise = sum(result$cluster == 0)
+  )
+}
+```
+
+### Extract Cluster Centroids
+
+```{r}
+get_centroids <- function(stays_df, cluster_col) {
+  stays_df |>
+    filter(.data[[cluster_col]] > 0) |>
+    group_by(.data[[cluster_col]]) |>
+    summarize(
+      lat = median(lat),
+      lon = median(lon),
+      total_dwell_hrs = sum(dwell_mins) / 60,
+      n_stays = n(),
+      n_days = n_distinct(as.Date(start_time)),
+      .groups = "drop"
+    ) |>
+    rename(cluster_id = 1)
+}
+```
+
+### Deduplicate Ground Truth Locations
+
+```{r}
+dedupe_locations <- function(df, threshold_m = DEDUPE_THRESHOLD) {
+  if (nrow(df) < 2) {
+    return(df |> mutate(location_id = 1))
+  }
+
+  coords <- cbind(df$lon, df$lat)
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+  clusters <- dbscan(as.dist(dist_mat), eps = threshold_m, minPts = 1)
+
+  df |>
+    mutate(location_id = clusters$cluster) |>
+    group_by(location_id) |>
+    summarize(
+      lat = median(lat),
+      lon = median(lon),
+      n_reports = n(),
+      intake = max(intake),
+      .groups = "drop"
+    )
+}
+```
+
+### Precision / Recall / F1
+
+```{r}
+calculate_capture <- function(centroids, gt_locations,
+                              threshold_m = PROXIMITY_THRESHOLD) {
+  if (nrow(centroids) == 0 || nrow(gt_locations) == 0) {
+    return(list(
+      recall = 0, precision = 0, f1 = 0,
+      n_captured = 0, n_valid_centroids = 0,
+      n_ground_truth = nrow(gt_locations),
+      n_centroids = nrow(centroids)
+    ))
+  }
+
+  centroid_coords <- cbind(centroids$lon, centroids$lat)
+  gt_coords <- cbind(gt_locations$lon, gt_locations$lat)
+
+  # Recall: fraction of GT locations with a nearby centroid
+  captured <- 0
+  for (i in seq_len(nrow(gt_locations))) {
+    distances <- distHaversine(gt_coords[i, ], centroid_coords)
+    if (min(distances) <= threshold_m) captured <- captured + 1
+  }
+  recall <- captured / nrow(gt_locations)
+
+  # Precision: fraction of centroids near a GT location
+  valid_centroids <- 0
+  for (i in seq_len(nrow(centroids))) {
+    distances <- distHaversine(centroid_coords[i, ], gt_coords)
+    if (min(distances) <= threshold_m) valid_centroids <- valid_centroids + 1
+  }
+  precision <- valid_centroids / nrow(centroids)
+
+  # F1 score
+  f1 <- if (precision + recall > 0) {
+    2 * (precision * recall) / (precision + recall)
+  } else {
+    0
+  }
+
+  list(
+    recall = recall, precision = precision, f1 = f1,
+    n_captured = captured, n_valid_centroids = valid_centroids,
+    n_ground_truth = nrow(gt_locations),
+    n_centroids = nrow(centroids)
+  )
+}
+```
+
+## Run Stay Detection for Each Dwell Threshold
+
+```{r}
+stays_by_threshold <- map(
+  set_names(DWELL_THRESHOLDS),
+  \(thresh) detect_stays(gps_data, time_threshold = thresh)
+)
+```
+
+Summary stats per threshold:
+
+```{r}
+map_dfr(DWELL_THRESHOLDS, \(thresh) {
+  s <- stays_by_threshold[[as.character(thresh)]]
+  tibble(
+    dwell_threshold = thresh,
+    n_stays = nrow(s),
+    n_subjects = n_distinct(s$subid),
+    median_dwell_mins = round(median(s$dwell_mins), 1),
+    mean_dwell_mins = round(mean(s$dwell_mins), 1),
+    median_points = median(s$n_points)
+  )
+}) |>
+  knitr::kable()
+```
+
+## Run DBSCAN Clustering per Threshold
+
+```{r}
+cluster_results <- map(set_names(as.character(DWELL_THRESHOLDS)), \(thresh) {
+  stays <- stays_by_threshold[[thresh]]
+
+  stays |>
+    group_by(subid) |>
+    group_modify(\(subj_stays, key) {
+      if (nrow(subj_stays) < 2) {
+        return(subj_stays |> mutate(cluster = 1L))
+      }
+
+      coords <- cbind(subj_stays$lon, subj_stays$lat)
+      db <- run_dbscan(coords)
+      subj_stays |> mutate(cluster = db$cluster)
+    }) |>
+    ungroup()
+})
+```
+
+Extract centroids per subject per threshold:
+
+```{r}
+centroids_by_threshold <- map(
+  set_names(as.character(DWELL_THRESHOLDS)),
+  \(thresh) {
+    cluster_results[[thresh]] |>
+      group_by(subid) |>
+      group_modify(\(subj_stays, key) {
+        get_centroids(subj_stays, "cluster")
+      }) |>
+      ungroup()
+  }
+)
+```
+
+## Prepare Ground Truth
+
+### Deduplicate per subject
+
+```{r}
+gt_deduped <- locs_gt |>
+  group_by(subid) |>
+  group_modify(~ dedupe_locations(.x)) |>
+  ungroup()
+```
+
+### Two GT sets: all locations vs intake-only
+
+```{r}
+gt_all <- gt_deduped
+gt_intake <- gt_deduped |> filter(intake == 1)
+
+tibble(
+  gt_set = c("All locations", "Intake only"),
+  n_locations = c(nrow(gt_all), nrow(gt_intake)),
+  n_subjects = c(n_distinct(gt_all$subid), n_distinct(gt_intake$subid))
+) |>
+  knitr::kable()
+```
+
+### Filter GT to locations with nearby stays
+
+Use the 10-minute stays as the reference for proximity filtering
+(most permissive reasonable threshold).
+
+```{r}
+filter_gt_by_proximity <- function(gt_df, stays_df,
+                                   threshold_m = PROXIMITY_THRESHOLD) {
+  gt_df |>
+    rowwise() |>
+    mutate(
+      has_nearby_stay = {
+        subj_stays <- stays_df |> filter(subid == .env$subid)
+        if (nrow(subj_stays) == 0) {
+          FALSE
+        } else {
+          gt_coord <- c(lon, lat)
+          stay_coords <- cbind(subj_stays$lon, subj_stays$lat)
+          min(distHaversine(gt_coord, stay_coords)) <= threshold_m
+        }
+      }
+    ) |>
+    ungroup() |>
+    filter(has_nearby_stay) |>
+    select(-has_nearby_stay)
+}
+
+stays_ref <- stays_by_threshold[["10"]]
+gt_all <- filter_gt_by_proximity(gt_all, stays_ref)
+gt_intake <- filter_gt_by_proximity(gt_intake, stays_ref)
+
+tibble(
+  gt_set = c("All locations (proximity-filtered)",
+             "Intake only (proximity-filtered)"),
+  n_locations = c(nrow(gt_all), nrow(gt_intake)),
+  n_subjects = c(n_distinct(gt_all$subid), n_distinct(gt_intake$subid))
+) |>
+  knitr::kable()
+```
+
+## Evaluate: Compare Clusters to Ground Truth
+
+```{r}
+evaluate_threshold <- function(thresh_str, gt_df, gt_label) {
+  centroids <- centroids_by_threshold[[thresh_str]]
+  subjects <- intersect(unique(centroids$subid), unique(gt_df$subid))
+
+  map_dfr(subjects, \(sub) {
+    sub_centroids <- centroids |> filter(subid == sub)
+    sub_gt <- gt_df |> filter(subid == sub)
+
+    if (nrow(sub_gt) == 0) return(NULL)
+
+    capture <- calculate_capture(sub_centroids, sub_gt)
+
+    tibble(
+      subid = sub,
+      dwell_threshold = as.numeric(thresh_str),
+      gt_type = gt_label,
+      precision = capture$precision,
+      recall = capture$recall,
+      f1 = capture$f1,
+      n_centroids = capture$n_centroids,
+      n_ground_truth = capture$n_ground_truth
+    )
+  })
+}
+```
+
+```{r}
+comparison <- bind_rows(
+  map_dfr(as.character(DWELL_THRESHOLDS),
+          \(t) evaluate_threshold(t, gt_all, "All Locations")),
+  map_dfr(as.character(DWELL_THRESHOLDS),
+          \(t) evaluate_threshold(t, gt_intake, "Intake Only"))
+)
+
+nrow(comparison)
+```
+
+## Results
+
+### Summary Table
+
+```{r}
+summary_table <- comparison |>
+  group_by(dwell_threshold, gt_type) |>
+  summarize(
+    n_subjects = n(),
+    mean_precision = round(mean(precision), 3),
+    mean_recall = round(mean(recall), 3),
+    mean_f1 = round(mean(f1), 3),
+    sd_f1 = round(sd(f1), 3),
+    .groups = "drop"
+  ) |>
+  arrange(gt_type, dwell_threshold)
+
+summary_table |>
+  knitr::kable(
+    col.names = c("Dwell (min)", "GT Type", "N", "Precision",
+                  "Recall", "F1", "SD(F1)")
+  )
+```
+
+### F1 by Dwell Threshold
+
+```{r}
+summary_table |>
+  ggplot(aes(x = factor(dwell_threshold), y = mean_f1,
+             fill = gt_type)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
+  geom_errorbar(
+    aes(ymin = pmax(mean_f1 - sd_f1, 0), ymax = pmin(mean_f1 + sd_f1, 1)),
+    position = position_dodge(width = 0.7), width = 0.2
+  ) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "DBSCAN F1 Score by Minimum Dwell Time",
+    x = "Minimum Dwell Time (minutes)",
+    y = "Mean F1 Score",
+    fill = "Ground Truth"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Precision and Recall by Dwell Threshold
+
+```{r}
+summary_table |>
+  pivot_longer(cols = c(mean_precision, mean_recall),
+               names_to = "metric", values_to = "value") |>
+  mutate(metric = if_else(metric == "mean_precision",
+                          "Precision", "Recall")) |>
+  ggplot(aes(x = factor(dwell_threshold), y = value,
+             color = metric, group = interaction(metric, gt_type),
+             linetype = gt_type)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "Precision & Recall by Minimum Dwell Time",
+    x = "Minimum Dwell Time (minutes)",
+    y = "Score",
+    color = "Metric",
+    linetype = "Ground Truth"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Per-Subject F1 Distribution
+
+```{r}
+comparison |>
+  ggplot(aes(x = factor(dwell_threshold), y = f1, fill = gt_type)) +
+  geom_boxplot(position = position_dodge(width = 0.8), width = 0.7,
+               alpha = 0.7, outlier.alpha = 0.4) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "Per-Subject F1 Distribution by Dwell Threshold",
+    x = "Minimum Dwell Time (minutes)",
+    y = "F1 Score",
+    fill = "Ground Truth"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Field Recommendation
+
+In health and mobility GPS research, minimum dwell times of 5--10
+minutes are standard (Thierry et al., 2013; Boruff et al., 2012).
+Shorter thresholds (2 min) risk capturing transient stops (e.g.,
+traffic lights) as stays, inflating cluster count and reducing
+precision. Longer thresholds (15 min) may miss brief but meaningful
+visits, reducing recall. The results above can guide selection for
+this study's context.
+
+## Save Results
+
+```{r}
+write_csv(comparison, here::here(path_gps2, "data/dbscan_dwell_comparison.csv"))
+```

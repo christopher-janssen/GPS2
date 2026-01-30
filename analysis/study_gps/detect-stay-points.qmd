@@ -49,7 +49,7 @@ library(leaflet)
 ```{r}
 # Time-distance threshold parameters
 DIST_THRESHOLD <- 50   # meters (for us, it's prob 50-100)
-TIME_THRESHOLD <- 10   # minutes (minimum dwell to count as stay)
+TIME_THRESHOLD <- 5   # minutes (minimum dwell to count as stay)
 MAX_GAP <- 60          # minutes (max gap to stay in same stay)
 MAX_STAY_HOURS <- 12   # hours (maximum stay duration to filter outliers/noise)
 ```

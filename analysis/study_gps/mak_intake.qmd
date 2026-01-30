@@ -32,7 +32,7 @@ subids_dates <- study_dates |>    pull(subid) |>    unique()
 ```
 
 ```{r}
-locs <- read_csv(here::here(path_shared, "locations.csv"),                  col_types = "cddcccccccccccdd",                 show_col_types = FALSE) |>    mutate(subid = as.numeric(subid)) |>  filter(subid %in% subids_dates)  |> glimpse()
+locs <- read_csv(here::here(path_shared,3 "locations.csv"),                  col_types = "cddcccccccccccdd",                 show_col_types = FALSE) |>    mutate(subid = as.numeric(subid)) |>  filter(subid %in% subids_dates)  |> glimpse()
 ```
 
 ## Look at distribution of UTC responses
