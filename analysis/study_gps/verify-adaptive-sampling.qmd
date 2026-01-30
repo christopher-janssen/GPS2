@@ -1,0 +1,249 @@
+---
+title: "Verify Adaptive Sampling Assumption"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Verify Adaptive Sampling Hypothesis
+
+This notebook empirically tests whether FollowMe and Moves apps use adaptive sampling (reduced ping frequency when stationary).
+
+TLDR: If adaptive sampling is used, we expect:
+
+-   Longer time gaps between GPS points during stationary periods
+-   Shorter time gaps during movement
+-   This pattern should be evident in the data
+
+## Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+
+library(geosphere)
+
+theme_set(theme_bw())
+```
+
+## Load Raw GPS Data with App Source
+
+```{r}
+data <- read_csv(here::here(path_shared, "/gps.csv"), show_col_types = FALSE)
+
+nrow(data)
+```
+
+## Identify/Check App Sources
+
+```{r}
+data |>
+  count(app_source, name = "n_points") |>
+  mutate(pct = round(n_points / sum(n_points) * 100, 1)) |>
+  knitr::kable()
+```
+
+## Calculate Movement Metrics
+
+```{r}
+# calculate time gaps and distance between consecutive points
+data_movement <- data |>
+  arrange(subid, time) |>
+  group_by(subid) |>
+  mutate(
+    # time gap from previous point (seconds)
+    time_gap_secs = as.numeric(difftime(time, lag(time), units = "secs")),
+
+    # distance from previous point (meters, Haversine)
+    dist_from_prev = if_else(
+      row_number() == 1,
+      NA_real_,
+      distHaversine(cbind(lag(lon), lag(lat)), cbind(lon, lat))
+    ),
+
+    # classify as stationary or moving
+    # stationary: within 50m of previous point
+    is_stationary = !is.na(dist_from_prev) & dist_from_prev <= 50,
+
+    # get app_source from current point
+    app = app_source
+  ) |>
+  ungroup()
+
+# check
+data_movement |>
+  select(subid, time, app_source, time_gap_secs, dist_from_prev, is_stationary) |>
+  slice_head(n = 10)
+```
+
+## Exclude first point per subject (no lag) and extreme gaps (>1 hour)
+
+```{r}
+data_filtered <- data_movement |>
+  filter(!is.na(time_gap_secs),
+         time_gap_secs > 0,
+         time_gap_secs < 3600)  # less than 1 hour
+
+nrow(data_filtered)
+```
+
+## Check Impact of 1-Hour Exclusion
+
+### What Are We Excluding?
+
+```{r}
+# analyze gaps that were excluded (>= 1 hour)
+excluded_gaps <- data_movement |>
+  filter(!is.na(time_gap_secs), time_gap_secs >= 3600) |>
+  group_by(app_source, is_stationary) |>
+  summarize(
+    n_excluded = n(),
+    median_excluded_hrs = median(time_gap_secs) / 3600,
+    max_excluded_hrs = max(time_gap_secs) / 3600,
+    .groups = "drop"
+  ) |>
+  mutate(
+    movement = if_else(is_stationary, "Stationary", "Moving")
+  ) |>
+  select(app_source, movement, everything(), -is_stationary)
+
+excluded_gaps |>
+  knitr::kable(digits = 2, caption = "Excluded gaps (>= 1 hour)")
+```
+
+### What percentage of data are we excluding?
+
+```{r}
+exclusion_rate <- data_movement |>
+  filter(!is.na(time_gap_secs), time_gap_secs > 0) |>
+  group_by(app_source, is_stationary) |>
+  summarize(
+    total_gaps = n(),
+    excluded_gaps = sum(time_gap_secs >= 3600),
+    exclusion_pct = round(100 * sum(time_gap_secs >= 3600) / n(), 2),
+    .groups = "drop"
+  ) |>
+  mutate(
+    movement = if_else(is_stationary, "Stationary", "Moving")
+  ) |>
+  select(app_source, movement, total_gaps, excluded_gaps, exclusion_pct)
+
+exclusion_rate |>
+  knitr::kable(caption = "Exclusion rates by app and movement state")
+```
+
+### Full Distribution (No Filter)
+
+```{r}
+# Compare WITH and WITHOUT the 1-hour filter
+full_distribution <- data_movement |>
+  filter(!is.na(time_gap_secs), time_gap_secs > 0) |>
+  group_by(app_source, is_stationary) |>
+  summarize(
+    n_all = n(),
+    median_all = median(time_gap_secs),
+    q95_all = quantile(time_gap_secs, 0.95),
+    q99_all = quantile(time_gap_secs, 0.99),
+    max_all_hrs = max(time_gap_secs) / 3600,
+    .groups = "drop"
+  ) |>
+  mutate(
+    movement = if_else(is_stationary, "Stationary", "Moving")
+  ) |>
+  select(app_source, movement, everything(), -is_stationary)
+
+full_distribution |>
+  knitr::kable(digits = 1, caption = "Full distribution (no filter)")
+```
+
+### Calculate ratio using FULL data (no exclusion)
+
+```{r}
+full_ratio <- full_distribution |>
+  select(app_source, movement, median_all) |>
+  pivot_wider(names_from = movement, values_from = median_all) |>
+  mutate(
+    ratio_full_data = Stationary / Moving
+  )
+
+full_ratio |>
+  knitr::kable(digits = 2, caption = "Ratio using full data (no 1-hour exclusion)")
+```
+
+## Test Adaptive Sampling Hypothesis
+
+### Overall Pattern: Stationary vs. Moving
+
+```{r}
+sampling_summary <- data_filtered |>
+  group_by(app_source, is_stationary) |>
+  summarize(
+    n_points = n(),
+    min_gap = min(time_gap_secs),
+    q25 = quantile(time_gap_secs, 0.25),
+    median_gap = median(time_gap_secs),
+    q75 = quantile(time_gap_secs, 0.75),
+    max_gap = max(time_gap_secs),
+    mean_gap = mean(time_gap_secs),
+    .groups = "drop"
+  ) |>
+  mutate(
+    movement = if_else(is_stationary, "Stationary", "Moving")
+  ) |>
+  select(app_source, movement, everything(), -is_stationary)
+
+sampling_summary |>
+  knitr::kable(digits = 1)
+```
+
+### Interpretation
+
+```{r}
+# Calculate ratio of median gaps (stationary / moving)
+# If adaptive sampling: ratio > 1 (longer gaps when stationary)
+# If fixed sampling: ratio ≈ 1 (same gaps regardless)
+interpretation <- sampling_summary |>
+  select(app_source, movement, median_gap) |>
+  pivot_wider(names_from = movement, values_from = median_gap) |>
+  mutate(
+    ratio_stationary_to_moving = Stationary / Moving,
+    adaptive_sampling = if_else(ratio_stationary_to_moving > 1.5,
+                                 "likely adaptive sampling",
+                                 "likely fixed-interval sampling")
+  )
+
+interpretation |>
+  knitr::kable(digits = 2)
+```
+
+## Visualizations
+
+### Box Plot Comparison
+
+```{r}
+#| echo: false
+
+data_filtered |>
+  mutate(
+    movement = if_else(is_stationary, "Stationary", "Moving")
+  ) |>
+  ggplot(aes(x = movement, y = time_gap_secs, fill = movement)) +
+  geom_boxplot() +
+  facet_wrap(~app_source, ncol = 2) +
+  scale_y_log10(breaks = c(10, 30, 60, 120, 300, 600, 1800, 3600),
+                labels = c("10s", "30s", "1m", "2m", "5m", "10m", "30m", "1h")) +
+  labs(
+    title = "Time Gaps: Stationary vs. Moving by App",
+    x = "Movement State",
+    y = "Time Gap (log scale)",
+    fill = "Movement State"
+  )
+```

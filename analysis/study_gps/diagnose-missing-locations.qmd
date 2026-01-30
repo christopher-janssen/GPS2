@@ -1,0 +1,473 @@
+---
+title: "Diagnostic: Why Are Stays Missing Ground Truth Locations?"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+source(here::here("scripts/r/setup.R"))
+library(tidyverse)
+library(geosphere)
+library(knitr)
+```
+
+## Purpose
+
+Ground truth locations from John's algorithm show low concordance with stay-point clustering (~35% F1). This notebook investigates why: are the locations missing from the stay data entirely, or are they present but not being clustered?
+
+```{r}
+# Load data
+stays <- read_csv(here::here(path_gps2, "data/stays.csv"), show_col_types = FALSE)
+ground_truth_raw <- read_csv(here::here(path_shared, "locations.csv"), show_col_types = FALSE)
+gps_raw <- read_csv(here::here(path_shared, "gps.csv"), show_col_types = FALSE)
+
+cat("Stays:", nrow(stays), "\n")
+cat("Ground truth locations:", nrow(ground_truth_raw), "\n")
+cat("Raw GPS pings:", nrow(gps_raw), "\n")
+```
+
+## For Each Ground Truth Location: How Close Is the Nearest Stay?
+
+```{r}
+# Helper function to calculate stay metrics for a single GT location
+calc_stay_metrics <- function(gt_subid, gt_lat, gt_lon, stays_df) {
+  # Filter to this subject's stays only
+  subj_stays <- stays_df |> filter(subid == gt_subid)
+
+  if (nrow(subj_stays) == 0) {
+    return(tibble(
+      nearest_stay_m = NA_real_,
+      stays_within_50m = 0L,
+      stays_within_100m = 0L,
+      dwell_within_100m = 0
+    ))
+  }
+
+  # Calculate distances
+  stay_coords <- cbind(subj_stays$lon, subj_stays$lat)
+  dists <- distHaversine(c(gt_lon, gt_lat), stay_coords)
+
+ tibble(
+    nearest_stay_m = min(dists),
+    stays_within_50m = sum(dists <= 50),
+    stays_within_100m = sum(dists <= 100),
+    dwell_within_100m = sum(subj_stays$dwell_mins[dists <= 100])
+  )
+}
+
+# Calculate for each GT location
+gt_to_stays <- ground_truth_raw |>
+  rowwise() |>
+  mutate(
+    metrics = list(calc_stay_metrics(subid, lat, lon, stays))
+  ) |>
+  ungroup() |>
+  unnest(metrics)
+```
+
+```{r}
+# Distribution of nearest stay distance
+gt_to_stays |>
+  filter(!is.na(nearest_stay_m)) |>
+  ggplot(aes(x = nearest_stay_m)) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = 100, color = "red", linetype = "dashed") +
+  scale_x_log10(labels = scales::comma) +
+  labs(
+    title = "Distance from Ground Truth Locations to Nearest Stay",
+    subtitle = "Red line = 100m capture threshold",
+    x = "Distance to Nearest Stay (meters, log scale)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Categorize GT locations by stay evidence
+gt_to_stays <- gt_to_stays |>
+  mutate(
+    evidence_category = case_when(
+      is.na(nearest_stay_m) ~ "No stays for subject",
+      nearest_stay_m <= 50 ~ "Strong (≤50m)",
+      nearest_stay_m <= 100 ~ "Moderate (50-100m)",
+      nearest_stay_m <= 500 ~ "Weak (100-500m)",
+      TRUE ~ "None (>500m)"
+    ),
+    evidence_category = factor(evidence_category, levels = c(
+      "Strong (≤50m)", "Moderate (50-100m)", "Weak (100-500m)",
+      "None (>500m)", "No stays for subject"
+    ))
+  )
+
+gt_to_stays |>
+  count(evidence_category) |>
+  mutate(pct = n / sum(n)) |>
+  kable(digits = 3, col.names = c("Evidence Category", "N", "Proportion"))
+```
+
+## The Problem Locations: No Nearby Stays
+
+```{r}
+# Locations with no stay within 100m
+no_evidence <- gt_to_stays |>
+  filter(nearest_stay_m > 100 | is.na(nearest_stay_m))
+
+cat("Ground truth locations with NO stay within 100m:", nrow(no_evidence),
+    "of", nrow(gt_to_stays),
+    "(", round(100 * nrow(no_evidence) / nrow(gt_to_stays), 1), "%)\n")
+```
+
+```{r}
+# What types of locations are missing?
+if ("type" %in% names(no_evidence)) {
+  no_evidence |>
+    filter(!is.na(type), type != "") |>
+    count(type, sort = TRUE) |>
+    slice_head(n = 15) |>
+    kable(col.names = c("Location Type", "Count"))
+}
+```
+
+```{r}
+# Compare location types: found vs missing
+if ("type" %in% names(gt_to_stays)) {
+  gt_to_stays |>
+    filter(!is.na(type), type != "") |>
+    mutate(has_evidence = nearest_stay_m <= 100) |>
+    count(type, has_evidence) |>
+    pivot_wider(names_from = has_evidence, values_from = n, values_fill = 0) |>
+    rename(missing = `FALSE`, found = `TRUE`) |>
+    mutate(
+      total = missing + found,
+      pct_missing = missing / total
+    ) |>
+    filter(total >= 5) |>
+    arrange(desc(pct_missing)) |>
+    slice_head(n = 20) |>
+    kable(digits = 2, col.names = c("Type", "Missing", "Found", "Total", "% Missing"))
+}
+```
+
+## Dwell Time Distribution at GT Locations
+
+```{r}
+# For locations WITH nearby stays, how much dwell time?
+gt_to_stays |>
+  filter(stays_within_100m > 0) |>
+  ggplot(aes(x = dwell_within_100m / 60)) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = 2, color = "red", linetype = "dashed") +
+  scale_x_log10() +
+  labs(
+    title = "Total Dwell Time at Ground Truth Locations (where stays exist)",
+    subtitle = "Red line = 2 hour threshold used for 'major locations'",
+    x = "Total Dwell Time (hours, log scale)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Breakdown by dwell time
+gt_to_stays |>
+  mutate(
+    dwell_category = case_when(
+      stays_within_100m == 0 ~ "No stays nearby",
+      dwell_within_100m < 30 ~ "<30 min",
+      dwell_within_100m < 60 ~ "30-60 min",
+      dwell_within_100m < 120 ~ "1-2 hrs",
+      dwell_within_100m < 480 ~ "2-8 hrs",
+      TRUE ~ ">8 hrs"
+    ),
+    dwell_category = factor(dwell_category, levels = c(
+      "No stays nearby", "<30 min", "30-60 min", "1-2 hrs", "2-8 hrs", ">8 hrs"
+    ))
+  ) |>
+  count(dwell_category) |>
+  mutate(pct = n / sum(n)) |>
+  kable(digits = 3, col.names = c("Dwell Category", "N", "Proportion"))
+```
+
+## Per-Subject Analysis
+
+```{r}
+# Which subjects have the most "missing" locations?
+subject_summary <- gt_to_stays |>
+  group_by(subid) |>
+  summarize(
+    n_gt_locations = n(),
+    n_with_stays = sum(nearest_stay_m <= 100, na.rm = TRUE),
+    n_missing = sum(nearest_stay_m > 100 | is.na(nearest_stay_m)),
+    pct_missing = n_missing / n_gt_locations,
+    .groups = "drop"
+  ) |>
+  arrange(desc(pct_missing))
+
+subject_summary |>
+  slice_head(n = 20) |>
+  kable(digits = 2, col.names = c("Subject", "GT Locations", "With Stays", "Missing", "% Missing"))
+```
+
+```{r}
+# Distribution of % missing per subject
+subject_summary |>
+  ggplot(aes(x = pct_missing)) +
+  geom_histogram(bins = 20, fill = "coral", alpha = 0.7) +
+  scale_x_continuous(labels = scales::percent) +
+  labs(
+    title = "Per-Subject: What Fraction of GT Locations Have No Nearby Stays?",
+    x = "% of GT Locations Missing from Stays",
+    y = "Number of Subjects"
+  ) +
+  theme_minimal()
+```
+
+## Summary
+
+```{r}
+# Final summary
+tibble(
+  question = c(
+    "Total GT locations",
+    "GT locations with stay within 100m",
+    "GT locations with NO stay within 100m",
+    "% of GT locations 'findable' from stays",
+    "Mean dwell time at findable locations (hrs)",
+    "GT locations with ≥2 hrs dwell (major)",
+    "GT locations with <2 hrs dwell"
+  ),
+  answer = c(
+    nrow(gt_to_stays),
+    sum(gt_to_stays$nearest_stay_m <= 100, na.rm = TRUE),
+    sum(gt_to_stays$nearest_stay_m > 100 | is.na(gt_to_stays$nearest_stay_m)),
+    paste0(round(100 * mean(gt_to_stays$nearest_stay_m <= 100, na.rm = TRUE), 1), "%"),
+    round(mean(gt_to_stays$dwell_within_100m[gt_to_stays$stays_within_100m > 0]) / 60, 1),
+    sum(gt_to_stays$dwell_within_100m >= 120),
+    sum(gt_to_stays$dwell_within_100m < 120 | gt_to_stays$stays_within_100m == 0)
+  )
+) |>
+  kable(col.names = c("Question", "Answer"))
+```
+
+## Interpretation
+
+The gap between John's algorithm and stay-based clustering likely comes from:
+
+1. **Stay detection threshold** - John's algorithm may use raw GPS pings; stays require sustained dwell time. Brief visits don't become stays.
+
+2. **Location types** - Some locations (drive-throughs, quick errands, pass-through points) don't generate stays.
+
+3. **GPS coverage gaps** - Phone off, GPS disabled, or poor signal at certain locations.
+
+4. **Temporal mismatch** - Location was identified but visited outside the GPS collection window, or the participant reported locations they *intend* to visit.
+
+**Next steps:**
+- If raw GPS is available, check whether pings exist near "missing" locations
+- Review John's algorithm: does it use raw pings or stays?
+- Consider whether "all locations" or "major locations" is the right evaluation target
+
+## Interactive EDA: Explore Individual Subjects
+
+```{r}
+library(leaflet)
+
+# Function to visualize raw GPS, stays, and GT locations for a given subject
+# Uses global data frames as defaults for easy interactive use
+map_subject <- function(subid_to_viz,
+                        stays_df = NULL,
+                        gt_df = NULL,
+                        gps_df = NULL,
+                        gt_analysis = NULL) {
+
+  # Use global defaults if not provided
+ if (is.null(stays_df)) stays_df <- stays
+  if (is.null(gt_df)) gt_df <- ground_truth_raw
+  if (is.null(gps_df)) gps_df <- gps_raw
+  if (is.null(gt_analysis)) gt_analysis <- gt_to_stays
+
+  # Filter to this subject
+  subj_stays <- stays_df |> filter(subid == subid_to_viz)
+  subj_gt <- gt_df |> filter(subid == subid_to_viz)
+  subj_gps <- gps_df |> filter(subid == subid_to_viz)
+
+  if (nrow(subj_stays) == 0 && nrow(subj_gt) == 0 && nrow(subj_gps) == 0) {
+    stop("No data for subject ", subid_to_viz)
+  }
+
+  cat("Subject", subid_to_viz, ":\n")
+  cat("  Raw GPS pings:", nrow(subj_gps), "\n")
+  cat("  Stays:", nrow(subj_stays), "\n")
+  cat("  GT locations:", nrow(subj_gt), "\n")
+
+  # If gt_analysis provided, join to get evidence categories
+  if (!is.null(gt_analysis)) {
+    subj_gt <- subj_gt |>
+      left_join(
+        gt_analysis |>
+          filter(subid == subid_to_viz) |>
+          select(lat, lon, nearest_stay_m, stays_within_100m, dwell_within_100m, evidence_category),
+        by = c("lat", "lon")
+      )
+  }
+
+  # Color GT by evidence category if available
+  if ("evidence_category" %in% names(subj_gt)) {
+    gt_colors <- case_when(
+      subj_gt$evidence_category == "Strong (≤50m)" ~ "darkgreen",
+      subj_gt$evidence_category == "Moderate (50-100m)" ~ "green",
+      subj_gt$evidence_category == "Weak (100-500m)" ~ "orange",
+      subj_gt$evidence_category == "None (>500m)" ~ "red",
+      TRUE ~ "gray"
+    )
+  } else {
+    gt_colors <- "green"
+  }
+
+  # Build map
+  map <- leaflet() |>
+    addProviderTiles(providers$CartoDB.Positron)
+
+  # Add raw GPS pings (small, semi-transparent)
+  if (nrow(subj_gps) > 0) {
+    map <- map |>
+      addCircleMarkers(
+        data = subj_gps,
+        lng = ~lon, lat = ~lat,
+        radius = 2,
+        color = "purple",
+        fillOpacity = 0.3,
+        stroke = FALSE,
+        group = "Raw GPS",
+        popup = ~paste0(
+          "Raw GPS ping<br>",
+          "Time: ", time
+        )
+      )
+  }
+
+  # Add stays
+  if (nrow(subj_stays) > 0) {
+    map <- map |>
+      addCircleMarkers(
+        data = subj_stays,
+        lng = ~lon, lat = ~lat,
+        radius = 5,
+        color = "steelblue",
+        fillOpacity = 0.6,
+        stroke = FALSE,
+        group = "Stays",
+        popup = ~paste0(
+          "Stay ID: ", stay_id, "<br>",
+          "Dwell: ", round(dwell_mins, 1), " min<br>",
+          "Time: ", start_time
+        )
+      )
+  }
+
+  # Add GT locations
+  if (nrow(subj_gt) > 0) {
+    # Build popup text
+    popup_text <- if ("evidence_category" %in% names(subj_gt)) {
+      paste0(
+        "GT Location<br>",
+        "Type: ", subj_gt$type, "<br>",
+        "Evidence: ", subj_gt$evidence_category, "<br>",
+        "Nearest stay: ", round(subj_gt$nearest_stay_m), "m<br>",
+        "Stays within 100m: ", subj_gt$stays_within_100m, "<br>",
+        "Dwell within 100m: ", round(subj_gt$dwell_within_100m / 60, 1), " hrs"
+      )
+    } else {
+      paste0("GT Location<br>Type: ", subj_gt$type)
+    }
+
+    map <- map |>
+      addCircleMarkers(
+        data = subj_gt,
+        lng = ~lon, lat = ~lat,
+        radius = 10,
+        color = gt_colors,
+        fillColor = gt_colors,
+        fillOpacity = 0.7,
+        weight = 2,
+        group = "Ground Truth",
+        popup = popup_text
+      ) |>
+      # Add 100m radius circles
+      addCircles(
+        data = subj_gt,
+        lng = ~lon, lat = ~lat,
+        radius = 100,
+        color = gt_colors,
+        fillOpacity = 0.1,
+        weight = 1,
+        group = "GT 100m Radius"
+      )
+  }
+
+  # Combine all coords for bounds
+  all_lons <- c(subj_gps$lon, subj_stays$lon, subj_gt$lon)
+  all_lats <- c(subj_gps$lat, subj_stays$lat, subj_gt$lat)
+
+  map |>
+    addLayersControl(
+      overlayGroups = c("Raw GPS", "Stays", "Ground Truth", "GT 100m Radius"),
+      options = layersControlOptions(collapsed = FALSE)
+    ) |>
+    fitBounds(
+      lng1 = min(all_lons) - 0.01,
+      lat1 = min(all_lats) - 0.01,
+      lng2 = max(all_lons) + 0.01,
+      lat2 = max(all_lats) + 0.01
+    )
+}
+```
+
+```{r}
+#| fig-height: 8
+
+# Pick a subject to explore (change this value)
+viz_subid <- 97
+
+cat("Visualizing subject:", viz_subid, "\n\n")
+
+# Diagnostic: Check data for this subject
+subj_stays_check <- stays |> filter(subid == viz_subid)
+subj_gt_check <- gt_to_stays |> filter(subid == viz_subid)
+
+cat("Stays for this subject:", nrow(subj_stays_check), "\n")
+cat("GT locations for this subject:", nrow(subj_gt_check), "\n\n")
+
+# Show GT locations with their evidence
+cat("GT locations breakdown:\n")
+subj_gt_check |>
+  select(lat, lon, nearest_stay_m, stays_within_100m, dwell_within_100m, evidence_category) |>
+  arrange(nearest_stay_m) |>
+  print(n = 20)
+```
+
+```{r}
+#| fig-height: 8
+
+map_subject(231)
+```
+
+**Legend:**
+- **Gray dots** = Raw GPS pings
+- **Blue dots** = Stay points (detected from raw GPS)
+- **Green circles** = GT locations with strong/moderate stay evidence (≤100m)
+- **Orange circles** = GT locations with weak evidence (100-500m)
+- **Red circles** = GT locations with no nearby stays (>500m)
+- **Faint rings** = 100m capture radius around GT locations
+
+Toggle layers on/off to compare: Do red GT locations have raw GPS pings nearby even without stays?

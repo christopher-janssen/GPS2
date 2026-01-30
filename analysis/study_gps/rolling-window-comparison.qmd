@@ -1,0 +1,1559 @@
+---
+title: "Rolling Window Clustering Comparison with Ground Truth"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Rolling Window Comparison
+
+This notebook compares DBSCAN vs K-means clustering performance using:
+
+1.  **Rolling windows from study onset** - How quickly does each method
+    identify stable locations?
+2.  **Ground truth validation** - How well do cluster centroids match
+    participant-validated locations?
+
+## Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+
+# Additional packages
+library(geosphere)
+library(cluster)
+library(furrr)
+
+# Set up parallel processing
+plan(multisession, workers = parallel::detectCores() - 1)
+```
+
+## Parameters
+
+```{r}
+# Clustering parameters (match existing notebooks)
+EPS_METERS <- 50      # DBSCAN distance threshold
+MIN_STAYS <- 3        # DBSCAN minimum stays per cluster (increased from 2)
+K_MAX <- 20           # K-means maximum K
+
+# Routine location filter (for DBSCAN post-processing)
+ROUTINE_MIN_DAYS <- 3     # Must be visited on at least 3 different days
+ROUTINE_MIN_DWELL <- 1    # Must have at least 1 hour total dwell time
+
+# Rolling window parameters
+WINDOW_INCREMENT <- 7  # days between windows
+
+# Ground truth matching
+CAPTURE_THRESHOLD <- 100  # meters to count as "captured"
+DEDUPE_THRESHOLD <- 50    # meters to merge duplicate ground truth locations
+DWELL_MATCH_THRESHOLD <- 100  # meters to match stays to ground truth locations
+MIN_DWELL_HOURS <- 2      # minimum total dwell time to count as "major" location
+```
+
+## Load Data
+
+### Stay-Points
+
+```{r}
+stays <- read_csv(here::here(path_gps2, "data/stays.csv"), show_col_types = FALSE)
+
+nrow(stays)
+```
+
+```{r}
+# Add study day for each participant
+stays <- stays |>
+  group_by(subid) |>
+  mutate(
+    study_start = min(start_time),
+    study_day = as.numeric(difftime(start_time, study_start, units = "days")) + 1
+  ) |>
+  ungroup()
+
+# Check
+stays |>
+  select(stay_id, subid, start_time, study_day, dwell_mins, lat, lon) |>
+  slice_head(n = 10)
+```
+
+### Ground Truth Locations
+
+```{r}
+ground_truth_raw <- read_csv(
+  here::here(path_shared, "locations.csv"),
+  show_col_types = FALSE
+)
+
+nrow(ground_truth_raw)
+```
+
+```{r}
+# Check structure
+ground_truth_raw |>
+  select(subid, lat, lon, type) |>
+  slice_head(n = 10)
+```
+
+## Prepare Ground Truth
+
+Deduplicate ground truth locations by spatial proximity, then calculate
+total dwell time at each location by matching to stays. Filter to "major"
+locations based on dwell time.
+
+### Deduplicate Locations
+
+```{r}
+# Deduplicate ground truth per subject using spatial clustering
+dedupe_locations <- function(df, threshold_m = DEDUPE_THRESHOLD) {
+  if (nrow(df) < 2) {
+    return(df |> mutate(location_id = 1))
+  }
+
+  coords <- cbind(df$lon, df$lat)
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+
+  # Use DBSCAN to merge nearby points
+  clusters <- dbscan(as.dist(dist_mat), eps = threshold_m, minPts = 1)
+
+  df |>
+    mutate(location_id = clusters$cluster) |>
+    group_by(location_id) |>
+    summarize(
+      lat = median(lat),
+      lon = median(lon),
+      n_reports = n(),
+      types = paste(unique(na.omit(type)), collapse = ", "),
+      .groups = "drop"
+    )
+}
+
+ground_truth_deduped <- ground_truth_raw |>
+  group_by(subid) |>
+  group_modify(~dedupe_locations(.x)) |>
+  ungroup()
+
+nrow(ground_truth_deduped)
+```
+
+### Calculate Dwell Time at Each Location
+
+```{r}
+# For each ground truth location, sum dwell time from nearby stays
+calculate_location_dwell <- function(gt_row, stays_df, threshold_m = DWELL_MATCH_THRESHOLD) {
+  # Get stays for this subject
+
+  subj_stays <- stays_df |> filter(subid == gt_row$subid)
+
+ if (nrow(subj_stays) == 0) {
+    return(0)
+  }
+
+  # Calculate distance from this location to all stays
+  gt_coord <- c(gt_row$lon, gt_row$lat)
+  stay_coords <- cbind(subj_stays$lon, subj_stays$lat)
+  distances <- distHaversine(gt_coord, stay_coords)
+
+  # Sum dwell time for stays within threshold
+  sum(subj_stays$dwell_mins[distances <= threshold_m])
+}
+
+# Apply to all ground truth locations
+ground_truth_with_dwell <- ground_truth_deduped |>
+  rowwise() |>
+  mutate(
+    total_dwell_mins = calculate_location_dwell(
+      pick(everything()),
+      stays,
+      threshold_m = DWELL_MATCH_THRESHOLD
+    ),
+    total_dwell_hours = total_dwell_mins / 60
+  ) |>
+  ungroup()
+
+# Check distribution
+ground_truth_with_dwell |>
+  ggplot(aes(x = total_dwell_hours)) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+  scale_x_log10(labels = scales::comma) +
+  labs(
+    title = "Distribution of Total Dwell Time at Ground Truth Locations",
+    x = "Total Dwell Time (hours, log scale)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Summary of dwell times
+ground_truth_with_dwell |>
+  summarize(
+    n_locations = n(),
+    locations_with_dwell = sum(total_dwell_mins > 0),
+    pct_with_dwell = mean(total_dwell_mins > 0),
+    mean_dwell_hours = mean(total_dwell_hours),
+    median_dwell_hours = median(total_dwell_hours),
+    max_dwell_hours = max(total_dwell_hours)
+  ) |>
+  pivot_longer(everything(), names_to = "metric", values_to = "value") |>
+  knitr::kable(digits = 2)
+```
+
+### Ground Truth Versions
+
+We'll compare clustering methods using two versions of ground truth:
+- **All locations**: Every deduplicated location from John's algorithm
+- **Major locations**: Only locations with ≥2 hours GPS dwell time
+
+```{r}
+# Version 1: All deduplicated locations (no dwell filter)
+ground_truth_all <- ground_truth_with_dwell
+
+# Version 2: Major locations only (≥2 hours dwell)
+ground_truth_major <- ground_truth_with_dwell |>
+  filter(total_dwell_hours >= MIN_DWELL_HOURS)
+
+# Summary comparison
+tibble(
+  version = c("All locations", "Major locations (≥2 hrs)"),
+  n_locations = c(nrow(ground_truth_all), nrow(ground_truth_major)),
+  n_subjects = c(n_distinct(ground_truth_all$subid), n_distinct(ground_truth_major$subid)),
+  mean_per_subject = c(
+    round(mean(ground_truth_all |> count(subid) |> pull(n)), 1),
+    round(mean(ground_truth_major |> count(subid) |> pull(n)), 1)
+  ),
+  median_per_subject = c(
+    median(ground_truth_all |> count(subid) |> pull(n)),
+    median(ground_truth_major |> count(subid) |> pull(n))
+  )
+) |>
+  knitr::kable()
+```
+
+```{r}
+# Use major locations as primary ground truth (will compare both later)
+ground_truth <- ground_truth_major
+```
+
+```{r}
+# What types of locations are in each version?
+bind_rows(
+  ground_truth_all |> mutate(version = "All"),
+  ground_truth_major |> mutate(version = "Major")
+) |>
+  separate_rows(types, sep = ", ") |>
+  filter(types != "") |>
+  count(version, types) |>
+  pivot_wider(names_from = version, values_from = n, values_fill = 0) |>
+  arrange(desc(Major)) |>
+  slice_head(n = 15) |>
+  knitr::kable()
+```
+
+## Define Rolling Windows
+
+```{r}
+# Get study duration per subject
+subject_durations <- stays |>
+  group_by(subid) |>
+  summarize(
+    max_study_day = max(study_day),
+    n_stays = n(),
+    .groups = "drop"
+  )
+
+subject_durations |>
+  ggplot(aes(x = max_study_day)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "Distribution of Study Duration",
+    x = "Days in Study",
+    y = "Number of Subjects"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Create window definitions per subject
+# Only include subjects with at least one full window
+windows <- subject_durations |>
+  filter(max_study_day >= WINDOW_INCREMENT) |>
+  rowwise() |>
+  mutate(
+    windows = list(seq(WINDOW_INCREMENT, max_study_day, by = WINDOW_INCREMENT))
+  ) |>
+  unnest(windows) |>
+  rename(window_days = windows) |>
+  select(subid, window_days)
+
+# Check
+windows |>
+  slice_head(n = 20)
+```
+
+```{r}
+# How many windows total?
+nrow(windows)
+```
+
+## Helper Functions
+
+### Clustering Functions
+
+```{r}
+# DBSCAN clustering
+run_dbscan <- function(coords, eps = EPS_METERS, min_pts = MIN_STAYS) {
+  if (nrow(coords) < 2) {
+    return(list(
+      cluster = rep(1, nrow(coords)),
+      n_clusters = 1,
+      n_noise = 0
+    ))
+  }
+
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+  result <- dbscan(as.dist(dist_mat), eps = eps, minPts = min_pts)
+
+  list(
+    cluster = result$cluster,
+    n_clusters = max(result$cluster),
+    n_noise = sum(result$cluster == 0)
+  )
+}
+
+# K-means with silhouette-based K selection (allows K=1)
+run_kmeans <- function(coords, k_max = K_MAX) {
+  n_points <- nrow(coords)
+
+  # Trivial cases
+
+  if (n_points < 2) {
+    return(list(
+      cluster = rep(1, n_points),
+      n_clusters = 1,
+      optimal_k = 1
+    ))
+  }
+
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+  k_max <- min(k_max, n_points - 1)
+
+  # Need at least 2 points for K=2
+
+  if (k_max < 2) {
+    return(list(
+      cluster = rep(1, n_points),
+      n_clusters = 1,
+      optimal_k = 1
+    ))
+  }
+
+  # Compute silhouette scores for K = 2 to k_max
+  k_range <- 2:k_max
+  sil_scores <- map_dbl(k_range, function(k) {
+    km <- pam(as.dist(dist_mat), k = k, diss = TRUE)
+    mean(silhouette(km$clustering, as.dist(dist_mat))[, 3])
+  })
+
+  best_k <- k_range[which.max(sil_scores)]
+  best_sil <- max(sil_scores)
+
+  # Heuristic: if best silhouette is weak, data may not have cluster structure
+  # Silhouette interpretation:
+  #   > 0.7: strong structure
+  #   0.5 - 0.7: reasonable structure
+  #   0.25 - 0.5: weak structure
+  #   < 0.25: no substantial structure
+  #
+  # If structure is weak, check if K=1 is more appropriate by examining
+  # whether the data is spatially compact (all points close together)
+  if (best_sil < 0.25) {
+    # Check spatial compactness: max pairwise distance
+    max_dist <- max(dist_mat)
+
+    # If all stays are within 200m of each other, treat as single location
+    # (This threshold is 4x the DBSCAN eps of 50m)
+    if (max_dist <= 200) {
+      return(list(
+        cluster = rep(1, n_points),
+        n_clusters = 1,
+        optimal_k = 1
+      ))
+    }
+  }
+
+  # Use the best K from silhouette analysis
+  km <- pam(as.dist(dist_mat), k = best_k, diss = TRUE)
+
+  list(
+    cluster = km$clustering,
+    n_clusters = best_k,
+    optimal_k = best_k
+  )
+}
+```
+
+### Centroid Calculation
+
+```{r}
+# Calculate cluster centroids with routine location metrics
+get_centroids <- function(stays_df, cluster_col) {
+  stays_df |>
+    filter(.data[[cluster_col]] > 0) |>  # Exclude noise for DBSCAN
+    group_by(.data[[cluster_col]]) |>
+    summarize(
+      lat = median(lat),
+      lon = median(lon),
+      total_dwell = sum(dwell_mins),
+      total_dwell_hrs = sum(dwell_mins) / 60,
+      n_stays = n(),
+      n_days = n_distinct(as.Date(start_time)),
+      .groups = "drop"
+    ) |>
+    rename(cluster_id = 1)
+}
+
+# Filter centroids to routine locations only
+get_routine_centroids <- function(centroids, min_days = ROUTINE_MIN_DAYS, min_dwell_hrs = ROUTINE_MIN_DWELL) {
+  centroids |>
+    filter(n_days >= min_days, total_dwell_hrs >= min_dwell_hrs)
+}
+```
+
+### Ground Truth Matching
+
+```{r}
+# Calculate precision, recall, and F1 against ground truth
+calculate_capture <- function(centroids, gt_locations, threshold_m = CAPTURE_THRESHOLD) {
+  if (nrow(centroids) == 0 || nrow(gt_locations) == 0) {
+    return(list(
+      recall = 0,
+      precision = 0,
+      f1 = 0,
+      n_captured = 0,
+      n_valid_centroids = 0,
+      n_ground_truth = nrow(gt_locations),
+      n_centroids = nrow(centroids)
+    ))
+  }
+
+  centroid_coords <- cbind(centroids$lon, centroids$lat)
+  gt_coords <- cbind(gt_locations$lon, gt_locations$lat)
+
+  # Recall: what fraction of ground truth locations have a nearby centroid?
+  captured <- 0
+  for (i in seq_len(nrow(gt_locations))) {
+    distances <- distHaversine(gt_coords[i, ], centroid_coords)
+    if (min(distances) <= threshold_m) captured <- captured + 1
+  }
+  recall <- captured / nrow(gt_locations)
+
+  # Precision: what fraction of centroids are near a ground truth location?
+  valid_centroids <- 0
+  for (i in seq_len(nrow(centroids))) {
+    distances <- distHaversine(centroid_coords[i, ], gt_coords)
+    if (min(distances) <= threshold_m) valid_centroids <- valid_centroids + 1
+  }
+  precision <- valid_centroids / nrow(centroids)
+
+  # F1 score
+  f1 <- if (precision + recall > 0) {
+    2 * (precision * recall) / (precision + recall)
+  } else {
+    0
+  }
+
+  list(
+    recall = recall,
+    precision = precision,
+    f1 = f1,
+    n_captured = captured,
+    n_valid_centroids = valid_centroids,
+    n_ground_truth = nrow(gt_locations),
+    n_centroids = nrow(centroids)
+  )
+}
+```
+
+## Run Rolling Window Analysis
+
+```{r}
+# Function to analyze a single subject-window combination
+analyze_window <- function(sub, window_days, stays, ground_truth) {
+  # Subset stays to this window
+  stays_window <- stays |>
+    filter(subid == sub, study_day <= window_days)
+
+  n_stays_window <- nrow(stays_window)
+
+  # Skip windows with too few stays
+  if (n_stays_window < 3) {
+    return(NULL)
+  }
+
+  # Get ground truth for this subject
+  gt <- ground_truth |> filter(subid == sub)
+
+  # Extract coordinates
+  coords <- cbind(stays_window$lon, stays_window$lat)
+
+  # Run DBSCAN
+  dbscan_result <- run_dbscan(coords)
+
+  # Run K-means
+  kmeans_result <- run_kmeans(coords)
+
+  # Get centroids
+  stays_with_dbscan <- stays_window |>
+    mutate(cluster_dbscan = dbscan_result$cluster)
+  stays_with_kmeans <- stays_window |>
+    mutate(cluster_kmeans = kmeans_result$cluster)
+
+  centroids_dbscan <- get_centroids(stays_with_dbscan, "cluster_dbscan")
+  centroids_kmeans <- get_centroids(stays_with_kmeans, "cluster_kmeans")
+
+  # Filter DBSCAN to routine locations only
+  centroids_dbscan_routine <- get_routine_centroids(centroids_dbscan)
+
+  # Calculate capture scores (precision, recall, F1)
+  capture_dbscan <- calculate_capture(centroids_dbscan, gt)
+  capture_dbscan_routine <- calculate_capture(centroids_dbscan_routine, gt)
+  capture_kmeans <- calculate_capture(centroids_kmeans, gt)
+
+  tibble(
+    subid = sub,
+    window_days = window_days,
+    n_stays_window = n_stays_window,
+    n_ground_truth = capture_dbscan$n_ground_truth,
+    # DBSCAN - all clusters
+    dbscan_clusters = dbscan_result$n_clusters,
+    dbscan_noise = dbscan_result$n_noise,
+    dbscan_recall = capture_dbscan$recall,
+    dbscan_precision = capture_dbscan$precision,
+    dbscan_f1 = capture_dbscan$f1,
+    dbscan_n_captured = capture_dbscan$n_captured,
+    # DBSCAN - routine locations only
+    dbscan_routine_clusters = nrow(centroids_dbscan_routine),
+    dbscan_routine_recall = capture_dbscan_routine$recall,
+    dbscan_routine_precision = capture_dbscan_routine$precision,
+    dbscan_routine_f1 = capture_dbscan_routine$f1,
+    # K-means
+    kmeans_clusters = kmeans_result$n_clusters,
+    kmeans_k = kmeans_result$optimal_k,
+    kmeans_recall = capture_kmeans$recall,
+    kmeans_precision = capture_kmeans$precision,
+    kmeans_f1 = capture_kmeans$f1,
+    kmeans_n_captured = capture_kmeans$n_captured
+  )
+}
+```
+
+```{r}
+#| cache: true
+
+# Filter to subjects with ground truth
+analysis_windows <- windows |>
+  filter(subid %in% unique(ground_truth$subid))
+
+# Run analysis in parallel
+results <- future_pmap_dfr(
+  list(
+    sub = analysis_windows$subid,
+    window_days = analysis_windows$window_days
+  ),
+  analyze_window,
+  stays = stays,
+  ground_truth = ground_truth,
+  .options = furrr_options(seed = TRUE),
+  .progress = TRUE
+)
+
+# Check
+results |>
+  slice_head(n = 20)
+```
+
+```{r}
+# Summary of results
+nrow(results)
+```
+
+## Results: Metrics Over Time
+
+### Aggregate by Window
+
+```{r}
+# Mean metrics at each window
+metrics_by_window <- results |>
+  group_by(window_days) |>
+  summarize(
+    n_subjects = n(),
+    # DBSCAN - all clusters
+    dbscan_recall_mean = mean(dbscan_recall, na.rm = TRUE),
+    dbscan_precision_mean = mean(dbscan_precision, na.rm = TRUE),
+    dbscan_f1_mean = mean(dbscan_f1, na.rm = TRUE),
+    dbscan_clusters_mean = mean(dbscan_clusters, na.rm = TRUE),
+    # DBSCAN - routine only
+    dbscan_routine_recall_mean = mean(dbscan_routine_recall, na.rm = TRUE),
+    dbscan_routine_precision_mean = mean(dbscan_routine_precision, na.rm = TRUE),
+    dbscan_routine_f1_mean = mean(dbscan_routine_f1, na.rm = TRUE),
+    dbscan_routine_clusters_mean = mean(dbscan_routine_clusters, na.rm = TRUE),
+    # K-means
+    kmeans_recall_mean = mean(kmeans_recall, na.rm = TRUE),
+    kmeans_precision_mean = mean(kmeans_precision, na.rm = TRUE),
+    kmeans_f1_mean = mean(kmeans_f1, na.rm = TRUE),
+    kmeans_clusters_mean = mean(kmeans_clusters, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+metrics_by_window |>
+  select(window_days, n_subjects,
+         dbscan_f1_mean, dbscan_routine_f1_mean, kmeans_f1_mean,
+         dbscan_clusters_mean, dbscan_routine_clusters_mean, kmeans_clusters_mean) |>
+  slice_head(n = 15) |>
+  knitr::kable(digits = 3)
+```
+
+### Recall Over Time (3-Way Comparison)
+
+```{r}
+metrics_by_window |>
+  pivot_longer(
+    cols = c(dbscan_recall_mean, dbscan_routine_recall_mean, kmeans_recall_mean),
+    names_to = "method",
+    values_to = "recall"
+  ) |>
+  mutate(method = case_when(
+    method == "dbscan_recall_mean" ~ "DBSCAN (all)",
+    method == "dbscan_routine_recall_mean" ~ "DBSCAN (routine)",
+    method == "kmeans_recall_mean" ~ "K-means"
+  )) |>
+  ggplot(aes(x = window_days, y = recall, color = method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 0.8, linetype = "dashed", alpha = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_color_manual(values = c("DBSCAN (all)" = "coral",
+                                 "DBSCAN (routine)" = "darkred",
+                                 "K-means" = "steelblue")) +
+  labs(
+    title = "Recall Over Time",
+    subtitle = "What fraction of ground truth locations were captured?",
+    x = "Days from Study Onset",
+    y = "Recall",
+    color = "Method"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+### Precision Over Time (3-Way Comparison)
+
+```{r}
+metrics_by_window |>
+  pivot_longer(
+    cols = c(dbscan_precision_mean, dbscan_routine_precision_mean, kmeans_precision_mean),
+    names_to = "method",
+    values_to = "precision"
+  ) |>
+  mutate(method = case_when(
+    method == "dbscan_precision_mean" ~ "DBSCAN (all)",
+    method == "dbscan_routine_precision_mean" ~ "DBSCAN (routine)",
+    method == "kmeans_precision_mean" ~ "K-means"
+  )) |>
+  ggplot(aes(x = window_days, y = precision, color = method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_color_manual(values = c("DBSCAN (all)" = "coral",
+                                 "DBSCAN (routine)" = "darkred",
+                                 "K-means" = "steelblue")) +
+  labs(
+    title = "Precision Over Time",
+    subtitle = "What fraction of clusters matched a ground truth location?",
+    x = "Days from Study Onset",
+    y = "Precision",
+    color = "Method"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+### F1 Score Over Time (3-Way Comparison)
+
+```{r}
+metrics_by_window |>
+  pivot_longer(
+    cols = c(dbscan_f1_mean, dbscan_routine_f1_mean, kmeans_f1_mean),
+    names_to = "method",
+    values_to = "f1"
+  ) |>
+  mutate(method = case_when(
+    method == "dbscan_f1_mean" ~ "DBSCAN (all)",
+    method == "dbscan_routine_f1_mean" ~ "DBSCAN (routine)",
+    method == "kmeans_f1_mean" ~ "K-means"
+  )) |>
+  ggplot(aes(x = window_days, y = f1, color = method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_color_manual(values = c("DBSCAN (all)" = "coral",
+                                 "DBSCAN (routine)" = "darkred",
+                                 "K-means" = "steelblue")) +
+  labs(
+    title = "F1 Score Over Time",
+    subtitle = "Harmonic mean of precision and recall",
+    x = "Days from Study Onset",
+    y = "F1 Score",
+    color = "Method"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+### Cluster Count Over Time (3-Way Comparison)
+
+```{r}
+metrics_by_window |>
+  pivot_longer(
+    cols = c(dbscan_clusters_mean, dbscan_routine_clusters_mean, kmeans_clusters_mean),
+    names_to = "method",
+    values_to = "clusters"
+  ) |>
+  mutate(method = case_when(
+    method == "dbscan_clusters_mean" ~ "DBSCAN (all)",
+    method == "dbscan_routine_clusters_mean" ~ "DBSCAN (routine)",
+    method == "kmeans_clusters_mean" ~ "K-means"
+  )) |>
+  ggplot(aes(x = window_days, y = clusters, color = method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("DBSCAN (all)" = "coral",
+                                 "DBSCAN (routine)" = "darkred",
+                                 "K-means" = "steelblue")) +
+  labs(
+    title = "Cluster Count Over Time",
+    subtitle = "Routine filter: 3+ days visited, 1+ hour total dwell",
+    x = "Days from Study Onset",
+    y = "Mean Number of Clusters",
+    color = "Method"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+### Days to 80% Recall
+
+```{r}
+# For each subject, find first window where recall >= 80%
+days_to_80 <- results |>
+  group_by(subid) |>
+  summarize(
+    dbscan_days = min(window_days[dbscan_recall >= 0.8], na.rm = TRUE),
+    dbscan_routine_days = min(window_days[dbscan_routine_recall >= 0.8], na.rm = TRUE),
+    kmeans_days = min(window_days[kmeans_recall >= 0.8], na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    dbscan_days = if_else(is.infinite(dbscan_days), NA_real_, dbscan_days),
+    dbscan_routine_days = if_else(is.infinite(dbscan_routine_days), NA_real_, dbscan_routine_days),
+    kmeans_days = if_else(is.infinite(kmeans_days), NA_real_, kmeans_days)
+  )
+
+# Summary table
+tibble(
+  method = c("DBSCAN (all)", "DBSCAN (routine)", "K-means"),
+  subjects_reaching_80 = c(
+    sum(!is.na(days_to_80$dbscan_days)),
+    sum(!is.na(days_to_80$dbscan_routine_days)),
+    sum(!is.na(days_to_80$kmeans_days))
+  ),
+  mean_days = c(
+    round(mean(days_to_80$dbscan_days, na.rm = TRUE), 1),
+    round(mean(days_to_80$dbscan_routine_days, na.rm = TRUE), 1),
+    round(mean(days_to_80$kmeans_days, na.rm = TRUE), 1)
+  ),
+  median_days = c(
+    round(median(days_to_80$dbscan_days, na.rm = TRUE), 1),
+    round(median(days_to_80$dbscan_routine_days, na.rm = TRUE), 1),
+    round(median(days_to_80$kmeans_days, na.rm = TRUE), 1)
+  )
+) |>
+  knitr::kable(col.names = c("Method", "Subjects Reaching 80%", "Mean Days", "Median Days"))
+```
+
+```{r}
+# Distribution of days to 80% recall
+days_to_80 |>
+  pivot_longer(
+    cols = c(dbscan_days, dbscan_routine_days, kmeans_days),
+    names_to = "method",
+    values_to = "days"
+  ) |>
+  filter(!is.na(days)) |>
+  mutate(method = case_when(
+    method == "dbscan_days" ~ "DBSCAN (all)",
+    method == "dbscan_routine_days" ~ "DBSCAN (routine)",
+    method == "kmeans_days" ~ "K-means"
+  )) |>
+  ggplot(aes(x = days, fill = method)) +
+  geom_histogram(bins = 20, alpha = 0.6, position = "identity") +
+  scale_fill_manual(values = c("DBSCAN (all)" = "coral",
+                                "DBSCAN (routine)" = "darkred",
+                                "K-means" = "steelblue")) +
+  labs(
+    title = "Days to Reach 80% Recall",
+    x = "Days from Study Onset",
+    y = "Number of Subjects",
+    fill = "Method"
+  ) +
+  theme_minimal()
+```
+
+## Results: Cluster Stability
+
+### Noise Points (DBSCAN only)
+
+```{r}
+results |>
+  group_by(window_days) |>
+  summarize(
+    noise_pct = mean(dbscan_noise / n_stays_window, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  ggplot(aes(x = window_days, y = noise_pct)) +
+  geom_line(linewidth = 1, color = "coral") +
+  geom_point(size = 2, color = "coral") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "DBSCAN Noise Point Percentage Over Time",
+    x = "Days from Study Onset",
+    y = "Percentage of Stays Marked as Noise"
+  ) +
+  theme_minimal()
+```
+
+## Summary Comparison
+
+```{r}
+# Final window comparison (full study duration)
+final_results <- results |>
+  group_by(subid) |>
+  filter(window_days == max(window_days)) |>
+  ungroup()
+
+# 3-way comparison table
+tibble(
+  method = c("DBSCAN (all)", "DBSCAN (routine)", "K-means"),
+  mean_f1 = c(
+    paste0(round(mean(final_results$dbscan_f1) * 100, 1), "%"),
+    paste0(round(mean(final_results$dbscan_routine_f1) * 100, 1), "%"),
+    paste0(round(mean(final_results$kmeans_f1) * 100, 1), "%")
+  ),
+  mean_recall = c(
+    paste0(round(mean(final_results$dbscan_recall) * 100, 1), "%"),
+    paste0(round(mean(final_results$dbscan_routine_recall) * 100, 1), "%"),
+    paste0(round(mean(final_results$kmeans_recall) * 100, 1), "%")
+  ),
+  mean_precision = c(
+    paste0(round(mean(final_results$dbscan_precision) * 100, 1), "%"),
+    paste0(round(mean(final_results$dbscan_routine_precision) * 100, 1), "%"),
+    paste0(round(mean(final_results$kmeans_precision) * 100, 1), "%")
+  ),
+  mean_clusters = c(
+    round(mean(final_results$dbscan_clusters), 1),
+    round(mean(final_results$dbscan_routine_clusters), 1),
+    round(mean(final_results$kmeans_clusters), 1)
+  )
+) |>
+  knitr::kable(col.names = c("Method", "Mean F1", "Mean Recall", "Mean Precision", "Mean Clusters"))
+```
+
+```{r}
+# Pairwise F1 comparison: both DBSCAN variants vs K-means
+final_results |>
+  pivot_longer(
+    cols = c(dbscan_f1, dbscan_routine_f1),
+    names_to = "dbscan_variant",
+    values_to = "dbscan_score"
+  ) |>
+  mutate(dbscan_variant = if_else(dbscan_variant == "dbscan_f1",
+                                   "DBSCAN (all)", "DBSCAN (routine)")) |>
+  ggplot(aes(x = kmeans_f1, y = dbscan_score, color = dbscan_variant)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray40") +
+  scale_x_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_color_manual(values = c("DBSCAN (all)" = "coral", "DBSCAN (routine)" = "darkred")) +
+  labs(
+    title = "F1 Score: DBSCAN vs K-means",
+    subtitle = "Points above the line = DBSCAN performed better",
+    x = "K-means F1 Score",
+    y = "DBSCAN F1 Score",
+    color = "DBSCAN Variant"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+# Pairwise recall comparison: both DBSCAN variants vs K-means
+final_results |>
+  pivot_longer(
+    cols = c(dbscan_recall, dbscan_routine_recall),
+    names_to = "dbscan_variant",
+    values_to = "dbscan_score"
+  ) |>
+  mutate(dbscan_variant = if_else(dbscan_variant == "dbscan_recall",
+                                   "DBSCAN (all)", "DBSCAN (routine)")) |>
+  ggplot(aes(x = kmeans_recall, y = dbscan_score, color = dbscan_variant)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray40") +
+  scale_x_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_color_manual(values = c("DBSCAN (all)" = "coral", "DBSCAN (routine)" = "darkred")) +
+  labs(
+    title = "Recall: DBSCAN vs K-means",
+    subtitle = "Points above the line = DBSCAN performed better",
+    x = "K-means Recall",
+    y = "DBSCAN Recall",
+    color = "DBSCAN Variant"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+# Effect of routine filter on DBSCAN
+final_results |>
+  ggplot(aes(x = dbscan_f1, y = dbscan_routine_f1)) +
+  geom_point(alpha = 0.6, color = "darkred") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray40") +
+  scale_x_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "Effect of Routine Filter on DBSCAN F1",
+    subtitle = "Points above line = routine filter improved F1; below = reduced F1",
+    x = "DBSCAN (all) F1 Score",
+    y = "DBSCAN (routine) F1 Score"
+  ) +
+  theme_minimal()
+```
+
+## Sensitivity Analysis: Ground Truth Filtering
+
+Does filtering ground truth to major locations (≥2 hrs dwell) affect the comparison?
+We re-run the final window analysis using all deduplicated locations.
+
+```{r}
+#| cache: true
+
+# Re-run analysis with ALL ground truth locations (no dwell filter)
+# Only need final window for each subject
+final_windows <- stays |>
+  group_by(subid) |>
+  summarize(max_day = max(study_day), .groups = "drop") |>
+  filter(subid %in% unique(ground_truth_all$subid))
+
+results_all_gt <- future_pmap_dfr(
+  list(
+    sub = final_windows$subid,
+    window_days = final_windows$max_day
+  ),
+  analyze_window,
+  stays = stays,
+  ground_truth = ground_truth_all,  # Use ALL locations
+  .options = furrr_options(seed = TRUE),
+  .progress = TRUE
+)
+```
+
+```{r}
+# Compare results: Major locations GT vs All locations GT
+comparison <- tibble(
+  ground_truth_version = c(
+    rep("Major locations (≥2 hrs)", 3),
+    rep("All locations", 3)
+  ),
+  method = rep(c("DBSCAN (all)", "DBSCAN (routine)", "K-means"), 2),
+  mean_f1 = c(
+    mean(final_results$dbscan_f1),
+    mean(final_results$dbscan_routine_f1),
+    mean(final_results$kmeans_f1),
+    mean(results_all_gt$dbscan_f1),
+    mean(results_all_gt$dbscan_routine_f1),
+    mean(results_all_gt$kmeans_f1)
+  ),
+  mean_recall = c(
+    mean(final_results$dbscan_recall),
+    mean(final_results$dbscan_routine_recall),
+    mean(final_results$kmeans_recall),
+    mean(results_all_gt$dbscan_recall),
+    mean(results_all_gt$dbscan_routine_recall),
+    mean(results_all_gt$kmeans_recall)
+  ),
+  mean_precision = c(
+    mean(final_results$dbscan_precision),
+    mean(final_results$dbscan_routine_precision),
+    mean(final_results$kmeans_precision),
+    mean(results_all_gt$dbscan_precision),
+    mean(results_all_gt$dbscan_routine_precision),
+    mean(results_all_gt$kmeans_precision)
+  )
+)
+
+comparison |>
+  mutate(
+    mean_f1 = paste0(round(mean_f1 * 100, 1), "%"),
+    mean_recall = paste0(round(mean_recall * 100, 1), "%"),
+    mean_precision = paste0(round(mean_precision * 100, 1), "%")
+  ) |>
+  pivot_wider(
+    names_from = ground_truth_version,
+    values_from = c(mean_f1, mean_recall, mean_precision)
+  ) |>
+  select(method, starts_with("mean_f1"), starts_with("mean_recall"), starts_with("mean_precision")) |>
+  knitr::kable(col.names = c("Method", "F1 (Major)", "F1 (All)", "Recall (Major)", "Recall (All)", "Precision (Major)", "Precision (All)"))
+```
+
+```{r}
+# Visualize the comparison
+comparison |>
+  ggplot(aes(x = method, y = mean_f1, fill = ground_truth_version)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_fill_manual(values = c("Major locations (≥2 hrs)" = "steelblue", "All locations" = "coral")) +
+  labs(
+    title = "Method Comparison: Effect of Ground Truth Filtering",
+    subtitle = "Does filtering to major locations change which method wins?",
+    x = "Clustering Method",
+    y = "Mean F1 Score",
+    fill = "Ground Truth"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+# Summary: Does the winner change?
+winner_major <- comparison |>
+  filter(ground_truth_version == "Major locations (≥2 hrs)") |>
+  slice_max(mean_f1) |>
+  pull(method)
+
+winner_all <- comparison |>
+  filter(ground_truth_version == "All locations") |>
+  slice_max(mean_f1) |>
+  pull(method)
+
+cat("Winner with major locations GT:", winner_major, "\n")
+cat("Winner with all locations GT:", winner_all, "\n")
+cat("\nConclusion:", if (winner_major == winner_all) {
+  "Same winner regardless of GT filtering. Simpler approach (no filter) is fine."
+} else {
+  "Different winners - GT filtering affects conclusions. Investigate further."
+}, "\n")
+```
+
+## Interactive EDA Map
+
+Visualize stays, clusters, and ground truth for individual subjects.
+
+```{r}
+library(leaflet)
+```
+
+```{r}
+# Select a subject to visualize (change this to explore different subjects)
+# Subjects with interesting patterns from diagnostics:
+#   - subid 6: 22 GT locations, DBSCAN found 50 clusters, K-means only 5
+#   - subid 5: 7 GT locations, DBSCAN found 47 clusters
+#   - subid 7: 15 GT locations, big gap between methods
+
+viz_subid <- 6
+
+# Get data for this subject
+viz_stays <- stays |> filter(subid == viz_subid)
+viz_gt <- ground_truth |> filter(subid == viz_subid)
+
+# Run clustering on full study data for this subject
+viz_coords <- cbind(viz_stays$lon, viz_stays$lat)
+
+viz_dbscan <- run_dbscan(viz_coords)
+viz_kmeans <- run_kmeans(viz_coords)
+
+# Add cluster assignments to stays
+viz_stays <- viz_stays |>
+  mutate(
+    dbscan_cluster = viz_dbscan$cluster,
+    kmeans_cluster = viz_kmeans$cluster
+  )
+
+# Calculate centroids (with routine location metrics)
+viz_centroids_dbscan <- viz_stays |>
+  filter(dbscan_cluster > 0) |>
+  group_by(dbscan_cluster) |>
+  summarize(
+    lat = median(lat),
+    lon = median(lon),
+    n_stays = n(),
+    n_days = n_distinct(as.Date(start_time)),
+    total_dwell_hrs = sum(dwell_mins) / 60,
+    .groups = "drop"
+  )
+
+# Filter to routine locations only
+viz_centroids_dbscan_routine <- viz_centroids_dbscan |>
+  filter(n_days >= ROUTINE_MIN_DAYS, total_dwell_hrs >= ROUTINE_MIN_DWELL)
+
+viz_centroids_kmeans <- viz_stays |>
+  group_by(kmeans_cluster) |>
+  summarize(
+    lat = median(lat),
+    lon = median(lon),
+    n_stays = n(),
+    total_dwell_hrs = sum(dwell_mins) / 60,
+    .groups = "drop"
+  )
+
+# Summary
+cat("Subject:", viz_subid, "\n")
+cat("Total stays:", nrow(viz_stays), "\n")
+cat("Ground truth locations:", nrow(viz_gt), "\n")
+cat("DBSCAN clusters:", viz_dbscan$n_clusters, "(", viz_dbscan$n_noise, "noise points)\n")
+cat("DBSCAN routine locations:", nrow(viz_centroids_dbscan_routine), "\n")
+cat("K-means K:", viz_kmeans$optimal_k, "\n")
+```
+
+```{r}
+#| fig-height: 8
+
+# Create color palettes
+dbscan_pal <- colorFactor(
+  palette = "Set1",
+  domain = viz_stays$dbscan_cluster[viz_stays$dbscan_cluster > 0]
+)
+
+kmeans_pal <- colorFactor(
+  palette = "Set2",
+  domain = viz_stays$kmeans_cluster
+)
+
+# Build the map
+leaflet() |>
+  addProviderTiles(providers$CartoDB.Positron) |>
+
+ # Stay points colored by DBSCAN cluster
+  addCircleMarkers(
+    data = viz_stays |> filter(dbscan_cluster > 0),
+    lng = ~lon, lat = ~lat,
+    radius = 4,
+    color = ~dbscan_pal(dbscan_cluster),
+    fillOpacity = 0.6,
+    stroke = FALSE,
+    group = "Stays (DBSCAN)",
+    popup = ~paste0(
+      "Stay ID: ", stay_id, "<br>",
+      "DBSCAN Cluster: ", dbscan_cluster, "<br>",
+      "Dwell: ", round(dwell_mins, 1), " min<br>",
+      "Time: ", start_time
+    )
+  ) |>
+
+  # Noise points (DBSCAN)
+  addCircleMarkers(
+    data = viz_stays |> filter(dbscan_cluster == 0),
+    lng = ~lon, lat = ~lat,
+    radius = 3,
+    color = "gray",
+    fillOpacity = 0.4,
+    stroke = FALSE,
+    group = "Stays (DBSCAN)",
+    popup = ~paste0("NOISE<br>Dwell: ", round(dwell_mins, 1), " min")
+  ) |>
+
+  # Stay points colored by K-means cluster
+  addCircleMarkers(
+    data = viz_stays,
+    lng = ~lon, lat = ~lat,
+    radius = 4,
+    color = ~kmeans_pal(kmeans_cluster),
+    fillOpacity = 0.6,
+    stroke = FALSE,
+    group = "Stays (K-means)",
+    popup = ~paste0(
+      "Stay ID: ", stay_id, "<br>",
+      "K-means Cluster: ", kmeans_cluster, "<br>",
+      "Dwell: ", round(dwell_mins, 1), " min"
+    )
+  ) |>
+
+  # DBSCAN centroids (all)
+  addCircleMarkers(
+    data = viz_centroids_dbscan,
+    lng = ~lon, lat = ~lat,
+    radius = 8,
+    color = "coral",
+    fillColor = "coral",
+    fillOpacity = 0.8,
+    weight = 2,
+    group = "DBSCAN Centroids (all)",
+    popup = ~paste0(
+      "DBSCAN Cluster: ", dbscan_cluster, "<br>",
+      "Stays: ", n_stays, "<br>",
+      "Days visited: ", n_days, "<br>",
+      "Total dwell: ", round(total_dwell_hrs, 1), " hrs"
+    )
+  ) |>
+
+  # DBSCAN routine centroids (filtered)
+  addCircleMarkers(
+    data = viz_centroids_dbscan_routine,
+    lng = ~lon, lat = ~lat,
+    radius = 10,
+    color = "darkred",
+    fillColor = "darkred",
+    fillOpacity = 0.9,
+    weight = 3,
+    group = "DBSCAN Centroids (routine)",
+    popup = ~paste0(
+      "DBSCAN Routine Location<br>",
+      "Cluster: ", dbscan_cluster, "<br>",
+      "Stays: ", n_stays, "<br>",
+      "Days visited: ", n_days, "<br>",
+      "Total dwell: ", round(total_dwell_hrs, 1), " hrs"
+    )
+  ) |>
+
+  # K-means centroids
+  addCircleMarkers(
+    data = viz_centroids_kmeans,
+    lng = ~lon, lat = ~lat,
+    radius = 8,
+    color = "blue",
+    fillColor = "blue",
+    fillOpacity = 0.8,
+    weight = 2,
+    group = "K-means Centroids",
+    popup = ~paste0(
+      "K-means Cluster: ", kmeans_cluster, "<br>",
+      "Stays: ", n_stays, "<br>",
+      "Total dwell: ", round(total_dwell_hrs, 1), " hrs"
+    )
+  ) |>
+
+  # Ground truth locations
+addCircleMarkers(
+    data = viz_gt,
+    lng = ~lon, lat = ~lat,
+    radius = 10,
+    color = "darkgreen",
+    fillColor = "green",
+    fillOpacity = 0.7,
+    weight = 3,
+    group = "Ground Truth",
+    popup = ~paste0(
+      "Ground Truth<br>",
+      "Type: ", types, "<br>",
+      "Dwell: ", round(total_dwell_hours, 1), " hrs"
+    )
+  ) |>
+
+  # 50m buffer around ground truth (capture threshold = 100m, but show tighter)
+  addCircles(
+    data = viz_gt,
+    lng = ~lon, lat = ~lat,
+    radius = 100,  # 100m capture threshold
+    color = "green",
+    fillOpacity = 0.1,
+    weight = 1,
+    group = "GT Capture Radius (100m)"
+  ) |>
+
+  # Layer controls
+  addLayersControl(
+    overlayGroups = c(
+      "Stays (DBSCAN)",
+      "Stays (K-means)",
+      "DBSCAN Centroids (all)",
+      "DBSCAN Centroids (routine)",
+      "K-means Centroids",
+      "Ground Truth",
+      "GT Capture Radius (100m)"
+    ),
+    options = layersControlOptions(collapsed = FALSE)
+  ) |>
+
+  # Start with routine centroids + ground truth visible
+  hideGroup("Stays (DBSCAN)") |>
+  hideGroup("Stays (K-means)") |>
+  hideGroup("DBSCAN Centroids (all)") |>
+  hideGroup("K-means Centroids") |>
+
+  # Fit bounds to data
+ fitBounds(
+    lng1 = min(viz_stays$lon) - 0.01,
+    lat1 = min(viz_stays$lat) - 0.01,
+    lng2 = max(viz_stays$lon) + 0.01,
+    lat2 = max(viz_stays$lat) + 0.01
+  )
+```
+
+```{r}
+# Quick summary: which ground truth locations are captured by each method?
+cat("\n--- Ground Truth Capture Analysis ---\n\n")
+
+for (i in seq_len(nrow(viz_gt))) {
+  gt_coord <- c(viz_gt$lon[i], viz_gt$lat[i])
+
+  # Distance to nearest DBSCAN centroid
+  if (nrow(viz_centroids_dbscan) > 0) {
+    dbscan_dists <- distHaversine(gt_coord, cbind(viz_centroids_dbscan$lon, viz_centroids_dbscan$lat))
+    dbscan_min <- min(dbscan_dists)
+    dbscan_captured <- dbscan_min <= 100
+  } else {
+    dbscan_min <- Inf
+    dbscan_captured <- FALSE
+  }
+
+  # Distance to nearest K-means centroid
+  kmeans_dists <- distHaversine(gt_coord, cbind(viz_centroids_kmeans$lon, viz_centroids_kmeans$lat))
+  kmeans_min <- min(kmeans_dists)
+  kmeans_captured <- kmeans_min <= 100
+
+  cat(sprintf("GT %d (%s): DBSCAN %s (%.0fm), K-means %s (%.0fm)\n",
+              i,
+              substr(viz_gt$types[i], 1, 15),
+              ifelse(dbscan_captured, "✓", "✗"),
+              dbscan_min,
+              ifelse(kmeans_captured, "✓", "✗"),
+              kmeans_min))
+}
+```
+
+## Diagnostics
+
+### Sample Size by Window
+
+```{r}
+# Check N at each window - are late windows reliable?
+metrics_by_window |>
+  ggplot(aes(x = window_days, y = n_subjects)) +
+  geom_col(fill = "steelblue", alpha = 0.7) +
+  geom_hline(yintercept = 20, linetype = "dashed", color = "red") +
+  labs(
+    title = "Sample Size at Each Window",
+    subtitle = "Red line = N=20 threshold for reliability",
+    x = "Days from Study Onset",
+    y = "Number of Subjects"
+  ) +
+  theme_minimal()
+```
+
+### K-means K Selection Distribution
+
+```{r}
+# What K values is PAM actually choosing?
+results |>
+  ggplot(aes(x = kmeans_k)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "Distribution of Selected K Values (PAM)",
+    x = "Optimal K",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# K selection over time
+results |>
+  group_by(window_days) |>
+  summarize(
+    mean_k = mean(kmeans_k),
+    median_k = median(kmeans_k),
+    mean_dbscan_clusters = mean(dbscan_clusters),
+    n = n(),
+    .groups = "drop"
+  ) |>
+  filter(n >= 20) |>  # Only windows with adequate N
+  pivot_longer(cols = c(mean_k, mean_dbscan_clusters), names_to = "method", values_to = "clusters") |>
+  mutate(method = if_else(method == "mean_k", "K-means (K)", "DBSCAN")) |>
+  ggplot(aes(x = window_days, y = clusters, color = method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Cluster Count Over Time (N >= 20 only)",
+    x = "Days from Study Onset",
+    y = "Mean Number of Clusters",
+    color = "Method"
+  ) +
+  theme_minimal()
+```
+
+### Ground Truth vs Detected Clusters
+
+```{r}
+# Compare number of ground truth locations to clusters found
+final_results |>
+  select(subid, n_ground_truth, dbscan_clusters, kmeans_clusters) |>
+  pivot_longer(cols = c(dbscan_clusters, kmeans_clusters),
+               names_to = "method", values_to = "n_clusters") |>
+  mutate(method = if_else(method == "dbscan_clusters", "DBSCAN", "K-means")) |>
+  ggplot(aes(x = n_ground_truth, y = n_clusters, color = method)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  facet_wrap(~method) +
+  labs(
+    title = "Ground Truth Locations vs Clusters Found",
+    subtitle = "Points on dashed line = perfect match; above = over-clustering",
+    x = "Number of Ground Truth Locations",
+    y = "Number of Clusters Found"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+# Ratio of clusters to ground truth
+final_results |>
+  mutate(
+    dbscan_ratio = dbscan_clusters / n_ground_truth,
+    kmeans_ratio = kmeans_clusters / n_ground_truth
+  ) |>
+  select(subid, dbscan_ratio, kmeans_ratio) |>
+  pivot_longer(cols = c(dbscan_ratio, kmeans_ratio),
+               names_to = "method", values_to = "ratio") |>
+  mutate(method = if_else(method == "dbscan_ratio", "DBSCAN", "K-means")) |>
+  ggplot(aes(x = ratio, fill = method)) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  labs(
+    title = "Cluster-to-Ground-Truth Ratio",
+    subtitle = "Ratio = 1 means same count as ground truth; >1 = over-clustering",
+    x = "Ratio (Clusters / Ground Truth Locations)",
+    y = "Count",
+    fill = "Method"
+  ) +
+  theme_minimal()
+```
+
+### Why is K-means Missing Locations?
+
+```{r}
+# For subjects where DBSCAN recall >> K-means recall, what's different?
+recall_gap <- final_results |>
+  mutate(recall_diff = dbscan_recall - kmeans_recall) |>
+  arrange(desc(recall_diff))
+
+# Summary of cases where DBSCAN does much better
+recall_gap |>
+  filter(recall_diff > 0.3) |>
+  summarize(
+    n_subjects = n(),
+    mean_gt_locations = mean(n_ground_truth),
+    mean_dbscan_clusters = mean(dbscan_clusters),
+    mean_kmeans_k = mean(kmeans_k),
+    mean_kmeans_recall = mean(kmeans_recall),
+    mean_dbscan_recall = mean(dbscan_recall)
+  ) |>
+  pivot_longer(everything(), names_to = "metric", values_to = "value") |>
+  knitr::kable(digits = 2)
+```
+
+```{r}
+# Is K-means choosing K too low?
+final_results |>
+  mutate(
+    k_vs_gt = kmeans_k - n_ground_truth,
+    k_category = case_when(
+      k_vs_gt < -2 ~ "K << GT (under)",
+      k_vs_gt > 2 ~ "K >> GT (over)",
+      TRUE ~ "K ≈ GT"
+    )
+  ) |>
+  group_by(k_category) |>
+  summarize(
+    n = n(),
+    mean_kmeans_recall = mean(kmeans_recall),
+    mean_kmeans_precision = mean(kmeans_precision),
+    .groups = "drop"
+  ) |>
+  knitr::kable(digits = 2)
+```
+
+### DBSCAN Fragmentation Check
+
+```{r}
+# Are multiple DBSCAN clusters matching the same ground truth location?
+# This would indicate over-fragmentation
+
+# We need to recompute with more detail - sample a few subjects
+sample_subs <- final_results |>
+  filter(dbscan_clusters > n_ground_truth * 2) |>  # Subjects with lots of clusters
+  slice_head(n = 5) |>
+  pull(subid)
+
+if (length(sample_subs) > 0) {
+  cat("Subjects with DBSCAN clusters > 2x ground truth:\n")
+  final_results |>
+    filter(subid %in% sample_subs) |>
+    select(subid, n_ground_truth, dbscan_clusters, kmeans_k, dbscan_recall, kmeans_recall) |>
+    knitr::kable(digits = 2)
+}
+```
+
+### Reliability Check: Filter to N >= 20
+
+```{r}
+# Redo the main comparison excluding unreliable late windows
+reliable_windows <- metrics_by_window |>
+  filter(n_subjects >= 20) |>
+  pull(window_days)
+
+cat("Reliable windows (N >= 20):", min(reliable_windows), "to", max(reliable_windows), "days\n")
+cat("Excluding windows:", setdiff(metrics_by_window$window_days, reliable_windows), "\n")
+```
+
+```{r}
+# F1 plot with only reliable windows
+metrics_by_window |>
+  filter(n_subjects >= 20) |>
+  pivot_longer(
+    cols = c(dbscan_f1_mean, kmeans_f1_mean),
+    names_to = "method",
+    values_to = "f1"
+  ) |>
+  mutate(method = if_else(method == "dbscan_f1_mean", "DBSCAN", "K-means")) |>
+  ggplot(aes(x = window_days, y = f1, color = method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "F1 Score Over Time (Reliable Windows Only, N >= 20)",
+    x = "Days from Study Onset",
+    y = "F1 Score",
+    color = "Method"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+## Save Results
+
+```{r}
+write_csv(results, here::here(path_gps2, "data/rolling_window_comparison.csv"))
+```
+
+```{r}
+# Save summary by window
+write_csv(metrics_by_window, here::here(path_gps2, "data/metrics_by_window.csv"))
+```

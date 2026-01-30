@@ -46,7 +46,7 @@ library(leaflet)
 ```{r}
 # DBSCAN clustering parameters
 EPS_METERS <- 50      # distance threshold (same location)
-MIN_STAYS <- 1        # minimum stays to form cluster
+MIN_STAYS <- 2       # minimum stays to form cluster
 ```
 
 ## Load Stay-Points
@@ -112,18 +112,34 @@ stays_clustered |>
 tibble(
   metric = c(
     "Total stays",
+    "Subjects clustered",
     "Stays in clusters",
     "Noise stays (cluster 0)",
-    "Unique clusters (all subjects)"
+    "Noise percentage",
+    "Unique clusters (all subjects)",
+    "Mean clusters per subject",
+    "Median clusters per subject"
   ),
   value = c(
     nrow(stays_clustered),
+    n_distinct(stays_clustered$subid),
     nrow(stays_clustered |> filter(cluster_id > 0)),
     nrow(stays_clustered |> filter(cluster_id == 0)),
+    paste0(round(100 * nrow(stays_clustered |> filter(cluster_id == 0)) / nrow(stays_clustered), 1), "%"),
     stays_clustered |>
       filter(cluster_id > 0) |>
       distinct(subid, cluster_id) |>
-      nrow()
+      nrow(),
+    round(mean(stays_clustered |>
+                 filter(cluster_id > 0) |>
+                 group_by(subid) |>
+                 summarize(n = n_distinct(cluster_id)) |>
+                 pull(n)), 1),
+    median(stays_clustered |>
+             filter(cluster_id > 0) |>
+             group_by(subid) |>
+             summarize(n = n_distinct(cluster_id)) |>
+             pull(n))
   )
 ) |>
   knitr::kable()
@@ -215,7 +231,7 @@ cluster_summary |>
 
 ```{r}
 # Visualize clusters for a single subject
-sample_subject_id <- stays_clustered |> pull(subid) |> last()
+sample_subject_id <- 10
 
 sample_stays <- stays_clustered |>
   filter(subid == sample_subject_id)

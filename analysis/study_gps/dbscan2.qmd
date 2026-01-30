@@ -1,0 +1,163 @@
+---
+title: "dbscan_gt"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+## Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+theme_set(theme_bw())
+```
+
+## Load Data
+
+```{r}
+study_dates <- read_csv(here::here(path_shared, "study_dates_gps.csv"),                     show_col_types = FALSE) |>    mutate(study_start = as_date(study_start),         study_end = as_date(study_end))  |>    mutate(study_ndays = as.numeric(difftime(study_end,                                            study_start, units = "days")))  |>    glimpse()
+```
+
+```{r}
+subids_dates <- study_dates |>    pull(subid) |>    unique()
+```
+
+```{r}
+locs <- read_csv(here::here(path_shared, "locations.csv"),                  col_types = "cddcccccccccccdd",                 show_col_types = FALSE) |>    mutate(subid = as.numeric(subid)) |>  filter(subid %in% subids_dates)  |> glimpse()
+```
+
+## Look at distribution of UTC responses
+
+```{r}
+locs |>
+  group_by(subid) |>
+  summarise(n_unique_utc = n_distinct(utc)) |>
+  pull(n_unique_utc) |>
+  summary()
+
+locs |> 
+  group_by(subid) |>
+  summarise(n_unique_utc = n_distinct(utc)) |>
+  pull(n_unique_utc) |>
+  hist(main = "# of unique utc responses for a given subid (filtered)")
+```
+
+## remaining 1's?
+
+```{r}
+locs |>
+  group_by(subid) |>
+  summarise(n_unique_utc = n_distinct(utc)) |>
+  filter(n_unique_utc == 1)
+```
+
+
+```{r}
+visits <- read_csv(here::here(path_shared, "visit_dates.csv"), show_col_types = TRUE)
+
+
+visits |>
+  filter(subid %in% c(5, 7)) |>
+  pivot_longer(cols = -subid, names_to = "visit_type", values_to = "visit_date")
+
+locs |>
+  filter(subid %in% c(77)) |>
+  distinct(subid, utc) |>
+  mutate(utc_readable = as.POSIXct(utc, origin = "1970-01-01", tz = "UTC"))
+```
+
+
+## Gap between first and second UTC per participant (days)
+
+```{r}
+first_second_utc <- locs |>
+  distinct(subid, utc) |>
+  arrange(subid, utc) |>
+  group_by(subid) |>
+  filter(n() >= 2) |>
+  slice(1:2) |>
+  mutate(reporting = c("first", "second")) |>
+  ungroup() |>
+  pivot_wider(names_from = reporting, values_from = utc) |>
+  mutate(
+    first_dt = as.POSIXct(first, origin = "1970-01-01", tz = "UTC"),
+    second_dt = as.POSIXct(second, origin = "1970-01-01", tz = "UTC"),
+    gap_days = as.numeric(difftime(second_dt, first_dt, units = "days"))
+  )
+
+first_second_utc |>
+  select(subid, first_dt, second_dt, gap_days) |>
+  summary()
+```
+
+```{r}
+first_second_utc |>
+  ggplot(aes(x = gap_days)) +
+  geom_histogram(bins = 50) +
+  labs(x = "Gap between 1st and 2nd UTC (days)",
+       y = "# of participants",
+       title = "Days between intake and second reporting")
+```
+
+### Was the second UTC before the first follow-up?
+
+```{r}
+followup_dates <- visits |>
+  pivot_longer(cols = -subid, names_to = "visit_type",
+               values_to = "visit_date") |>
+  filter(!str_detect(visit_type, "intake")) |>
+  group_by(subid) |>
+  slice_min(visit_date, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  rename(first_followup = visit_date)
+```
+
+```{r}
+intake_check <- first_second_utc |>
+  left_join(followup_dates, by = "subid") |>
+  mutate(
+    second_date = as_date(second_dt),
+    before_followup = second_date < first_followup
+  )
+
+intake_check |>
+  count(before_followup)
+```
+
+```{r}
+intake_check |>
+  filter(!is.na(before_followup)) |>
+  mutate(days_to_followup = as.numeric(difftime(first_followup,
+                                                second_date,
+                                                units = "days"))) |>
+  ggplot(aes(x = days_to_followup, fill = before_followup)) +
+  geom_histogram(bins = 50, position = "identity", alpha = 0.7) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(x = "Days from 2nd reporting to 1st follow-up",
+       y = "# of participants",
+       fill = "Before follow-up?",
+       title = "Second reporting relative to first follow-up visit")
+```
+
+
+## Create intake variable
+
+```{r}
+locs <- locs |>
+  group_by(subid) |>
+  mutate(intake = if_else(utc == min(utc), 1, 0)) |>
+  ungroup()
+
+table(locs$intake)
+
+write_csv(locs, here::here(path_gps2, "data/locs_gt.csv"))
+```

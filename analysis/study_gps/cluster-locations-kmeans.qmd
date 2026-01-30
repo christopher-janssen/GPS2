@@ -1,0 +1,387 @@
+---
+title: "K-means Clustering of Stay-Points"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# K-means Spatial Clustering
+
+This notebook performs spatial clustering of stay-points using K-means for comparison with DBSCAN. Clustering is performed per-subject with optimal K selection using silhouette analysis.
+
+**Key Differences from DBSCAN:**
+
+-   Requires pre-specifying number of clusters (K)
+-   All points assigned to a cluster (no noise handling)
+-   Assumes spherical clusters
+-   K optimized per subject using silhouette scores
+
+## Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+
+# Additional packages
+library(geosphere)
+library(cluster)
+library(leaflet)
+```
+
+## Parameters
+
+```{r}
+# K-means clustering parameters
+K_MIN <- 3       # minimum K to test
+K_MAX <- 20      # maximum K to test
+```
+
+## Load Stay-Points
+
+```{r}
+# Load stays detected in previous step (same data as DBSCAN)
+stays <- read_csv(here::here(path_gps2, "data/stays.csv"), show_col_types = FALSE)
+
+nrow(stays)
+```
+
+```{r}
+# check
+stays |>
+  select(stay_id, subid, start_time, end_time, dwell_mins, lat, lon) |>
+  slice_head(n = 10)
+```
+
+```{r}
+# Subject-level summary
+stays |>
+  count(subid, name = "n_stays") |>
+  arrange(desc(n_stays)) |>
+  slice_head(n = 10) |>
+  knitr::kable()
+```
+
+## K Selection Methods
+
+### Helper Functions
+
+```{r}
+# Calculate silhouette score for a given K
+calculate_silhouette <- function(coords, k) {
+  # Calculate Haversine distance matrix
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+
+  # Skip if K >= number of points
+  if (k >= nrow(coords)) {
+    return(NA_real_)
+  }
+
+  # Apply K-means (using PAM for better handling of distance matrices)
+  km <- pam(as.dist(dist_mat), k = k, diss = TRUE)
+
+  # Calculate silhouette
+  sil <- silhouette(km$clustering, as.dist(dist_mat))
+
+  # Return average silhouette width
+  mean(sil[, 3])
+}
+
+# Find optimal K using silhouette method
+find_optimal_k <- function(coords, k_min = 3, k_max = 20) {
+  n_points <- nrow(coords)
+
+  # If fewer than k_min points, return 1
+  if (n_points < k_min) {
+    return(1)
+  }
+
+  # Limit k_max to n_points - 1
+  k_max <- min(k_max, n_points - 1)
+
+  # If only one possible K, return it
+  if (k_max < k_min) {
+    return(max(1, min(k_min, n_points - 1)))
+  }
+
+  # Test range of K values
+  k_range <- k_min:k_max
+  silhouette_scores <- map_dbl(k_range, ~calculate_silhouette(coords, .x))
+
+  # Find K with maximum silhouette score
+  best_k_idx <- which.max(silhouette_scores)
+
+  k_range[best_k_idx]
+}
+```
+
+### Test K Selection on Sample Subject
+
+```{r}
+# Test on subject with many stays
+test_subject <- stays |>
+  count(subid, name = "n_stays") |>
+  filter(n_stays >= 20) |>
+  slice_head(n = 1) |>
+  pull(subid)
+
+test_data <- stays |>
+  filter(subid == test_subject)
+
+# Calculate silhouette scores for different K
+coords_test <- cbind(test_data$lon, test_data$lat)
+k_range <- 3:min(20, nrow(coords_test) - 1)
+
+silhouette_scores <- map_dbl(k_range, ~calculate_silhouette(coords_test, .x))
+
+# Plot silhouette scores
+tibble(
+  k = k_range,
+  silhouette = silhouette_scores
+) |>
+  ggplot(aes(x = k, y = silhouette)) +
+  geom_line(linewidth = 1, color = "steelblue") +
+  geom_point(size = 2, color = "steelblue") +
+  geom_vline(xintercept = k_range[which.max(silhouette_scores)],
+             linetype = "dashed", color = "red") +
+  labs(
+    title = str_c("Silhouette Analysis for Subject ", test_subject),
+    subtitle = str_c("Optimal K = ", k_range[which.max(silhouette_scores)]),
+    x = "Number of Clusters (K)",
+    y = "Average Silhouette Width"
+  ) +
+  theme_minimal()
+```
+
+## Apply K-means Clustering
+
+### Per-Subject Clustering with Optimal K
+
+```{r}
+# Apply K-means with optimal K selection per subject
+stays_kmeans <- stays |>
+  group_by(subid) |>
+  group_modify(~{
+    # Extract coords
+    coords <- cbind(.x$lon, .x$lat)
+
+    # Find optimal K
+    optimal_k <- find_optimal_k(coords, k_min = K_MIN, k_max = K_MAX)
+
+    # Calculate distance matrix
+    dist_mat <- distm(coords, coords, fun = distHaversine)
+
+    # Apply K-means (using PAM for distance matrix)
+    if (optimal_k == 1 || nrow(coords) < 2) {
+      # If only 1 cluster or 1 point, assign all to cluster 1
+      cluster_assignments <- rep(1, nrow(coords))
+    } else {
+      km <- pam(as.dist(dist_mat), k = optimal_k, diss = TRUE)
+      cluster_assignments <- km$clustering
+    }
+
+    # Add cluster assignments
+    .x |> mutate(
+      cluster_id_kmeans = cluster_assignments,
+      optimal_k = optimal_k
+    )
+  }) |>
+  ungroup()
+
+# Check
+stays_kmeans |>
+  select(stay_id, subid, cluster_id_kmeans, optimal_k, dwell_mins, lat, lon) |>
+  slice_head(n = 20)
+```
+
+### Clustering Summary
+
+```{r}
+#| echo: false
+
+# Overall clustering summary
+tibble(
+  metric = c(
+    "Total stays",
+    "Subjects clustered",
+    "Unique clusters (all subjects)",
+    "Mean K per subject",
+    "Median K per subject"
+  ),
+  value = c(
+    nrow(stays_kmeans),
+    n_distinct(stays_kmeans$subid),
+    stays_kmeans |>
+      distinct(subid, cluster_id_kmeans) |>
+      nrow(),
+    round(mean(stays_kmeans$optimal_k), 1),
+    round(median(stays_kmeans$optimal_k), 0)
+  )
+) |>
+  knitr::kable()
+```
+
+```{r}
+# Per-subject cluster counts
+subject_clusters_kmeans <- stays_kmeans |>
+  group_by(subid) |>
+  summarize(
+    n_clusters = n_distinct(cluster_id_kmeans),
+    optimal_k = first(optimal_k),
+    n_stays = n(),
+    total_dwell_mins = sum(dwell_mins),
+    .groups = "drop"
+  ) |>
+  arrange(desc(n_clusters))
+
+subject_clusters_kmeans |>
+  slice_head(n = 10) |>
+  knitr::kable()
+```
+
+```{r}
+# Distribution of K values selected
+subject_clusters_kmeans |>
+  ggplot(aes(x = optimal_k)) +
+  geom_histogram(bins = 30, fill = "coral", alpha = 0.7) +
+  labs(
+    title = "Distribution of Optimal K per Subject",
+    subtitle = "K selected via silhouette analysis",
+    x = "Optimal K",
+    y = "Number of Subjects"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Distribution of clusters per subject
+subject_clusters_kmeans |>
+  ggplot(aes(x = n_clusters)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "Distribution of Location Clusters per Subject (K-means)",
+    x = "Number of Clusters",
+    y = "Number of Subjects"
+  ) +
+  theme_minimal()
+```
+
+### Cluster-level Characteristics
+
+```{r}
+cluster_summary_kmeans <- stays_kmeans |>
+  group_by(subid, cluster_id_kmeans) |>
+  summarize(
+    n_stays = n(),
+    total_dwell_mins = sum(dwell_mins),
+    mean_dwell_mins = mean(dwell_mins),
+    # Cluster centroid (median location)
+    lat = median(lat),
+    lon = median(lon),
+    .groups = "drop"
+  )
+
+# Check
+cluster_summary_kmeans |>
+  arrange(desc(total_dwell_mins)) |>
+  slice_head(n = 10) |>
+  knitr::kable()
+```
+
+```{r}
+# Distribution of stays per cluster
+cluster_summary_kmeans |>
+  ggplot(aes(x = n_stays)) +
+  geom_histogram(bins = 50, fill = "coral", alpha = 0.7) +
+  scale_x_log10() +
+  labs(
+    title = "Distribution of Stays per Cluster (K-means)",
+    x = "Stays per Cluster (log scale)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Distribution of total dwell time per cluster
+cluster_summary_kmeans |>
+  ggplot(aes(x = total_dwell_mins)) +
+  geom_histogram(bins = 50, fill = "darkgreen", alpha = 0.7) +
+  scale_x_log10() +
+  labs(
+    title = "Distribution of Total Dwell Time per Cluster (K-means)",
+    x = "Total Dwell Time (minutes, log scale)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+## Visualize Clusters
+
+```{r}
+# Visualize clusters for a single subject
+sample_subject_id <- 10
+
+sample_stays_kmeans <- stays_kmeans |>
+  filter(subid == sample_subject_id)
+
+sample_clusters_kmeans <- cluster_summary_kmeans |>
+  filter(subid == sample_subject_id)
+
+# Map with both stays (small) and cluster centroids (large, labeled)
+leaflet() |>
+  addTiles() |>
+  # Individual stays (small gray points)
+  addCircleMarkers(
+    data = sample_stays_kmeans,
+    lng = ~lon,
+    lat = ~lat,
+    radius = 3,
+    color = "black",
+    fillOpacity = 0.4,
+    stroke = FALSE,
+    popup = ~paste0(
+      "<b>Stay ID:</b> ", stay_id, "<br>",
+      "<b>Cluster:</b> ", cluster_id_kmeans, "<br>",
+      "<b>Dwell:</b> ", round(dwell_mins, 1), " mins<br>",
+      "<b>Time:</b> ", start_time
+    )
+  ) |>
+  # Cluster centroids (larger, labeled)
+  addCircleMarkers(
+    data = sample_clusters_kmeans,
+    lng = ~lon,
+    lat = ~lat,
+    radius = ~sqrt(total_dwell_mins) / 3,
+    color = "coral",
+    fillColor = "coral",
+    fillOpacity = 0.6,
+    stroke = TRUE,
+    weight = 2,
+    label = ~paste0("Cluster ", cluster_id_kmeans),
+    popup = ~paste0(
+      "<b>Cluster:</b> ", cluster_id_kmeans, "<br>",
+      "<b>Stays:</b> ", n_stays, "<br>",
+      "<b>Total Dwell:</b> ", round(total_dwell_mins, 1), " mins<br>",
+      "<b>Mean Dwell:</b> ", round(mean_dwell_mins, 1), " mins"
+    )
+  )
+```
+
+## Save Results
+
+```{r}
+# Save clustered stays (K-means)
+write_csv(stays_kmeans, here::here(path_gps2, "data/stays_clustered_kmeans.csv"))
+
+# Save cluster summaries
+write_csv(cluster_summary_kmeans, here::here(path_gps2, "data/cluster_summary_kmeans.csv"))
+write_csv(subject_clusters_kmeans, here::here(path_gps2, "data/subject_cluster_counts_kmeans.csv"))
+```

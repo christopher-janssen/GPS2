@@ -1,0 +1,635 @@
+---
+title: "Comparison of DBSCAN vs K-means Clustering"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+    toc: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Clustering Method Comparison
+
+This notebook provides a comprehensive empirical comparison of DBSCAN and K-means clustering methods applied to GPS stay-points.
+
+**Comparison Metrics:**
+
+1.  Cluster count distribution
+2.  Silhouette scores (clustering quality)
+3.  Geographic coherence
+4.  Noise point handling
+5.  Interpretability (home identification)
+
+## Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+
+# Additional packages
+library(geosphere)
+library(cluster)
+library(leaflet)
+library(patchwork)
+```
+
+## Load Clustering Results
+
+```{r}
+# Load DBSCAN results
+stays_dbscan <- read_csv(here::here(path_gps2, "data/stays_clustered.csv"), show_col_types = FALSE)
+cluster_summary_dbscan <- read_csv(here::here(path_gps2, "data/cluster_summary.csv"), show_col_types = FALSE)
+subject_clusters_dbscan <- read_csv(here::here(path_gps2, "data/subject_cluster_counts.csv"), show_col_types = FALSE)
+
+# Load K-means results
+stays_kmeans <- read_csv(here::here(path_gps2, "data/stays_clustered_kmeans.csv"), show_col_types = FALSE)
+cluster_summary_kmeans <- read_csv(here::here(path_gps2, "data/cluster_summary_kmeans.csv"), show_col_types = FALSE)
+subject_clusters_kmeans <- read_csv(here::here(path_gps2, "data/subject_cluster_counts_kmeans.csv"), show_col_types = FALSE)
+
+nrow(stays_dbscan)
+nrow(stays_kmeans)
+```
+
+# Metric 1: Cluster Count Distribution
+
+## Summary Statistics
+
+```{r}
+# Combine cluster counts
+cluster_counts <- bind_rows(
+  subject_clusters_dbscan |>
+    select(subid, n_clusters) |>
+    mutate(method = "DBSCAN"),
+  subject_clusters_kmeans |>
+    select(subid, n_clusters) |>
+    mutate(method = "K-means")
+)
+
+# Statistical summary
+cluster_count_summary <- cluster_counts |>
+  group_by(method) |>
+  summarize(
+    mean_clusters = mean(n_clusters),
+    median_clusters = median(n_clusters),
+    sd_clusters = sd(n_clusters),
+    min_clusters = min(n_clusters),
+    max_clusters = max(n_clusters),
+    .groups = "drop"
+  )
+
+cluster_count_summary |>
+  knitr::kable(digits = 2, caption = "Cluster Count Statistics by Method")
+```
+
+## Visualization
+
+```{r}
+# Distribution comparison
+cluster_counts |>
+  ggplot(aes(x = n_clusters, fill = method)) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 30) +
+  scale_fill_manual(values = c("DBSCAN" = "steelblue", "K-means" = "coral")) +
+  labs(
+    title = "Distribution of Cluster Counts per Subject",
+    subtitle = "DBSCAN (auto-determined) vs. K-means (optimized per subject)",
+    x = "Number of Clusters",
+    y = "Number of Subjects",
+    fill = "Method"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Box plot comparison
+cluster_counts |>
+  ggplot(aes(x = method, y = n_clusters, fill = method)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("DBSCAN" = "steelblue", "K-means" = "coral")) +
+  labs(
+    title = "Cluster Count Distribution by Method",
+    x = "Method",
+    y = "Number of Clusters",
+    fill = "Method"
+  ) +
+  theme_minimal()
+```
+
+## Statistical Test
+
+```{r}
+# Paired t-test (same subjects in both methods)
+dbscan_counts <- cluster_counts |> filter(method == "DBSCAN") |> arrange(subid) |> pull(n_clusters)
+kmeans_counts <- cluster_counts |> filter(method == "K-means") |> arrange(subid) |> pull(n_clusters)
+
+t_test_result <- t.test(dbscan_counts, kmeans_counts, paired = TRUE)
+
+tibble(
+  test = "Paired t-test",
+  t_statistic = t_test_result$statistic,
+  p_value = t_test_result$p.value,
+  mean_diff = t_test_result$estimate,
+  interpretation = if_else(t_test_result$p.value < 0.05, "Significant difference", "No significant difference")
+) |>
+  knitr::kable(digits = 4, caption = "Statistical test for cluster count difference")
+```
+
+# Metric 2: Silhouette Scores
+
+## Calculate Silhouette Scores
+
+```{r}
+# Helper function to calculate silhouette scores
+calculate_silhouette_by_subject <- function(stays_data, cluster_col) {
+  stays_data |>
+    group_by(subid) |>
+    group_modify(~{
+      # Only calculate if multiple clusters exist
+      if (n_distinct(.x[[cluster_col]]) < 2) {
+        return(tibble(silhouette_score = NA_real_))
+      }
+
+      # Extract coords
+      coords <- cbind(.x$lon, .x$lat)
+
+      # Calculate distance matrix
+      dist_mat <- distm(coords, coords, fun = distHaversine)
+
+      # Calculate silhouette
+      sil <- silhouette(.x[[cluster_col]], as.dist(dist_mat))
+
+      # Return average silhouette width
+      tibble(silhouette_score = mean(sil[, 3]))
+    }) |>
+    ungroup()
+}
+
+# Calculate for DBSCAN (exclude noise points)
+silhouette_dbscan <- stays_dbscan |>
+  filter(cluster_id > 0) |>
+  calculate_silhouette_by_subject("cluster_id")
+
+# Calculate for K-means
+silhouette_kmeans <- stays_kmeans |>
+  calculate_silhouette_by_subject("cluster_id_kmeans")
+```
+
+## Summary Statistics
+
+```{r}
+# Combine silhouette scores
+silhouette_scores <- bind_rows(
+  silhouette_dbscan |> mutate(method = "DBSCAN"),
+  silhouette_kmeans |> mutate(method = "K-means")
+) |>
+  filter(!is.na(silhouette_score))
+
+# Statistical summary
+silhouette_summary <- silhouette_scores |>
+  group_by(method) |>
+  summarize(
+    mean_silhouette = mean(silhouette_score, na.rm = TRUE),
+    median_silhouette = median(silhouette_score, na.rm = TRUE),
+    sd_silhouette = sd(silhouette_score, na.rm = TRUE),
+    min_silhouette = min(silhouette_score, na.rm = TRUE),
+    max_silhouette = max(silhouette_score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+silhouette_summary |>
+  knitr::kable(digits = 3, caption = "Silhouette Score Statistics by Method")
+```
+
+## Visualization
+
+```{r}
+# Distribution comparison
+silhouette_scores |>
+  ggplot(aes(x = silhouette_score, fill = method)) +
+  geom_density(alpha = 0.6) +
+  scale_fill_manual(values = c("DBSCAN" = "steelblue", "K-means" = "coral")) +
+  labs(
+    title = "Distribution of Silhouette Scores",
+    subtitle = "Higher scores indicate better-defined clusters",
+    x = "Average Silhouette Width",
+    y = "Density",
+    fill = "Method"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Box plot
+silhouette_scores |>
+  ggplot(aes(x = method, y = silhouette_score, fill = method)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("DBSCAN" = "steelblue", "K-means" = "coral")) +
+  labs(
+    title = "Silhouette Score Distribution by Method",
+    x = "Method",
+    y = "Average Silhouette Width",
+    fill = "Method"
+  ) +
+  theme_minimal()
+```
+
+## Statistical Test
+
+```{r}
+# T-test for silhouette scores
+dbscan_sil <- silhouette_scores |> filter(method == "DBSCAN") |> pull(silhouette_score)
+kmeans_sil <- silhouette_scores |> filter(method == "K-means") |> pull(silhouette_score)
+
+t_test_sil <- t.test(dbscan_sil, kmeans_sil)
+
+tibble(
+  test = "Independent t-test",
+  t_statistic = t_test_sil$statistic,
+  p_value = t_test_sil$p.value,
+  mean_dbscan = mean(dbscan_sil, na.rm = TRUE),
+  mean_kmeans = mean(kmeans_sil, na.rm = TRUE),
+  interpretation = if_else(t_test_sil$p.value < 0.05, "Significant difference", "No significant difference")
+) |>
+  knitr::kable(digits = 4, caption = "Statistical test for silhouette score difference")
+```
+
+# Metric 3: Geographic Coherence
+
+## Calculate Intra-Cluster Distances
+
+```{r}
+# Helper function to calculate average intra-cluster distance
+calculate_intra_cluster_distance <- function(cluster_data) {
+  if (nrow(cluster_data) < 2) {
+    return(0)
+  }
+
+  coords <- cbind(cluster_data$lon, cluster_data$lat)
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+
+  # Average pairwise distance within cluster
+  mean(dist_mat[upper.tri(dist_mat)])
+}
+
+# Calculate for DBSCAN
+intra_dist_dbscan <- stays_dbscan |>
+  filter(cluster_id > 0) |>
+  group_by(subid, cluster_id) |>
+  summarize(
+    n_stays = n(),
+    avg_intra_dist = calculate_intra_cluster_distance(cur_data()),
+    .groups = "drop"
+  ) |>
+  mutate(method = "DBSCAN")
+
+# Calculate for K-means
+intra_dist_kmeans <- stays_kmeans |>
+  group_by(subid, cluster_id_kmeans) |>
+  summarize(
+    n_stays = n(),
+    avg_intra_dist = calculate_intra_cluster_distance(cur_data()),
+    .groups = "drop"
+  ) |>
+  mutate(method = "K-means")
+
+# Combine
+intra_dist_combined <- bind_rows(intra_dist_dbscan, intra_dist_kmeans)
+```
+
+## Summary Statistics
+
+```{r}
+# Statistical summary
+intra_dist_summary <- intra_dist_combined |>
+  group_by(method) |>
+  summarize(
+    mean_intra_dist = mean(avg_intra_dist, na.rm = TRUE),
+    median_intra_dist = median(avg_intra_dist, na.rm = TRUE),
+    sd_intra_dist = sd(avg_intra_dist, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+intra_dist_summary |>
+  knitr::kable(digits = 1, caption = "Intra-Cluster Distance Statistics (meters)")
+```
+
+## Visualization
+
+```{r}
+# Distribution comparison (filter out extreme values for visualization)
+intra_dist_combined |>
+  filter(avg_intra_dist < 1000) |>  # Filter for visualization
+  ggplot(aes(x = avg_intra_dist, fill = method)) +
+  geom_density(alpha = 0.6) +
+  scale_fill_manual(values = c("DBSCAN" = "steelblue", "K-means" = "coral")) +
+  labs(
+    title = "Distribution of Intra-Cluster Distances",
+    subtitle = "Lower distances indicate tighter geographic clusters",
+    x = "Average Intra-Cluster Distance (meters)",
+    y = "Density",
+    fill = "Method"
+  ) +
+  theme_minimal()
+```
+
+# Metric 4: Noise Point Handling
+
+## DBSCAN Noise Analysis
+
+```{r}
+# Count noise points in DBSCAN
+noise_dbscan <- stays_dbscan |>
+  group_by(subid) |>
+  summarize(
+    total_stays = n(),
+    noise_points = sum(cluster_id == 0),
+    noise_pct = 100 * sum(cluster_id == 0) / n(),
+    .groups = "drop"
+  )
+
+# Summary
+noise_summary_dbscan <- tibble(
+  method = "DBSCAN",
+  total_stays = sum(noise_dbscan$total_stays),
+  total_noise = sum(noise_dbscan$noise_points),
+  noise_pct = 100 * sum(noise_dbscan$noise_points) / sum(noise_dbscan$total_stays),
+  mean_noise_per_subject = mean(noise_dbscan$noise_points),
+  median_noise_per_subject = median(noise_dbscan$noise_points)
+)
+
+noise_summary_dbscan |>
+  knitr::kable(digits = 2, caption = "DBSCAN Noise Point Summary")
+```
+
+## K-means "Likely Noise" Identification
+
+```{r}
+# Identify likely noise in K-means as outliers from cluster centroids
+kmeans_outliers <- stays_kmeans |>
+  left_join(cluster_summary_kmeans, by = c("subid", "cluster_id_kmeans")) |>
+  mutate(
+    # Distance from cluster centroid
+    dist_from_centroid = distHaversine(
+      cbind(lon.x, lat.x),
+      cbind(lon.y, lat.y)
+    )
+  ) |>
+  group_by(subid, cluster_id_kmeans) |>
+  mutate(
+    # Flag as likely noise if > 2 SD from centroid
+    centroid_mean_dist = mean(dist_from_centroid, na.rm = TRUE),
+    centroid_sd_dist = sd(dist_from_centroid, na.rm = TRUE),
+    is_likely_noise = dist_from_centroid > (centroid_mean_dist + 2 * centroid_sd_dist)
+  ) |>
+  ungroup()
+
+# Summary
+noise_summary_kmeans <- kmeans_outliers |>
+  group_by(subid) |>
+  summarize(
+    total_stays = n(),
+    likely_noise = sum(is_likely_noise, na.rm = TRUE),
+    noise_pct = 100 * sum(is_likely_noise, na.rm = TRUE) / n(),
+    .groups = "drop"
+  )
+
+noise_summary_kmeans_overall <- tibble(
+  method = "K-means (likely noise)",
+  total_stays = sum(noise_summary_kmeans$total_stays),
+  total_noise = sum(noise_summary_kmeans$likely_noise),
+  noise_pct = 100 * sum(noise_summary_kmeans$likely_noise) / sum(noise_summary_kmeans$total_stays),
+  mean_noise_per_subject = mean(noise_summary_kmeans$likely_noise),
+  median_noise_per_subject = median(noise_summary_kmeans$likely_noise)
+)
+
+noise_summary_kmeans_overall |>
+  knitr::kable(digits = 2, caption = "K-means Likely Noise Summary (outliers >2 SD from centroid)")
+```
+
+## Comparison
+
+```{r}
+# Compare noise handling
+bind_rows(noise_summary_dbscan, noise_summary_kmeans_overall) |>
+  knitr::kable(digits = 2, caption = "Noise Handling Comparison")
+```
+
+**Interpretation:** DBSCAN explicitly identifies noise points (one-time visits, GPS errors), while K-means forces all points into clusters. The "likely noise" estimate for K-means identifies outliers that may pollute meaningful clusters.
+
+# Metric 5: Interpretability (Home Identification)
+
+## Top Cluster Analysis
+
+```{r}
+# Identify "home" (cluster with most total dwell time) for each subject
+home_dbscan <- stays_dbscan |>
+  filter(cluster_id > 0) |>
+  group_by(subid, cluster_id) |>
+  summarize(cluster_dwell = sum(dwell_mins), .groups = "drop") |>
+  group_by(subid) |>
+  mutate(total_dwell = sum(cluster_dwell)) |>
+  slice_max(cluster_dwell, n = 1) |>
+  mutate(
+    home_pct = 100 * cluster_dwell / total_dwell,
+    method = "DBSCAN"
+  ) |>
+  select(subid, home_pct, method)
+
+home_kmeans <- stays_kmeans |>
+  group_by(subid, cluster_id_kmeans) |>
+  summarize(cluster_dwell = sum(dwell_mins), .groups = "drop") |>
+  group_by(subid) |>
+  mutate(total_dwell = sum(cluster_dwell)) |>
+  slice_max(cluster_dwell, n = 1) |>
+  mutate(
+    home_pct = 100 * cluster_dwell / total_dwell,
+    method = "K-means"
+  ) |>
+  select(subid, home_pct, method)
+
+# Combine
+home_identification <- bind_rows(home_dbscan, home_kmeans)
+```
+
+## Summary Statistics
+
+```{r}
+# Statistical summary
+home_summary <- home_identification |>
+  group_by(method) |>
+  summarize(
+    mean_home_pct = mean(home_pct, na.rm = TRUE),
+    median_home_pct = median(home_pct, na.rm = TRUE),
+    sd_home_pct = sd(home_pct, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+home_summary |>
+  knitr::kable(digits = 2, caption = "Home Identification Clarity (% of total time in top cluster)")
+```
+
+## Visualization
+
+```{r}
+# Distribution comparison
+home_identification |>
+  ggplot(aes(x = home_pct, fill = method)) +
+  geom_density(alpha = 0.6) +
+  scale_fill_manual(values = c("DBSCAN" = "steelblue", "K-means" = "coral")) +
+  labs(
+    title = "Home Identification Clarity",
+    subtitle = "Higher % indicates clearer 'home' cluster",
+    x = "% of Total Time in Top Cluster",
+    y = "Density",
+    fill = "Method"
+  ) +
+  theme_minimal()
+```
+
+**Interpretation:** Higher percentages indicate that one cluster clearly dominates (likely "home"). If DBSCAN shows higher values, it suggests better identification of the primary location.
+
+# Summary Comparison Table
+
+```{r}
+# Create comprehensive comparison table
+comparison_summary <- tribble(
+  ~Metric, ~DBSCAN, ~`K-means`, ~Winner,
+
+  "Mean clusters per subject",
+  round(filter(cluster_count_summary, method == "DBSCAN")$mean_clusters, 1),
+  round(filter(cluster_count_summary, method == "K-means")$mean_clusters, 1),
+  "Context-dependent",
+
+  "Mean silhouette score",
+  round(filter(silhouette_summary, method == "DBSCAN")$mean_silhouette, 3),
+  round(filter(silhouette_summary, method == "K-means")$mean_silhouette, 3),
+  if_else(
+    filter(silhouette_summary, method == "DBSCAN")$mean_silhouette >
+    filter(silhouette_summary, method == "K-means")$mean_silhouette,
+    "DBSCAN", "K-means"
+  ),
+
+  "Mean intra-cluster distance (m)",
+  round(filter(intra_dist_summary, method == "DBSCAN")$mean_intra_dist, 1),
+  round(filter(intra_dist_summary, method == "K-means")$mean_intra_dist, 1),
+  if_else(
+    filter(intra_dist_summary, method == "DBSCAN")$mean_intra_dist <
+    filter(intra_dist_summary, method == "K-means")$mean_intra_dist,
+    "DBSCAN", "K-means"
+  ),
+
+  "Noise points identified",
+  paste0(round(noise_summary_dbscan$noise_pct, 1), "%"),
+  paste0("N/A (", round(noise_summary_kmeans_overall$noise_pct, 1), "% likely outliers)"),
+  "DBSCAN",
+
+  "Home identification (% in top cluster)",
+  paste0(round(filter(home_summary, method == "DBSCAN")$mean_home_pct, 1), "%"),
+  paste0(round(filter(home_summary, method == "K-means")$mean_home_pct, 1), "%"),
+  if_else(
+    filter(home_summary, method == "DBSCAN")$mean_home_pct >
+    filter(home_summary, method == "K-means")$mean_home_pct,
+    "DBSCAN", "K-means"
+  )
+)
+
+comparison_summary |>
+  knitr::kable(caption = "Comprehensive Clustering Method Comparison")
+```
+
+# Side-by-Side Visualization
+
+## Sample Subject Comparison
+
+```{r}
+# Select a subject with many stays for visualization
+sample_subject <- stays_dbscan |>
+  count(subid, name = "n_stays") |>
+  filter(n_stays >= 20) |>
+  slice_head(n = 1) |>
+  pull(subid)
+
+# Get stays for this subject from both methods
+sample_dbscan <- stays_dbscan |> filter(subid == sample_subject)
+sample_kmeans <- stays_kmeans |> filter(subid == sample_subject)
+
+# Get cluster centroids
+centroids_dbscan <- cluster_summary_dbscan |> filter(subid == sample_subject)
+centroids_kmeans <- cluster_summary_kmeans |> filter(subid == sample_subject)
+```
+
+```{r}
+# DBSCAN map
+map_dbscan <- leaflet() |>
+  addTiles() |>
+  addCircleMarkers(
+    data = sample_dbscan,
+    lng = ~lon, lat = ~lat,
+    radius = 3,
+    color = ~if_else(cluster_id == 0, "red", "gray"),
+    fillOpacity = 0.4,
+    popup = ~paste0("Cluster: ", cluster_id, "<br>Dwell: ", round(dwell_mins, 1), " mins")
+  ) |>
+  addCircleMarkers(
+    data = centroids_dbscan,
+    lng = ~lon, lat = ~lat,
+    radius = ~sqrt(total_dwell_mins) / 3,
+    color = "steelblue",
+    fillColor = "steelblue",
+    fillOpacity = 0.6,
+    label = ~paste0("Cluster ", cluster_id)
+  )
+
+map_dbscan
+```
+
+```{r}
+# K-means map
+map_kmeans <- leaflet() |>
+  addTiles() |>
+  addCircleMarkers(
+    data = sample_kmeans,
+    lng = ~lon, lat = ~lat,
+    radius = 3,
+    color = "gray",
+    fillOpacity = 0.4,
+    popup = ~paste0("Cluster: ", cluster_id_kmeans, "<br>Dwell: ", round(dwell_mins, 1), " mins")
+  ) |>
+  addCircleMarkers(
+    data = centroids_kmeans,
+    lng = ~lon, lat = ~lat,
+    radius = ~sqrt(total_dwell_mins) / 3,
+    color = "coral",
+    fillColor = "coral",
+    fillOpacity = 0.6,
+    label = ~paste0("Cluster ", cluster_id_kmeans)
+  )
+
+map_kmeans
+```
+
+# Conclusions
+
+**Key Findings:**
+
+1.  **Cluster Counts:** DBSCAN auto-determines K while K-means optimizes via silhouette. Compare distributions to see if methods differ substantially.
+
+2.  **Clustering Quality:** Silhouette scores indicate which method produces more cohesive clusters.
+
+3.  **Geographic Coherence:** Intra-cluster distances show which method creates tighter geographic groupings.
+
+4.  **Noise Handling:** DBSCAN explicitly identifies noise (one-time visits), while K-means forces all points into clusters.
+
+5.  **Interpretability:** Home identification clarity suggests which method better distinguishes primary locations.
+
+## Save Comparison Results
+
+```{r}
+# Save comparison metrics
+write_csv(comparison_summary, here::here(path_gps2, "data/clustering_comparison_metrics.csv"))
+```
