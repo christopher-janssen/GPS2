@@ -1,5 +1,5 @@
 ---
-title: "DBSCAN Stay Hyperparameter Sensitivity Analysis"
+title: "DBSCAN Parameter Grid Search"
 author: "Christopher Janssen"
 date: "`r lubridate::today()`"
 format:
@@ -12,12 +12,13 @@ editor:
     wrap: 72
 ---
 
-# Dwell Time Sensitivity
+# Parameter Grid Search
 
-How does the minimum dwell time threshold for stay detection affect
-DBSCAN clustering performance against ground truth? We test 2, 5, 10,
-and 15 minute thresholds using the full study period, evaluating
-separately for all reported locations vs intake-only locations.
+Grid search over dwell threshold × eps × minPts (4 × 4 × 4 = 64
+combinations). Stay detection depends only on dwell threshold;
+DBSCAN clustering uses eps and minPts. Evaluation is against three
+ground truth sets: all reported locations, intake-only, and
+non-intake.
 
 ## Setup
 
@@ -28,6 +29,10 @@ source(here::here("scripts/r/setup.R"))
 
 library(geosphere)
 library(leaflet)
+library(furrr)
+library(clue)
+
+plan(multisession, workers = availableCores() - 1)
 
 theme_set(theme_minimal())
 ```
@@ -38,9 +43,16 @@ theme_set(theme_minimal())
 # Dwell time thresholds to test
 DWELL_THRESHOLDS <- c(2, 5, 10, 15)
 
-# DBSCAN clustering parameters
-EPS_METERS <- 50
-MIN_STAYS <- 3
+# DBSCAN clustering parameters (grid search)
+EPS_VALUES <- c(25, 50, 75, 100)
+MINPTS_VALUES <- c(2, 3, 4, 5)
+
+param_grid <- expand_grid(
+  dwell_threshold = DWELL_THRESHOLDS,
+  eps_meters = EPS_VALUES,
+  min_pts = MINPTS_VALUES
+)
+nrow(param_grid)
 
 # Ground truth and matching
 PROXIMITY_THRESHOLD <- 100
@@ -156,7 +168,7 @@ detect_stays <- function(gps_data, dist_threshold = DIST_THRESHOLD,
 ### DBSCAN Clustering
 
 ```{r}
-run_dbscan <- function(coords, eps = EPS_METERS, min_pts = MIN_STAYS) {
+run_dbscan <- function(coords, eps = 50, min_pts = 3) {
   if (nrow(coords) < 2) {
     return(list(
       cluster = rep(1, nrow(coords)),
@@ -272,9 +284,10 @@ calculate_capture <- function(centroids, gt_locations,
 ## Run Stay Detection for Each Dwell Threshold
 
 ```{r}
-stays_by_threshold <- map(
+stays_by_threshold <- future_map(
   set_names(DWELL_THRESHOLDS),
-  \(thresh) detect_stays(gps_data, time_threshold = thresh)
+  \(thresh) detect_stays(gps_data, time_threshold = thresh),
+  .options = furrr_options(seed = TRUE)
 )
 ```
 
@@ -295,41 +308,40 @@ map_dfr(DWELL_THRESHOLDS, \(thresh) {
   knitr::kable()
 ```
 
-## Run DBSCAN Clustering per Threshold
+## Run DBSCAN Clustering + Extract Centroids
+
+Iterate over the full parameter grid. For each combo, pull the
+pre-computed stays for that dwell threshold, cluster per subject,
+and extract centroids. Only centroids are retained (not full
+cluster assignments) to keep memory manageable across 64 combos.
 
 ```{r}
-cluster_results <- map(set_names(as.character(DWELL_THRESHOLDS)), \(thresh) {
-  stays <- stays_by_threshold[[thresh]]
+centroids_all <- future_pmap_dfr(param_grid, \(dwell_threshold, eps_meters, min_pts) {
+  stays <- stays_by_threshold[[as.character(dwell_threshold)]]
 
-  stays |>
-    group_by(subid) |>
-    group_modify(\(subj_stays, key) {
-      if (nrow(subj_stays) < 2) {
-        return(subj_stays |> mutate(cluster = 1L))
-      }
+  map_dfr(group_split(stays, subid), \(subj_stays) {
+    sub <- unique(subj_stays$subid)
 
+    if (nrow(subj_stays) < 2) {
+      subj_stays <- subj_stays |> mutate(cluster = 1L)
+    } else {
       coords <- cbind(subj_stays$lon, subj_stays$lat)
-      db <- run_dbscan(coords)
-      subj_stays |> mutate(cluster = db$cluster)
-    }) |>
-    ungroup()
-})
-```
+      db <- run_dbscan(coords, eps = eps_meters, min_pts = min_pts)
+      subj_stays <- subj_stays |> mutate(cluster = db$cluster)
+    }
 
-Extract centroids per subject per threshold:
+    get_centroids(subj_stays, "cluster") |>
+      mutate(
+        subid = sub,
+        dwell_threshold = dwell_threshold,
+        eps_meters = eps_meters,
+        min_pts = min_pts,
+        .before = 1
+      )
+  })
+}, .options = furrr_options(seed = TRUE))
 
-```{r}
-centroids_by_threshold <- map(
-  set_names(as.character(DWELL_THRESHOLDS)),
-  \(thresh) {
-    cluster_results[[thresh]] |>
-      group_by(subid) |>
-      group_modify(\(subj_stays, key) {
-        get_centroids(subj_stays, "cluster")
-      }) |>
-      ungroup()
-  }
-)
+nrow(centroids_all)
 ```
 
 ## Prepare Ground Truth
@@ -362,44 +374,47 @@ tibble(
   knitr::kable()
 ```
 
-### Filter GT to locations with nearby stays
+### Filter GT to locations visited during study
 
-Use the 10-minute stays as the reference for proximity filtering
-(most permissive reasonable threshold).
+Remove GT locations with no raw GPS data nearby. This is
+parameter-independent — it uses raw GPS points rather than
+derived stays, avoiding circular dependency with the dwell
+threshold being evaluated.
 
 ```{r}
-filter_gt_by_proximity <- function(gt_df, stays_df,
-                                   threshold_m = PROXIMITY_THRESHOLD) {
-  gt_df |>
-    rowwise() |>
-    mutate(
-      has_nearby_stay = {
-        subj_stays <- stays_df |> filter(subid == .env$subid)
-        if (nrow(subj_stays) == 0) {
-          FALSE
-        } else {
-          gt_coord <- c(lon, lat)
-          stay_coords <- cbind(subj_stays$lon, subj_stays$lat)
-          min(distHaversine(gt_coord, stay_coords)) <= threshold_m
-        }
-      }
-    ) |>
-    ungroup() |>
-    filter(has_nearby_stay) |>
-    select(-has_nearby_stay)
+filter_gt_by_gps <- function(gt_df, gps_df,
+                             threshold_m = PROXIMITY_THRESHOLD) {
+  subjects <- unique(gt_df$subid)
+
+  keep <- future_map_dfr(subjects, \(sub) {
+    sub_gt <- gt_df |> filter(subid == sub)
+    sub_gps <- gps_df |> filter(subid == sub)
+
+    if (nrow(sub_gps) == 0) {
+      return(sub_gt |> mutate(has_nearby_gps = FALSE))
+    }
+
+    gt_coords <- cbind(sub_gt$lon, sub_gt$lat)
+    gps_coords <- cbind(sub_gps$lon, sub_gps$lat)
+    dist_mat <- distm(gt_coords, gps_coords, fun = distHaversine)
+    sub_gt |> mutate(has_nearby_gps = apply(dist_mat, 1, min) <= threshold_m)
+  }, .options = furrr_options(seed = TRUE))
+
+  keep |>
+    filter(has_nearby_gps) |>
+    select(-has_nearby_gps)
 }
 
-stays_ref <- stays_by_threshold[["10"]]
-gt_all <- filter_gt_by_proximity(gt_all, stays_ref)
-gt_intake <- filter_gt_by_proximity(gt_intake, stays_ref)
-gt_no_intake <- filter_gt_by_proximity(gt_no_intake, stays_ref)
+gt_all <- filter_gt_by_gps(gt_all, gps_data)
+gt_intake <- filter_gt_by_gps(gt_intake, gps_data)
+gt_no_intake <- filter_gt_by_gps(gt_no_intake, gps_data)
 
 
 tibble(
   gt_set = c(
-    "All locations (proximity-filtered)",
-    "Intake only (proximity-filtered)",
-    "No Intake (proximity-filtered)"
+    "All locations (GPS-verified)",
+    "Intake only (GPS-verified)",
+    "No Intake (GPS-verified)"
   ),
   n_locations = c(nrow(gt_all), nrow(gt_intake), nrow(gt_no_intake)),
   n_subjects = c(
@@ -414,11 +429,17 @@ tibble(
 ## Evaluate: Compare Clusters to Ground Truth
 
 ```{r}
-evaluate_threshold <- function(thresh_str, gt_df, gt_label) {
-  centroids <- centroids_by_threshold[[thresh_str]]
+evaluate_params <- function(dwell_threshold, eps_meters, min_pts,
+                            gt_df, gt_label) {
+  centroids <- centroids_all |>
+    filter(
+      dwell_threshold == !!dwell_threshold,
+      eps_meters == !!eps_meters,
+      min_pts == !!min_pts
+    )
   subjects <- intersect(unique(centroids$subid), unique(gt_df$subid))
 
-  map_dfr(subjects, \(sub) {
+  future_map_dfr(subjects, \(sub) {
     sub_centroids <- centroids |> filter(subid == sub)
     sub_gt <- gt_df |> filter(subid == sub)
 
@@ -428,7 +449,9 @@ evaluate_threshold <- function(thresh_str, gt_df, gt_label) {
 
     tibble(
       subid = sub,
-      dwell_threshold = as.numeric(thresh_str),
+      dwell_threshold = dwell_threshold,
+      eps_meters = eps_meters,
+      min_pts = min_pts,
       gt_type = gt_label,
       precision = capture$precision,
       recall = capture$recall,
@@ -436,19 +459,23 @@ evaluate_threshold <- function(thresh_str, gt_df, gt_label) {
       n_centroids = capture$n_centroids,
       n_ground_truth = capture$n_ground_truth
     )
-  })
+  }, .options = furrr_options(seed = TRUE))
 }
 ```
 
 ```{r}
-comparison <- bind_rows(
-  map_dfr(as.character(DWELL_THRESHOLDS),
-          \(t) evaluate_threshold(t, gt_all, "All Locations")),
-  map_dfr(as.character(DWELL_THRESHOLDS),
-          \(t) evaluate_threshold(t, gt_intake, "Intake Only")),
-  map_dfr(as.character(DWELL_THRESHOLDS),
-          \(t) evaluate_threshold(t, gt_no_intake, "No Intake"))
+gt_sets <- list(
+  list(df = gt_all, label = "All Locations"),
+  list(df = gt_intake, label = "Intake Only"),
+  list(df = gt_no_intake, label = "No Intake")
 )
+
+comparison <- map_dfr(gt_sets, \(gt) {
+  pmap_dfr(param_grid, \(dwell_threshold, eps_meters, min_pts) {
+    evaluate_params(dwell_threshold, eps_meters, min_pts,
+                    gt$df, gt$label)
+  })
+})
 
 comparison <- comparison |>
   mutate(gt_type = factor(gt_type,
@@ -462,7 +489,7 @@ nrow(comparison)
 
 ```{r}
 summary_table <- comparison |>
-  group_by(dwell_threshold, gt_type) |>
+  group_by(dwell_threshold, eps_meters, min_pts, gt_type) |>
   summarize(
     n_subjects = n(),
     mean_precision = round(mean(precision), 3),
@@ -471,75 +498,145 @@ summary_table <- comparison |>
     sd_f1 = round(sd(f1), 3),
     .groups = "drop"
   ) |>
-  arrange(gt_type, dwell_threshold)
+  arrange(gt_type, desc(mean_f1))
 
 summary_table |>
   knitr::kable(
-    col.names = c("Dwell (min)", "GT Type", "N", "Precision",
-                  "Recall", "F1", "SD(F1)")
+    col.names = c("Dwell (min)", "Eps (m)", "MinPts", "GT Type", "N",
+                  "Precision", "Recall", "F1", "SD(F1)")
   )
 ```
 
-### F1 by Dwell Threshold
+### Best Parameters per GT Type
 
 ```{r}
+best_params <- summary_table |>
+  group_by(gt_type) |>
+  slice_max(mean_f1, n = 1, with_ties = FALSE) |>
+  ungroup()
+
+best_params |>
+  knitr::kable(
+    col.names = c("Dwell (min)", "Eps (m)", "MinPts", "GT Type", "N",
+                  "Precision", "Recall", "F1", "SD(F1)")
+  )
+```
+
+### F1 Heatmap
+
+Mean F1 across eps × minPts, faceted by dwell threshold (columns) and
+ground truth type (rows).
+
+```{r}
+#| fig-width: 12
+#| fig-height: 9
 summary_table |>
-  ggplot(aes(x = factor(dwell_threshold), y = mean_f1,
-             fill = gt_type)) +
-  geom_col(position = position_dodge(width = 0.7), width = 0.6) +
-  geom_errorbar(
-    aes(ymin = pmax(mean_f1 - sd_f1, 0), ymax = pmin(mean_f1 + sd_f1, 1)),
-    position = position_dodge(width = 0.7), width = 0.2
-  ) +
-  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  ggplot(aes(x = factor(eps_meters), y = factor(min_pts),
+             fill = mean_f1)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", mean_f1)), size = 3) +
+  scale_fill_viridis_c(labels = scales::percent, limits = c(0, 1),
+                       option = "magma", direction = -1) +
+  facet_grid(rows = vars(gt_type), cols = vars(dwell_threshold),
+             labeller = labeller(
+               dwell_threshold = \(x) paste0(x, " min"),
+               gt_type = label_value
+             )) +
   labs(
-    title = "DBSCAN F1 Score by Minimum Dwell Time",
-    x = "Minimum Dwell Time (minutes)",
-    y = "Mean F1 Score",
-    fill = "Ground Truth"
+    title = "Mean F1 Score: eps x minPts (faceted by dwell threshold & GT type)",
+    x = "eps (meters)",
+    y = "minPts",
+    fill = "Mean F1"
   ) +
   theme(legend.position = "bottom")
 ```
 
-### Precision and Recall by Dwell Threshold
+### Precision Heatmap
 
 ```{r}
+#| fig-width: 12
+#| fig-height: 9
 summary_table |>
-  pivot_longer(cols = c(mean_precision, mean_recall),
-               names_to = "metric", values_to = "value") |>
-  mutate(metric = if_else(metric == "mean_precision",
-                          "Precision", "Recall")) |>
-  ggplot(aes(x = factor(dwell_threshold), y = value,
-             color = metric, group = interaction(metric, gt_type),
-             linetype = gt_type)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 3) +
-  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  ggplot(aes(x = factor(eps_meters), y = factor(min_pts),
+             fill = mean_precision)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", mean_precision)), size = 3) +
+  scale_fill_viridis_c(labels = scales::percent, limits = c(0, 1),
+                       option = "magma", direction = -1) +
+  facet_grid(rows = vars(gt_type), cols = vars(dwell_threshold),
+             labeller = labeller(
+               dwell_threshold = \(x) paste0(x, " min"),
+               gt_type = label_value
+             )) +
   labs(
-    title = "Precision & Recall by Minimum Dwell Time",
-    x = "Minimum Dwell Time (minutes)",
-    y = "Score",
-    color = "Metric",
-    linetype = "Ground Truth"
+    title = "Mean Precision: eps x minPts (faceted by dwell threshold & GT type)",
+    x = "eps (meters)",
+    y = "minPts",
+    fill = "Precision"
   ) +
   theme(legend.position = "bottom")
 ```
 
-### Per-Subject F1 Distribution
+### Recall Heatmap
 
 ```{r}
-comparison |>
-  ggplot(aes(x = factor(dwell_threshold), y = f1, fill = gt_type)) +
-  geom_boxplot(position = position_dodge(width = 0.8), width = 0.7,
-               alpha = 0.7, outlier.alpha = 0.4) +
-  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+#| fig-width: 12
+#| fig-height: 9
+summary_table |>
+  ggplot(aes(x = factor(eps_meters), y = factor(min_pts),
+             fill = mean_recall)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", mean_recall)), size = 3) +
+  scale_fill_viridis_c(labels = scales::percent, limits = c(0, 1),
+                       option = "magma", direction = -1) +
+  facet_grid(rows = vars(gt_type), cols = vars(dwell_threshold),
+             labeller = labeller(
+               dwell_threshold = \(x) paste0(x, " min"),
+               gt_type = label_value
+             )) +
   labs(
-    title = "Per-Subject F1 Distribution by Dwell Threshold",
-    x = "Minimum Dwell Time (minutes)",
-    y = "F1 Score",
-    fill = "Ground Truth"
+    title = "Mean Recall: eps x minPts (faceted by dwell threshold & GT type)",
+    x = "eps (meters)",
+    y = "minPts",
+    fill = "Recall"
   ) +
   theme(legend.position = "bottom")
+```
+
+### Per-Subject F1 Distribution (Best Params)
+
+Boxplots for the best parameter combination per GT type only, to
+keep the plot readable.
+
+```{r}
+best_comparison <- comparison |>
+  semi_join(best_params,
+            by = c("dwell_threshold", "eps_meters", "min_pts", "gt_type"))
+
+best_comparison |>
+  mutate(
+    param_label = paste0("dwell=", dwell_threshold,
+                         ", eps=", eps_meters,
+                         ", minPts=", min_pts)
+  ) |>
+  ggplot(aes(x = gt_type, y = f1, fill = gt_type)) +
+  geom_boxplot(width = 0.6, alpha = 0.7, outlier.alpha = 0.4) +
+  geom_text(
+    data = best_comparison |>
+      distinct(gt_type, dwell_threshold, eps_meters, min_pts) |>
+      mutate(param_label = paste0("dwell=", dwell_threshold,
+                                  ", eps=", eps_meters,
+                                  ", minPts=", min_pts)),
+    aes(x = gt_type, y = 1.05, label = param_label),
+    inherit.aes = FALSE, size = 3
+  ) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1.1)) +
+  labs(
+    title = "Per-Subject F1 Distribution (Best Params per GT Type)",
+    x = "Ground Truth Type",
+    y = "F1 Score"
+  ) +
+  theme(legend.position = "none")
 ```
 
 ### Field Recommendation
@@ -549,11 +646,381 @@ minutes are standard (Thierry et al., 2013; Boruff et al., 2012).
 Shorter thresholds (2 min) risk capturing transient stops (e.g.,
 traffic lights) as stays, inflating cluster count and reducing
 precision. Longer thresholds (15 min) may miss brief but meaningful
-visits, reducing recall. The results above can guide selection for
-this study's context.
+visits, reducing recall. The heatmaps above show how eps and minPts
+interact with dwell threshold, enabling informed parameter selection
+for this study's context.
 
-## Save Results
+## Bipartite Matching Comparison
+
+The nearest-neighbor evaluation above allows many-to-one matching:
+multiple centroids can claim the same GT location, and multiple GT
+locations can be captured by the same centroid. This inflates
+precision when GT locations are dense. Bipartite (Hungarian)
+matching enforces one-to-one assignment, giving a stricter measure
+of how well centroids and GT locations correspond.
+
+### Bipartite Capture Function
 
 ```{r}
-write_csv(comparison, here::here(path_gps2, "data/dbscan_dwell_comparison.csv"))
+calculate_capture_bipartite <- function(centroids, gt_locations,
+                                        threshold_m = PROXIMITY_THRESHOLD) {
+  if (nrow(centroids) == 0 || nrow(gt_locations) == 0) {
+    return(list(
+      recall = 0, precision = 0, f1 = 0,
+      n_matched = 0,
+      n_ground_truth = nrow(gt_locations),
+      n_centroids = nrow(centroids)
+    ))
+  }
+
+  centroid_coords <- cbind(centroids$lon, centroids$lat)
+  gt_coords <- cbind(gt_locations$lon, gt_locations$lat)
+  dist_mat <- distm(centroid_coords, gt_coords, fun = distHaversine)
+
+  # Binary eligibility: 1 if within threshold, 0 otherwise
+  eligible <- ifelse(dist_mat <= threshold_m, 1, 0)
+
+  nc <- nrow(centroids)
+  ng <- nrow(gt_locations)
+
+  # solve_LSAP requires ncol >= nrow
+  if (nc <= ng) {
+    assignment <- solve_LSAP(eligible, maximum = TRUE)
+    matched_pairs <- cbind(seq_len(nc), as.integer(assignment))
+  } else {
+    assignment <- solve_LSAP(t(eligible), maximum = TRUE)
+    matched_pairs <- cbind(as.integer(assignment), seq_len(ng))
+  }
+
+  n_matched <- sum(eligible[matched_pairs] == 1)
+
+  precision <- n_matched / nc
+  recall <- n_matched / ng
+  f1 <- if (precision + recall > 0) {
+    2 * (precision * recall) / (precision + recall)
+  } else {
+    0
+  }
+
+  list(
+    recall = recall, precision = precision, f1 = f1,
+    n_matched = n_matched,
+    n_ground_truth = ng,
+    n_centroids = nc
+  )
+}
+```
+
+### Bipartite Evaluation
+
+```{r}
+evaluate_params_bipartite <- function(dwell_threshold, eps_meters, min_pts,
+                                      gt_df, gt_label) {
+  centroids <- centroids_all |>
+    filter(
+      dwell_threshold == !!dwell_threshold,
+      eps_meters == !!eps_meters,
+      min_pts == !!min_pts
+    )
+  subjects <- intersect(unique(centroids$subid), unique(gt_df$subid))
+
+  future_map_dfr(subjects, \(sub) {
+    sub_centroids <- centroids |> filter(subid == sub)
+    sub_gt <- gt_df |> filter(subid == sub)
+
+    if (nrow(sub_gt) == 0) return(NULL)
+
+    capture <- calculate_capture_bipartite(sub_centroids, sub_gt)
+
+    tibble(
+      subid = sub,
+      dwell_threshold = dwell_threshold,
+      eps_meters = eps_meters,
+      min_pts = min_pts,
+      gt_type = gt_label,
+      precision = capture$precision,
+      recall = capture$recall,
+      f1 = capture$f1,
+      n_centroids = capture$n_centroids,
+      n_ground_truth = capture$n_ground_truth
+    )
+  }, .options = furrr_options(seed = TRUE))
+}
+```
+
+```{r}
+comparison_bipartite <- map_dfr(gt_sets, \(gt) {
+  pmap_dfr(param_grid, \(dwell_threshold, eps_meters, min_pts) {
+    evaluate_params_bipartite(dwell_threshold, eps_meters, min_pts,
+                              gt$df, gt$label)
+  })
+})
+
+comparison_bipartite <- comparison_bipartite |>
+  mutate(gt_type = factor(gt_type,
+                          levels = c("All Locations", "Intake Only", "No Intake")))
+nrow(comparison_bipartite)
+```
+
+### Bipartite Summary
+
+```{r}
+summary_bipartite <- comparison_bipartite |>
+  group_by(dwell_threshold, eps_meters, min_pts, gt_type) |>
+  summarize(
+    n_subjects = n(),
+    mean_precision = round(mean(precision), 3),
+    mean_recall = round(mean(recall), 3),
+    mean_f1 = round(mean(f1), 3),
+    sd_f1 = round(sd(f1), 3),
+    .groups = "drop"
+  ) |>
+  arrange(gt_type, desc(mean_f1))
+
+best_params_bipartite <- summary_bipartite |>
+  group_by(gt_type) |>
+  slice_max(mean_f1, n = 1, with_ties = FALSE) |>
+  ungroup()
+
+best_params_bipartite |>
+  knitr::kable(
+    col.names = c("Dwell (min)", "Eps (m)", "MinPts", "GT Type", "N",
+                  "Precision", "Recall", "F1", "SD(F1)")
+  )
+```
+
+### Method Comparison: NN vs Bipartite
+
+```{r}
+method_comparison <- inner_join(
+  summary_table |>
+    select(dwell_threshold, eps_meters, min_pts, gt_type,
+           mean_precision, mean_recall, mean_f1) |>
+    rename(precision_nn = mean_precision,
+           recall_nn = mean_recall,
+           f1_nn = mean_f1),
+  summary_bipartite |>
+    select(dwell_threshold, eps_meters, min_pts, gt_type,
+           mean_precision, mean_recall, mean_f1) |>
+    rename(precision_bp = mean_precision,
+           recall_bp = mean_recall,
+           f1_bp = mean_f1),
+  by = c("dwell_threshold", "eps_meters", "min_pts", "gt_type")
+) |>
+  mutate(
+    precision_delta = precision_nn - precision_bp,
+    recall_delta = recall_nn - recall_bp,
+    f1_delta = f1_nn - f1_bp
+  )
+
+method_comparison |>
+  group_by(gt_type) |>
+  summarize(
+    mean_precision_inflation = round(mean(precision_delta), 3),
+    mean_recall_inflation = round(mean(recall_delta), 3),
+    mean_f1_inflation = round(mean(f1_delta), 3),
+    max_precision_inflation = round(max(precision_delta), 3),
+    .groups = "drop"
+  ) |>
+  knitr::kable()
+```
+
+### Bipartite F1 Heatmap
+
+```{r}
+#| fig-width: 12
+#| fig-height: 9
+summary_bipartite |>
+  ggplot(aes(x = factor(eps_meters), y = factor(min_pts),
+             fill = mean_f1)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", mean_f1)), size = 3) +
+  scale_fill_viridis_c(labels = scales::percent, limits = c(0, 1),
+                       option = "magma", direction = -1) +
+  facet_grid(rows = vars(gt_type), cols = vars(dwell_threshold),
+             labeller = labeller(
+               dwell_threshold = \(x) paste0(x, " min"),
+               gt_type = label_value
+             )) +
+  labs(
+    title = "Bipartite F1: eps x minPts (faceted by dwell threshold & GT type)",
+    x = "eps (meters)",
+    y = "minPts",
+    fill = "Mean F1"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Bipartite Precision Heatmap
+
+```{r}
+#| fig-width: 12
+#| fig-height: 9
+summary_bipartite |>
+  ggplot(aes(x = factor(eps_meters), y = factor(min_pts),
+             fill = mean_precision)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", mean_precision)), size = 3) +
+  scale_fill_viridis_c(labels = scales::percent, limits = c(0, 1),
+                       option = "magma", direction = -1) +
+  facet_grid(rows = vars(gt_type), cols = vars(dwell_threshold),
+             labeller = labeller(
+               dwell_threshold = \(x) paste0(x, " min"),
+               gt_type = label_value
+             )) +
+  labs(
+    title = "Bipartite Precision: eps x minPts (faceted by dwell threshold & GT type)",
+    x = "eps (meters)",
+    y = "minPts",
+    fill = "Precision"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Save Bipartite Results
+
+```{r}
+write_csv(comparison_bipartite,
+          here::here(path_gps2, "data/dbscan_param_comparison_bipartite.csv"))
+```
+
+## Diagnostics
+
+### NN vs Bipartite Precision Inflation
+
+How much does nearest-neighbor matching inflate metrics compared to
+bipartite, now that GT is GPS-verified?
+
+```{r}
+method_comparison |>
+  group_by(gt_type) |>
+  summarize(
+    mean_precision_inflation = round(mean(precision_delta), 3),
+    mean_recall_inflation = round(mean(recall_delta), 3),
+    mean_f1_inflation = round(mean(f1_delta), 3),
+    max_precision_inflation = round(max(precision_delta), 3),
+    .groups = "drop"
+  ) |>
+  knitr::kable()
+```
+
+Inflation by parameter combo for intake-only (sorted by largest
+precision gap):
+
+```{r}
+method_comparison |>
+  filter(gt_type == "Intake Only") |>
+  arrange(desc(precision_delta)) |>
+  select(dwell_threshold, eps_meters, min_pts,
+         precision_nn, precision_bp, precision_delta,
+         f1_nn, f1_bp, f1_delta) |>
+  head(10) |>
+  knitr::kable(digits = 3)
+```
+
+### GT Locations per Subject After GPS Filter
+
+How many intake GT locations survive per subject? Sparse GT makes
+per-subject F1 noisy — a single missed match can swing F1
+substantially.
+
+```{r}
+gt_intake_per_sub <- gt_intake |>
+  count(subid, name = "n_gt_locations")
+
+gt_intake_per_sub |>
+  summarize(
+    n_subjects = n(),
+    mean_locs = round(mean(n_gt_locations), 1),
+    median_locs = median(n_gt_locations),
+    min_locs = min(n_gt_locations),
+    max_locs = max(n_gt_locations),
+    pct_3_or_fewer = round(mean(n_gt_locations <= 3) * 100, 1)
+  ) |>
+  knitr::kable()
+```
+
+```{r}
+gt_intake_per_sub |>
+  ggplot(aes(x = n_gt_locations)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  labs(
+    title = "Intake GT Locations per Subject (GPS-Verified)",
+    x = "Number of GT Locations",
+    y = "Number of Subjects"
+  )
+```
+
+### Matching Threshold Sensitivity
+
+Is 100m the right threshold? Test 50m to 250m in 25m increments
+using the best bipartite intake-only params to see how F1 changes.
+
+```{r}
+best_intake <- best_params_bipartite |>
+  filter(gt_type == "Intake Only")
+
+best_centroids <- centroids_all |>
+  filter(
+    dwell_threshold == best_intake$dwell_threshold,
+    eps_meters == best_intake$eps_meters,
+    min_pts == best_intake$min_pts
+  )
+
+thresholds_to_test <- seq(50, 250, by = 25)
+
+threshold_sensitivity <- map_dfr(thresholds_to_test, \(thresh) {
+  subjects <- intersect(unique(best_centroids$subid),
+                        unique(gt_intake$subid))
+
+  sub_results <- future_map_dfr(subjects, \(sub) {
+    sub_centroids <- best_centroids |> filter(subid == sub)
+    sub_gt <- gt_intake |> filter(subid == sub)
+
+    if (nrow(sub_gt) == 0) return(NULL)
+
+    capture <- calculate_capture_bipartite(sub_centroids, sub_gt,
+                                           threshold_m = thresh)
+    tibble(
+      subid = sub,
+      precision = capture$precision,
+      recall = capture$recall,
+      f1 = capture$f1
+    )
+  }, .options = furrr_options(seed = TRUE))
+
+  sub_results |>
+    summarize(
+      threshold_m = thresh,
+      mean_precision = round(mean(precision), 3),
+      mean_recall = round(mean(recall), 3),
+      mean_f1 = round(mean(f1), 3)
+    )
+})
+
+threshold_sensitivity |>
+  knitr::kable(col.names = c("Threshold (m)", "Precision", "Recall", "F1"))
+```
+
+```{r}
+threshold_sensitivity |>
+  pivot_longer(cols = c(mean_precision, mean_recall, mean_f1),
+               names_to = "metric", values_to = "value") |>
+  mutate(metric = case_match(metric,
+    "mean_precision" ~ "Precision",
+    "mean_recall" ~ "Recall",
+    "mean_f1" ~ "F1"
+  )) |>
+  ggplot(aes(x = threshold_m, y = value, color = metric)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_x_continuous(breaks = thresholds_to_test) +
+  labs(
+    title = "Bipartite Metrics by Matching Threshold (Intake Only, Best Params)",
+    x = "Matching Threshold (meters)",
+    y = "Score",
+    color = "Metric"
+  ) +
+  theme(legend.position = "bottom")
 ```
