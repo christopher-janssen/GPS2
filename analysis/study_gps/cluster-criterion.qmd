@@ -1,0 +1,856 @@
+---
+title: "Cluster Criterion Evaluation"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# Cluster Criterion Evaluation
+
+The predefined locations in `locs_gt.csv` were derived from a
+legacy clustering algorithm that identified "important" clusters
+during the study and prompted participants to characterize them.
+This analysis asks: **how many additional characterization-worthy
+locations would DBSCAN surface that the old method missed?**
+
+A location is characterization-worthy if it has visits on at least
+3 distinct days AND aggregate dwell time > 20 minutes within a
+cumulative time window. DBSCAN is re-run at each cumulative window
+(clusters evolve as data accumulates) using a fixed parameter set
+(dwell=5 min, eps=25m, minPts=2). Predefined locations are
+static---only the stays available for matching change with the
+window.
+
+## Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+
+library(geosphere)
+library(furrr)
+library(leaflet)
+
+plan(multisession, workers = availableCores() - 1)
+
+theme_set(theme_minimal())
+```
+
+## Parameters
+
+```{r}
+DWELL_THRESHOLD <- 5   # stay detection minimum dwell (minutes)
+EPS_METERS <- 25       # DBSCAN distance threshold (meters)
+MIN_PTS <- 2           # DBSCAN minimum stays per cluster
+
+# cluster criterion thresholds
+MIN_DAYS <- 3          # visits on at least 3 distinct days
+MIN_DWELL_MINS <- 20   # aggregate dwell > 20 minutes
+
+# proximity threshold for matching stays to predefined locations
+PROXIMITY_THRESHOLD <- 100
+
+# deduplication threshold for predefined locations
+DEDUPE_THRESHOLD <- 50
+
+# cumulative window increment (days)
+WINDOW_INCREMENT <- 7
+
+# stay detection parameters
+DIST_THRESHOLD <- 50
+MAX_GAP <- 60
+MAX_STAY_HOURS <- 12
+```
+
+## Load Data
+
+```{r}
+study_dates <- read_csv(
+  here::here(path_shared, "study_dates_gps.csv"),
+  show_col_types = FALSE
+) |>
+  mutate(
+    study_start = as_date(study_start),
+    study_end = as_date(study_end)
+  )
+
+subids_dates <- study_dates |>
+  pull(subid) |>
+  unique()
+```
+
+```{r}
+gps_data <- read_csv(
+  here::here(path_gps2, "data/processed_gps.csv"),
+  show_col_types = FALSE
+) |>
+  filter(subid %in% subids_dates)
+
+nrow(gps_data)
+```
+
+```{r}
+locs_gt <- read_csv(
+  here::here(path_gps2, "data/locs_gt.csv"),
+  show_col_types = FALSE
+) |>
+  mutate(subid = as.numeric(subid)) |>
+  filter(subid %in% subids_dates)
+
+nrow(locs_gt)
+```
+
+## Helper Functions
+
+### Stay Detection
+
+```{r}
+detect_stays <- function(gps_data, dist_threshold = DIST_THRESHOLD,
+                         time_threshold = 10, max_gap = MAX_GAP,
+                         max_hours = MAX_STAY_HOURS) {
+  data <- gps_data |>
+    group_by(subid) |>
+    mutate(
+      dist_from_prev = if_else(
+        row_number() == 1,
+        NA_real_,
+        distHaversine(cbind(lag(lon), lag(lat)), cbind(lon, lat))
+      ),
+      time_gap_mins = if_else(
+        row_number() == 1,
+        NA_real_,
+        as.numeric(difftime(time_local, lag(time_local), units = "mins"))
+      )
+    ) |>
+    ungroup()
+
+  data <- data |>
+    group_by(subid) |>
+    mutate(
+      is_new_stay = row_number() == 1 |
+        dist_from_prev > dist_threshold |
+        time_gap_mins > max_gap,
+      stay_id_subject = cumsum(is_new_stay)
+    ) |>
+    ungroup()
+
+  stays_raw <- data |>
+    group_by(subid, stay_id_subject) |>
+    summarize(
+      start_time = min(time_local),
+      end_time = max(time_local),
+      dwell_mins = as.numeric(difftime(max(time_local),
+                                       min(time_local), units = "mins")),
+      n_points = n(),
+      lat = median(lat),
+      lon = median(lon),
+      .groups = "drop"
+    )
+
+  stays_raw |>
+    filter(dwell_mins >= time_threshold & dwell_mins <= max_hours * 60) |>
+    mutate(stay_id = row_number()) |>
+    select(stay_id, subid, start_time, end_time, dwell_mins, n_points,
+           lat, lon)
+}
+```
+
+### DBSCAN Clustering
+
+```{r}
+run_dbscan <- function(coords, eps = 50, min_pts = 3) {
+  if (nrow(coords) < 2) {
+    return(list(
+      cluster = rep(1, nrow(coords)),
+      n_clusters = 1,
+      n_noise = 0
+    ))
+  }
+
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+  result <- dbscan(as.dist(dist_mat), eps = eps, minPts = min_pts)
+
+  list(
+    cluster = result$cluster,
+    n_clusters = max(result$cluster),
+    n_noise = sum(result$cluster == 0)
+  )
+}
+```
+
+### Extract Cluster Centroids
+
+```{r}
+get_centroids <- function(stays_df, cluster_col) {
+  stays_df |>
+    filter(.data[[cluster_col]] > 0) |>
+    group_by(.data[[cluster_col]]) |>
+    summarize(
+      lat = median(lat),
+      lon = median(lon),
+      total_dwell_hrs = sum(dwell_mins) / 60,
+      n_stays = n(),
+      n_days = n_distinct(as.Date(start_time)),
+      .groups = "drop"
+    ) |>
+    rename(cluster_id = 1)
+}
+```
+
+### Deduplicate Predefined Locations
+
+```{r}
+dedupe_locations <- function(df, threshold_m = DEDUPE_THRESHOLD) {
+  if (nrow(df) < 2) {
+    return(df |> mutate(location_id = 1))
+  }
+
+  coords <- cbind(df$lon, df$lat)
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+  clusters <- dbscan(as.dist(dist_mat), eps = threshold_m, minPts = 1)
+
+  df |>
+    mutate(location_id = clusters$cluster) |>
+    group_by(location_id) |>
+    summarize(
+      lat = median(lat),
+      lon = median(lon),
+      n_reports = n(),
+      intake = max(intake),
+      .groups = "drop"
+    )
+}
+```
+
+### Evaluate Criterion
+
+For DBSCAN clusters, `get_centroids()` already computes `n_days`
+(distinct days visited) and `total_dwell_hrs`. A cluster qualifies
+if visited on >= `MIN_DAYS` distinct days with > `MIN_DWELL_MINS`
+aggregate dwell.
+
+For predefined locations, only algorithm-derived locations
+(non-intake) are evaluated against the criterion. Intake locations
+were volunteered by participants, not discovered by the algorithm.
+
+A qualifying DBSCAN cluster is "missed" if its centroid is
+> `PROXIMITY_THRESHOLD` meters from every known location
+(both intake and algorithm-derived). This avoids penalizing
+the old algorithm for not re-discovering intake locations, while
+ensuring DBSCAN clusters near intake locations are not counted
+as missed.
+
+```{r}
+evaluate_criterion <- function(stays_window, clusters_df = NULL,
+                               predefined_locs = NULL,
+                               all_locs = NULL,
+                               min_days = MIN_DAYS,
+                               min_dwell = MIN_DWELL_MINS,
+                               proximity_m = PROXIMITY_THRESHOLD) {
+  results <- list()
+
+  # --- DBSCAN clusters ---
+  qualifying_centroids <- NULL
+  if (!is.null(clusters_df) && nrow(clusters_df) > 0) {
+    n_clusters <- nrow(clusters_df)
+
+    clusters_df <- clusters_df |>
+      mutate(
+        total_dwell_mins = total_dwell_hrs * 60,
+        qualifying = n_days >= min_days & total_dwell_mins > min_dwell
+      )
+
+    qualifying_centroids <- clusters_df |> filter(qualifying)
+
+    results$dbscan <- list(
+      n_clusters = n_clusters,
+      n_qualifying = sum(clusters_df$qualifying),
+      frac_qualifying = sum(clusters_df$qualifying) / n_clusters
+    )
+  }
+
+  # --- predefined locations ---
+  if (!is.null(predefined_locs) && nrow(predefined_locs) > 0 &&
+      nrow(stays_window) > 0) {
+    n_locations <- nrow(predefined_locs)
+    stay_coords <- cbind(stays_window$lon, stays_window$lat)
+
+    loc_qualifying <- map_lgl(seq_len(n_locations), \(i) {
+      loc_coord <- c(predefined_locs$lon[i], predefined_locs$lat[i])
+      distances <- distHaversine(loc_coord, stay_coords)
+      nearby_stays <- stays_window[distances <= proximity_m, ]
+
+      if (nrow(nearby_stays) == 0) return(FALSE)
+
+      n_days_visited <- n_distinct(as.Date(nearby_stays$start_time))
+      total_dwell <- sum(nearby_stays$dwell_mins)
+
+      n_days_visited >= min_days & total_dwell > min_dwell
+    })
+
+    results$predefined <- list(
+      n_locations = n_locations,
+      n_qualifying = sum(loc_qualifying),
+      frac_qualifying = sum(loc_qualifying) / n_locations
+    )
+  }
+
+  # --- missed locations: qualifying DBSCAN clusters not near any
+  #     known location (intake + algorithm) ---
+  locs_for_missed <- all_locs %||% predefined_locs
+  n_missed <- 0L
+  if (!is.null(qualifying_centroids) && nrow(qualifying_centroids) > 0) {
+    if (is.null(locs_for_missed) || nrow(locs_for_missed) == 0) {
+      n_missed <- nrow(qualifying_centroids)
+    } else {
+      all_coords <- cbind(locs_for_missed$lon, locs_for_missed$lat)
+      n_missed <- sum(map_lgl(seq_len(nrow(qualifying_centroids)), \(i) {
+        cent_coord <- c(qualifying_centroids$lon[i],
+                        qualifying_centroids$lat[i])
+        min(distHaversine(cent_coord, all_coords)) > proximity_m
+      }))
+    }
+  }
+  results$n_missed <- n_missed
+
+  results
+}
+```
+
+## Run Stay Detection
+
+```{r}
+stays <- detect_stays(gps_data, time_threshold = DWELL_THRESHOLD)
+
+tibble(
+  n_stays = nrow(stays),
+  n_subjects = n_distinct(stays$subid),
+  median_dwell_mins = round(median(stays$dwell_mins), 1),
+  mean_dwell_mins = round(mean(stays$dwell_mins), 1),
+  median_points = median(stays$n_points)
+) |>
+  knitr::kable()
+```
+
+## Add Study Day & Define Windows
+
+```{r}
+stays <- stays |>
+  group_by(subid) |>
+  mutate(
+    study_start = min(start_time),
+    study_day = as.numeric(difftime(start_time, study_start,
+                                    units = "days")) + 1
+  ) |>
+  ungroup() |>
+  select(-study_start)
+```
+
+```{r}
+subject_durations <- stays |>
+  group_by(subid) |>
+  summarize(max_study_day = max(study_day), .groups = "drop")
+
+windows <- subject_durations |>
+  filter(max_study_day >= WINDOW_INCREMENT) |>
+  rowwise() |>
+  mutate(
+    windows = list(seq(WINDOW_INCREMENT, max_study_day,
+                       by = WINDOW_INCREMENT))
+  ) |>
+  unnest(windows) |>
+  rename(window_days = windows) |>
+  select(subid, window_days)
+
+nrow(windows)
+```
+
+## Deduplicate Predefined Locations
+
+```{r}
+gt_deduped <- locs_gt |>
+  group_by(subid) |>
+  group_modify(~ dedupe_locations(.x)) |>
+  ungroup()
+
+# algorithm-derived locations only (exclude intake)
+gt_algorithm <- gt_deduped |> filter(intake == 0)
+
+# all locations (intake + algorithm) for missed computation
+gt_all <- gt_deduped
+
+bind_rows(
+  gt_all |> count(subid, name = "n") |>
+    summarize(set = "All (intake + algorithm)",
+              n_subjects = n(), total = sum(n),
+              mean = round(mean(n), 1), median = median(n)),
+  gt_algorithm |> count(subid, name = "n") |>
+    summarize(set = "Algorithm only",
+              n_subjects = n(), total = sum(n),
+              mean = round(mean(n), 1), median = median(n))
+) |>
+  knitr::kable(col.names = c("Set", "N Subjects", "Total Locs",
+                              "Mean/Subject", "Median/Subject"))
+```
+
+## Pipeline
+
+For each cumulative window x subject: filter stays, run DBSCAN,
+evaluate criterion for both DBSCAN clusters and predefined
+locations.
+
+```{r}
+#| cache: true
+
+# analysis function for a single subject x window
+analyze_criterion <- function(sub, window_days,
+                              stays, gt_algorithm, gt_all) {
+  # filter stays to this subject and cumulative window
+  stays_window <- stays |>
+    filter(subid == sub, study_day <= window_days)
+
+  if (nrow(stays_window) < 2) return(NULL)
+
+  # run DBSCAN on windowed stays
+  coords <- cbind(stays_window$lon, stays_window$lat)
+  db <- run_dbscan(coords, eps = EPS_METERS, min_pts = MIN_PTS)
+  stays_window <- stays_window |> mutate(cluster = db$cluster)
+
+  # get centroids for DBSCAN clusters
+  centroids <- NULL
+  if (db$n_clusters > 0 && any(db$cluster > 0)) {
+    centroids <- get_centroids(stays_window, "cluster")
+  }
+
+  # algorithm-derived locations for criterion evaluation
+  sub_algo <- gt_algorithm |> filter(subid == sub)
+  # all locations (intake + algorithm) for missed computation
+  sub_all <- gt_all |> filter(subid == sub)
+
+  # evaluate criterion
+  crit <- evaluate_criterion(
+    stays_window = stays_window,
+    clusters_df = centroids,
+    predefined_locs = sub_algo,
+    all_locs = sub_all
+  )
+
+  # build result row
+  tibble(
+    subid = sub,
+    window_days = window_days,
+    # DBSCAN metrics
+    dbscan_n_clusters = crit$dbscan$n_clusters %||% 0L,
+    dbscan_n_qualifying = crit$dbscan$n_qualifying %||% 0L,
+    dbscan_frac_qualifying = crit$dbscan$frac_qualifying %||% NA_real_,
+    # predefined location metrics
+    predef_n_locations = crit$predefined$n_locations %||% 0L,
+    predef_n_qualifying = crit$predefined$n_qualifying %||% 0L,
+    predef_frac_qualifying = crit$predefined$frac_qualifying %||% NA_real_,
+    # missed: qualifying DBSCAN clusters with no nearby predefined location
+    n_missed = crit$n_missed
+  )
+}
+```
+
+```{r}
+#| cache: true
+
+criterion_results <- future_pmap_dfr(
+  list(
+    sub = windows$subid,
+    window_days = windows$window_days
+  ),
+  analyze_criterion,
+  stays = stays,
+  gt_algorithm = gt_algorithm,
+  gt_all = gt_all,
+  .options = furrr_options(seed = TRUE),
+  .progress = TRUE
+)
+
+nrow(criterion_results)
+```
+
+## Results
+
+### Summary by Window
+
+```{r}
+summary_by_window <- criterion_results |>
+  group_by(window_days) |>
+  summarize(
+    n_subjects = n(),
+    # DBSCAN
+    dbscan_mean_frac = mean(dbscan_frac_qualifying, na.rm = TRUE),
+    dbscan_mean_n_qualifying = mean(dbscan_n_qualifying, na.rm = TRUE),
+    dbscan_mean_n_clusters = mean(dbscan_n_clusters, na.rm = TRUE),
+    # predefined
+    predef_mean_frac = mean(predef_frac_qualifying, na.rm = TRUE),
+    predef_mean_n_qualifying = mean(predef_n_qualifying, na.rm = TRUE),
+    predef_mean_n_locations = mean(predef_n_locations, na.rm = TRUE),
+    # missed by old method
+    mean_n_missed = mean(n_missed, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# drop windows with too few subjects
+summary_by_window <- summary_by_window |>
+  filter(n_subjects >= 20)
+
+late_window <- max(summary_by_window$window_days)
+```
+
+### Criterion Rate Over Time
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+dbscan_label <- paste0("DBSCAN (dwell=", DWELL_THRESHOLD,
+                       ", eps=", EPS_METERS,
+                       ", minPts=", MIN_PTS, ")")
+
+summary_by_window |>
+  select(window_days, dbscan_mean_frac, predef_mean_frac, n_subjects) |>
+  pivot_longer(
+    cols = c(dbscan_mean_frac, predef_mean_frac),
+    names_to = "method",
+    values_to = "frac_qualifying"
+  ) |>
+  mutate(method = case_match(method,
+    "dbscan_mean_frac" ~ dbscan_label,
+    "predef_mean_frac" ~ "Predefined Locations"
+  )) |>
+  ggplot(aes(x = window_days, y = frac_qualifying, color = method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "Criterion Rate Over Time",
+    subtitle = paste0("Criterion: >=", MIN_DAYS, " distinct days AND >",
+                      MIN_DWELL_MINS, " min aggregate dwell"),
+    x = "Cumulative Days from Study Onset",
+    y = "Mean Fraction Qualifying",
+    color = "Method"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Count of Qualifying Locations Over Time
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+summary_by_window |>
+  select(window_days, dbscan_mean_n_qualifying,
+         predef_mean_n_qualifying, n_subjects) |>
+  pivot_longer(
+    cols = c(dbscan_mean_n_qualifying, predef_mean_n_qualifying),
+    names_to = "method",
+    values_to = "n_qualifying"
+  ) |>
+  mutate(method = case_match(method,
+    "dbscan_mean_n_qualifying" ~ dbscan_label,
+    "predef_mean_n_qualifying" ~ "Predefined Locations"
+  )) |>
+  ggplot(aes(x = window_days, y = n_qualifying, color = method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Count of Qualifying Locations Over Time",
+    subtitle = paste0("Criterion: >=", MIN_DAYS, " distinct days AND >",
+                      MIN_DWELL_MINS, " min aggregate dwell"),
+    x = "Cumulative Days from Study Onset",
+    y = "Mean Number Qualifying",
+    color = "Method"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Missed Locations Over Time
+
+Qualifying DBSCAN clusters with no predefined location within
+`r PROXIMITY_THRESHOLD`m---locations worth characterizing that the
+old algorithm never surfaced.
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+summary_by_window |>
+  ggplot(aes(x = window_days, y = mean_n_missed)) +
+  geom_line(linewidth = 1, color = "coral") +
+  geom_point(size = 2, color = "coral") +
+  labs(
+    title = "Missed Locations Over Time",
+    subtitle = "Qualifying DBSCAN clusters not near any predefined location",
+    x = "Cumulative Days from Study Onset",
+    y = "Mean Number Missed per Subject"
+  )
+```
+
+### Per-Subject Boxplots at Final Window
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+final_window_data <- criterion_results |>
+  filter(window_days == late_window)
+
+final_long <- bind_rows(
+  final_window_data |>
+    select(subid, frac = dbscan_frac_qualifying) |>
+    mutate(method = "DBSCAN"),
+  final_window_data |>
+    select(subid, frac = predef_frac_qualifying) |>
+    mutate(method = "Predefined")
+) |>
+  filter(!is.na(frac))
+
+final_long |>
+  ggplot(aes(x = method, y = frac, fill = method)) +
+  geom_boxplot(width = 0.6, alpha = 0.7, outlier.alpha = 0.4) +
+  geom_jitter(width = 0.15, alpha = 0.3, size = 1.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = paste0("Per-Subject Fraction Qualifying at Day ", late_window),
+    subtitle = dbscan_label,
+    x = "Method",
+    y = "Fraction Qualifying"
+  ) +
+  theme(legend.position = "none")
+```
+
+### Per-Subject Missed Locations
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+final_window_data |>
+  ggplot(aes(x = n_missed)) +
+  geom_histogram(binwidth = 1, fill = "coral", color = "white") +
+  labs(
+    title = paste0("Missed Locations per Subject at Day ", late_window),
+    subtitle = "Qualifying DBSCAN clusters with no nearby predefined location",
+    x = "Number of Missed Locations",
+    y = "Number of Subjects"
+  )
+```
+
+### Summary Table: Yield Comparison
+
+```{r}
+late_summary <- summary_by_window |>
+  filter(window_days == late_window)
+
+tibble(
+  method = c(dbscan_label, "Predefined Locations"),
+  n_qualifying = c(
+    round(late_summary$dbscan_mean_n_qualifying, 1),
+    round(late_summary$predef_mean_n_qualifying, 1)
+  ),
+  n_total = c(
+    round(late_summary$dbscan_mean_n_clusters, 1),
+    round(late_summary$predef_mean_n_locations, 1)
+  ),
+  frac_qualifying = c(
+    round(late_summary$dbscan_mean_frac, 3),
+    round(late_summary$predef_mean_frac, 3)
+  ),
+  n_missed = c(round(late_summary$mean_n_missed, 1), NA_real_)
+) |>
+  knitr::kable(
+    col.names = c("Method", "N Qualifying", "N Total",
+                  "Frac Qualifying", "N Missed")
+  )
+```
+
+## Diagnostics
+
+### Per-Subject Location Counts
+
+```{r}
+gt_per_sub <- gt_algorithm |>
+  count(subid, name = "n_locations")
+
+gt_per_sub |>
+  summarize(
+    n_subjects = n(),
+    mean_locs = round(mean(n_locations), 1),
+    median_locs = median(n_locations),
+    min_locs = min(n_locations),
+    max_locs = max(n_locations)
+  ) |>
+  knitr::kable()
+```
+
+```{r}
+gt_per_sub |>
+  ggplot(aes(x = n_locations)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  labs(
+    title = "Algorithm-Derived Locations per Subject (Deduplicated)",
+    x = "Number of Locations",
+    y = "Number of Subjects"
+  )
+```
+
+### Sample Size by Window
+
+```{r}
+summary_by_window |>
+  ggplot(aes(x = window_days, y = n_subjects)) +
+  geom_col(fill = "steelblue", alpha = 0.7) +
+  geom_hline(yintercept = 20, linetype = "dashed", color = "red") +
+  labs(
+    title = "Sample Size at Each Cumulative Window",
+    subtitle = "Red line = N=20 threshold for reliability",
+    x = "Cumulative Days from Study Onset",
+    y = "Number of Subjects"
+  )
+```
+
+### Criterion Sensitivity: Varying Minimum Days
+
+How does the number of qualifying and missed locations change as
+we require more distinct days? This is the limiting reagent ---
+dwell time is easily satisfied once a location has multiple visits.
+
+```{r}
+#| cache: true
+
+min_days_test <- c(2, 3, 5, 7, 10, 14)
+
+subjects_at_late <- criterion_results |>
+  filter(window_days == late_window) |>
+  pull(subid) |>
+  unique()
+
+sensitivity_results <- map_dfr(min_days_test, \(test_days) {
+  sub_results <- map_dfr(subjects_at_late, \(sub) {
+    stays_window <- stays |>
+      filter(subid == sub, study_day <= late_window)
+
+    if (nrow(stays_window) < 2) return(NULL)
+
+    coords <- cbind(stays_window$lon, stays_window$lat)
+    db <- run_dbscan(coords, eps = EPS_METERS, min_pts = MIN_PTS)
+    stays_window <- stays_window |> mutate(cluster = db$cluster)
+
+    centroids <- NULL
+    if (db$n_clusters > 0 && any(db$cluster > 0)) {
+      centroids <- get_centroids(stays_window, "cluster")
+    }
+
+    sub_algo <- gt_algorithm |> filter(subid == sub)
+    sub_all <- gt_all |> filter(subid == sub)
+
+    crit <- evaluate_criterion(
+      stays_window = stays_window,
+      clusters_df = centroids,
+      predefined_locs = sub_algo,
+      all_locs = sub_all,
+      min_days = test_days
+    )
+
+    tibble(
+      subid = sub,
+      dbscan_n_qualifying = crit$dbscan$n_qualifying %||% 0L,
+      dbscan_frac = crit$dbscan$frac_qualifying %||% NA_real_,
+      predef_n_qualifying = crit$predefined$n_qualifying %||% 0L,
+      predef_frac = crit$predefined$frac_qualifying %||% NA_real_,
+      n_missed = crit$n_missed
+    )
+  })
+
+  sub_results |>
+    summarize(
+      min_days = test_days,
+      dbscan_mean_frac = mean(dbscan_frac, na.rm = TRUE),
+      dbscan_mean_n_qualifying = mean(dbscan_n_qualifying),
+      predef_mean_frac = mean(predef_frac, na.rm = TRUE),
+      predef_mean_n_qualifying = mean(predef_n_qualifying),
+      mean_n_missed = mean(n_missed)
+    )
+})
+
+sensitivity_results |>
+  knitr::kable(
+    digits = 3,
+    col.names = c("Min Days", "DBSCAN Frac", "DBSCAN N Qual",
+                  "Predef Frac", "Predef N Qual", "N Missed")
+  )
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+sensitivity_results |>
+  pivot_longer(
+    cols = c(dbscan_mean_frac, predef_mean_frac),
+    names_to = "method",
+    values_to = "frac_qualifying"
+  ) |>
+  mutate(method = case_match(method,
+    "dbscan_mean_frac" ~ dbscan_label,
+    "predef_mean_frac" ~ "Predefined Locations"
+  )) |>
+  ggplot(aes(x = min_days, y = frac_qualifying, color = method)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = MIN_DAYS, linetype = "dashed", alpha = 0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_x_continuous(breaks = min_days_test) +
+  labs(
+    title = "Criterion Sensitivity: Varying Minimum Distinct Days",
+    subtitle = paste0("At day ", late_window,
+                      "; dashed line = current threshold (",
+                      MIN_DAYS, " days)"),
+    x = "Minimum Distinct Days",
+    y = "Mean Fraction Qualifying",
+    color = "Method"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+sensitivity_results |>
+  ggplot(aes(x = min_days, y = mean_n_missed)) +
+  geom_line(linewidth = 1, color = "coral") +
+  geom_point(size = 3, color = "coral") +
+  geom_vline(xintercept = MIN_DAYS, linetype = "dashed", alpha = 0.5) +
+  scale_x_continuous(breaks = min_days_test) +
+  labs(
+    title = "Missed Locations by Minimum Days Threshold",
+    subtitle = paste0("At day ", late_window,
+                      "; dashed line = current threshold (",
+                      MIN_DAYS, " days)"),
+    x = "Minimum Distinct Days",
+    y = "Mean Missed Locations per Subject"
+  )
+```
+
+## Save Results
+
+```{r}
+write_csv(
+  criterion_results,
+  here::here(path_gps2, "data/cluster_criterion_comparison.csv")
+)
+```
