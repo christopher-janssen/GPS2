@@ -1,0 +1,1199 @@
+---
+title: "Comparing Clustering Methods"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+## Objectives
+
+1.  Test sensitivity of the DBSCAN algorithm vs Legacy algorithm
+    1.  Run at cumulative windows (Intake->FU1, Intake->FU2,
+        Intake->FU3)
+2.  Identify overlapping and differentiating locations
+3.  Confusion Matrix
+
+## Also Included
+
+1.  EDA on legacy locations (algorithmically-derived and
+    taken-at-intake)
+
+## 1. Setup
+
+```{r}
+#| include: false
+
+source(here::here("scripts/r/setup.R"))
+
+library(geosphere)
+library(furrr)
+library(leaflet)
+library(clue)
+
+plan(multisession, workers = availableCores() - 1)
+
+theme_set(theme_minimal())
+```
+
+## 2. Parameters
+
+```{r}
+# DBSCAN parameter grid (~8 sets)
+param_grid <- tibble(
+  dwell_threshold = c(5, 5, 5, 5, 5, 10, 10, 10),
+  eps_meters      = c(25, 50, 50, 75, 100, 50, 50, 75),
+  min_pts         = c(2, 2, 3, 2, 2, 2, 3, 2)
+)
+
+param_grid |>
+  mutate(set = row_number()) |>
+  select(set, everything()) |>
+  knitr::kable()
+
+# fixed thresholds
+PROXIMITY_THRESHOLD <- 100
+DEDUPE_THRESHOLD <- 50
+DIST_THRESHOLD <- 50
+MAX_GAP <- 60
+MAX_STAY_HOURS <- 12
+```
+
+## 3. Data Loading
+
+```{r}
+study_dates <- read_csv(
+  here::here(path_shared, "study_dates_gps.csv"),
+  show_col_types = FALSE
+) |>
+  mutate(
+    study_start = as_date(study_start),
+    study_end = as_date(study_end)
+  )
+
+subids_dates <- study_dates |>
+  pull(subid) |>
+  unique()
+```
+
+```{r}
+gps_data <- read_csv(
+  here::here(path_gps2, "data/processed_gps.csv"),
+  show_col_types = FALSE
+) |>
+  filter(subid %in% subids_dates)
+
+nrow(gps_data)
+```
+
+```{r}
+locs_gt <- read_csv(
+  here::here(path_gps2, "data/locs_gt.csv"),
+  show_col_types = FALSE
+) |>
+  mutate(
+    subid = as.numeric(subid),
+    utc_datetime = as.POSIXct(utc, origin = "1970-01-01", tz = "UTC")
+  ) |>
+  filter(subid %in% subids_dates)
+
+nrow(locs_gt)
+```
+
+```{r}
+visit_dates <- read_csv(
+  here::here(path_shared, "visit_dates.csv"),
+  show_col_types = FALSE
+)
+```
+
+## 4. Visit Date Processing — Cumulative Windows
+
+```{r}
+visits_long <- visit_dates |>
+  pivot_longer(
+    cols = -subid,
+    names_to = "visit_type",
+    values_to = "visit_date"
+  ) |>
+  filter(!is.na(visit_date)) |>
+  mutate(visit_date = as_date(visit_date))
+
+# separate intake from followup visits
+intake_dates <- visits_long |>
+  filter(str_detect(visit_type, "intake")) |>
+  group_by(subid) |>
+  slice_min(visit_date, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  select(subid, intake_date = visit_date)
+
+followup_dates <- visits_long |>
+  filter(!str_detect(visit_type, "intake")) |>
+  group_by(subid) |>
+  arrange(visit_date) |>
+  mutate(fu_number = row_number()) |>
+  ungroup() |>
+  filter(fu_number <= 3)
+
+# build cumulative windows: each window runs from intake -> FU_n
+cumulative_windows <- followup_dates |>
+  select(subid, fu_number, window_end = visit_date) |>
+  left_join(intake_dates, by = "subid") |>
+  filter(!is.na(intake_date)) |>
+  filter(subid %in% subids_dates)
+
+cumulative_windows |>
+  count(fu_number, name = "n_subjects") |>
+  knitr::kable(col.names = c("Follow-Up Window", "N Subjects"))
+```
+
+## 5. Helper Functions
+
+### Stay Detection
+
+```{r}
+detect_stays <- function(gps_data, dist_threshold = DIST_THRESHOLD,
+                         time_threshold = 10, max_gap = MAX_GAP,
+                         max_hours = MAX_STAY_HOURS) {
+  data <- gps_data |>
+    group_by(subid) |>
+    mutate(
+      dist_from_prev = if_else(
+        row_number() == 1,
+        NA_real_,
+        distHaversine(cbind(lag(lon), lag(lat)), cbind(lon, lat))
+      ),
+      time_gap_mins = if_else(
+        row_number() == 1,
+        NA_real_,
+        as.numeric(difftime(time_local, lag(time_local), units = "mins"))
+      )
+    ) |>
+    ungroup()
+
+  data <- data |>
+    group_by(subid) |>
+    mutate(
+      is_new_stay = row_number() == 1 |
+        dist_from_prev > dist_threshold |
+        time_gap_mins > max_gap,
+      stay_id_subject = cumsum(is_new_stay)
+    ) |>
+    ungroup()
+
+  stays_raw <- data |>
+    group_by(subid, stay_id_subject) |>
+    summarize(
+      start_time = min(time_local),
+      end_time = max(time_local),
+      dwell_mins = as.numeric(difftime(max(time_local),
+                                       min(time_local), units = "mins")),
+      n_points = n(),
+      lat = median(lat),
+      lon = median(lon),
+      .groups = "drop"
+    )
+
+  stays_raw |>
+    filter(dwell_mins >= time_threshold & dwell_mins <= max_hours * 60) |>
+    mutate(stay_id = row_number()) |>
+    select(stay_id, subid, start_time, end_time, dwell_mins, n_points,
+           lat, lon)
+}
+```
+
+### DBSCAN Clustering
+
+```{r}
+run_dbscan <- function(coords, eps = 50, min_pts = 3) {
+  if (nrow(coords) < 2) {
+    return(list(
+      cluster = rep(1, nrow(coords)),
+      n_clusters = 1,
+      n_noise = 0
+    ))
+  }
+
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+  result <- dbscan(as.dist(dist_mat), eps = eps, minPts = min_pts)
+
+  list(
+    cluster = result$cluster,
+    n_clusters = max(result$cluster),
+    n_noise = sum(result$cluster == 0)
+  )
+}
+```
+
+### Extract Cluster Centroids
+
+```{r}
+get_centroids <- function(stays_df, cluster_col) {
+  stays_df |>
+    filter(.data[[cluster_col]] > 0) |>
+    group_by(.data[[cluster_col]]) |>
+    summarize(
+      lat = median(lat),
+      lon = median(lon),
+      total_dwell_hrs = sum(dwell_mins) / 60,
+      n_stays = n(),
+      n_days = n_distinct(as.Date(start_time)),
+      .groups = "drop"
+    ) |>
+    rename(cluster_id = 1)
+}
+```
+
+### Deduplicate Predefined Locations
+
+```{r}
+dedupe_locations <- function(df, threshold_m = DEDUPE_THRESHOLD) {
+  if (nrow(df) < 2) {
+    return(df |> mutate(location_id = 1))
+  }
+
+  coords <- cbind(df$lon, df$lat)
+  dist_mat <- distm(coords, coords, fun = distHaversine)
+  clusters <- dbscan(as.dist(dist_mat), eps = threshold_m, minPts = 1)
+
+  df |>
+    mutate(location_id = clusters$cluster) |>
+    group_by(location_id) |>
+    summarize(
+      lat = median(lat),
+      lon = median(lon),
+      n_reports = n(),
+      intake = max(intake),
+      .groups = "drop"
+    )
+}
+```
+
+### Bipartite Matching
+
+```{r}
+calculate_capture_bipartite <- function(centroids, gt_locations,
+                                        threshold_m = PROXIMITY_THRESHOLD) {
+  if (nrow(centroids) == 0 || nrow(gt_locations) == 0) {
+    return(list(
+      recall = 0, precision = 0, f1 = 0,
+      n_matched = 0,
+      n_ground_truth = nrow(gt_locations),
+      n_centroids = nrow(centroids)
+    ))
+  }
+
+  centroid_coords <- cbind(centroids$lon, centroids$lat)
+  gt_coords <- cbind(gt_locations$lon, gt_locations$lat)
+  dist_mat <- distm(centroid_coords, gt_coords, fun = distHaversine)
+
+  # Binary eligibility: 1 if within threshold, 0 otherwise
+  eligible <- ifelse(dist_mat <= threshold_m, 1, 0)
+
+  nc <- nrow(centroids)
+  ng <- nrow(gt_locations)
+
+  # solve_LSAP requires ncol >= nrow
+  if (nc <= ng) {
+    assignment <- solve_LSAP(eligible, maximum = TRUE)
+    matched_pairs <- cbind(seq_len(nc), as.integer(assignment))
+  } else {
+    assignment <- solve_LSAP(t(eligible), maximum = TRUE)
+    matched_pairs <- cbind(as.integer(assignment), seq_len(ng))
+  }
+
+  n_matched <- sum(eligible[matched_pairs] == 1)
+
+  precision <- n_matched / nc
+  recall <- n_matched / ng
+  f1 <- if (precision + recall > 0) {
+    2 * (precision * recall) / (precision + recall)
+  } else {
+    0
+  }
+
+  list(
+    recall = recall, precision = precision, f1 = f1,
+    n_matched = n_matched,
+    n_ground_truth = ng,
+    n_centroids = nc
+  )
+}
+```
+
+### Temporal Filtering of Legacy Locations
+
+```{r}
+temporally_filter_legacy <- function(locs_gt_sub, window_end_date) {
+  locs_gt_sub |>
+    filter(utc_datetime <= as.POSIXct(
+      paste0(window_end_date, " 23:59:59"), tz = "UTC"
+    ))
+}
+```
+
+### Match Details (for confusion matrix drill-down)
+
+```{r}
+get_match_details <- function(centroids, gt_locations,
+                              threshold_m = PROXIMITY_THRESHOLD) {
+  if (nrow(centroids) == 0 || nrow(gt_locations) == 0) {
+    return(list(
+      matched_centroids = integer(0),
+      matched_gt = integer(0),
+      unmatched_centroids = seq_len(nrow(centroids)),
+      unmatched_gt = seq_len(nrow(gt_locations))
+    ))
+  }
+
+  centroid_coords <- cbind(centroids$lon, centroids$lat)
+  gt_coords <- cbind(gt_locations$lon, gt_locations$lat)
+  dist_mat <- distm(centroid_coords, gt_coords, fun = distHaversine)
+
+  eligible <- ifelse(dist_mat <= threshold_m, 1, 0)
+
+  nc <- nrow(centroids)
+  ng <- nrow(gt_locations)
+
+  if (nc <= ng) {
+    assignment <- solve_LSAP(eligible, maximum = TRUE)
+    matched_pairs <- cbind(seq_len(nc), as.integer(assignment))
+  } else {
+    assignment <- solve_LSAP(t(eligible), maximum = TRUE)
+    matched_pairs <- cbind(as.integer(assignment), seq_len(ng))
+  }
+
+  valid <- eligible[matched_pairs] == 1
+  matched_cent_idx <- matched_pairs[valid, 1]
+  matched_gt_idx <- matched_pairs[valid, 2]
+
+  list(
+    matched_centroids = matched_cent_idx,
+    matched_gt = matched_gt_idx,
+    unmatched_centroids = setdiff(seq_len(nc), matched_cent_idx),
+    unmatched_gt = setdiff(seq_len(ng), matched_gt_idx)
+  )
+}
+```
+
+## 6. Stay Detection (cached)
+
+Run `detect_stays()` once per unique dwell threshold in the param
+grid.
+
+```{r}
+#| cache: true
+
+unique_dwells <- unique(param_grid$dwell_threshold)
+
+stays_by_threshold <- setNames(
+  future_map(unique_dwells, function(dw) {
+    detect_stays(gps_data, time_threshold = dw)
+  }, .options = furrr_options(seed = TRUE)),
+  as.character(unique_dwells)
+)
+
+tibble(
+  dwell_threshold = unique_dwells,
+  n_stays = map_int(stays_by_threshold, nrow),
+  n_subjects = map_int(stays_by_threshold, ~ n_distinct(.x$subid))
+) |>
+  knitr::kable()
+```
+
+## 7. Main Pipeline (cached, parallelized)
+
+```{r}
+#| cache: true
+
+# cross-join cumulative_windows x param_grid
+tasks <- cumulative_windows |>
+  crossing(param_grid |> mutate(param_id = row_number()))
+
+nrow(tasks)
+```
+
+```{r}
+#| cache: true
+
+analyze_window <- function(sub, fu_num, window_end, intake_dt,
+                           dwell_threshold, eps_meters, min_pts,
+                           param_id,
+                           stays_by_threshold, locs_gt) {
+  stays <- stays_by_threshold[[as.character(dwell_threshold)]]
+
+  # filter stays to subject + cumulative window
+  stays_sub <- stays |>
+    filter(subid == sub, as_date(start_time) <= window_end)
+
+  if (nrow(stays_sub) < 2) return(NULL)
+
+  # run DBSCAN
+  coords <- cbind(stays_sub$lon, stays_sub$lat)
+  db <- run_dbscan(coords, eps = eps_meters, min_pts = min_pts)
+  stays_sub <- stays_sub |> mutate(cluster = db$cluster)
+
+  # extract centroids
+  if (db$n_clusters == 0 || !any(db$cluster > 0)) {
+    centroids <- tibble(
+      cluster_id = integer(), lat = double(), lon = double(),
+      total_dwell_hrs = double(), n_stays = integer(),
+      n_days = integer()
+    )
+  } else {
+    centroids <- get_centroids(stays_sub, "cluster")
+  }
+
+  # temporally filter legacy locations, then deduplicate
+  locs_sub <- locs_gt |> filter(subid == sub)
+  locs_filtered <- temporally_filter_legacy(locs_sub, window_end)
+
+  if (nrow(locs_filtered) == 0) {
+    gt_deduped <- tibble(
+      location_id = integer(), lat = double(), lon = double(),
+      n_reports = integer(), intake = integer()
+    )
+  } else {
+    gt_deduped <- dedupe_locations(locs_filtered)
+  }
+
+  # bipartite matching
+  capture <- calculate_capture_bipartite(centroids, gt_deduped)
+
+  n_tp <- capture$n_matched
+  n_fn <- capture$n_ground_truth - n_tp
+  n_fp <- capture$n_centroids - n_tp
+
+  tibble(
+    subid = sub,
+    fu_number = fu_num,
+    window_end = window_end,
+    param_id = param_id,
+    dwell_threshold = dwell_threshold,
+    eps_meters = eps_meters,
+    min_pts = min_pts,
+    n_dbscan = capture$n_centroids,
+    n_legacy = capture$n_ground_truth,
+    n_matched = n_tp,
+    precision = capture$precision,
+    recall = capture$recall,
+    f1 = capture$f1,
+    n_tp = n_tp,
+    n_fn = n_fn,
+    n_fp = n_fp
+  )
+}
+
+results <- future_pmap_dfr(
+  list(
+    sub = tasks$subid,
+    fu_num = tasks$fu_number,
+    window_end = tasks$window_end,
+    intake_dt = tasks$intake_date,
+    dwell_threshold = tasks$dwell_threshold,
+    eps_meters = tasks$eps_meters,
+    min_pts = tasks$min_pts,
+    param_id = tasks$param_id
+  ),
+  analyze_window,
+  stays_by_threshold = stays_by_threshold,
+  locs_gt = locs_gt,
+  .options = furrr_options(seed = TRUE),
+  .progress = TRUE
+)
+
+nrow(results)
+```
+
+## 8. Results — Summary Tables
+
+```{r}
+summary_table <- results |>
+  group_by(fu_number, param_id, dwell_threshold, eps_meters, min_pts) |>
+  summarize(
+    n_subjects = n(),
+    mean_precision = mean(precision, na.rm = TRUE),
+    mean_recall = mean(recall, na.rm = TRUE),
+    mean_f1 = mean(f1, na.rm = TRUE),
+    sd_f1 = sd(f1, na.rm = TRUE),
+    mean_tp = mean(n_tp, na.rm = TRUE),
+    mean_fn = mean(n_fn, na.rm = TRUE),
+    mean_fp = mean(n_fp, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+### Best Parameters per Window
+
+```{r}
+best_params <- summary_table |>
+  group_by(fu_number) |>
+  slice_max(mean_f1, n = 1, with_ties = FALSE) |>
+  ungroup()
+
+best_params |>
+  select(fu_number, dwell_threshold, eps_meters, min_pts,
+         n_subjects, mean_precision, mean_recall, mean_f1, sd_f1) |>
+  knitr::kable(
+    digits = 3,
+    col.names = c("FU Window", "Dwell (min)", "Eps (m)", "MinPts",
+                  "N", "Precision", "Recall", "F1", "SD(F1)")
+  )
+```
+
+### Formatted Comparison Table
+
+```{r}
+summary_table |>
+  mutate(
+    param_label = paste0("d=", dwell_threshold,
+                         " e=", eps_meters,
+                         " m=", min_pts)
+  ) |>
+  select(fu_number, param_label, n_subjects,
+         mean_precision, mean_recall, mean_f1, sd_f1,
+         mean_tp, mean_fn, mean_fp) |>
+  arrange(fu_number, desc(mean_f1)) |>
+  knitr::kable(
+    digits = 3,
+    col.names = c("FU", "Params", "N", "Precision", "Recall",
+                  "F1", "SD(F1)", "TP", "FN", "FP")
+  )
+```
+
+## 9. Results — Heatmaps
+
+### F1 Heatmap
+
+Mean F1 across eps x minPts, faceted by dwell threshold (columns)
+and follow-up window (rows).
+
+```{r}
+#| fig-width: 12
+#| fig-height: 9
+summary_table |>
+  mutate(fu_label = paste0("FU", fu_number)) |>
+  ggplot(aes(x = factor(eps_meters), y = factor(min_pts),
+             fill = mean_f1)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", mean_f1)), size = 3) +
+  scale_fill_viridis_c(labels = scales::percent, limits = c(0, 1),
+                       option = "magma", direction = -1) +
+  facet_grid(rows = vars(fu_label),
+             cols = vars(dwell_threshold),
+             labeller = labeller(
+               dwell_threshold = \(x) paste0(x, " min")
+             )) +
+  labs(
+    title = "Mean F1 Score: eps x minPts",
+    subtitle = "Faceted by dwell threshold (cols) and follow-up window (rows)",
+    x = "eps (meters)",
+    y = "minPts",
+    fill = "Mean F1"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Precision Heatmap
+
+```{r}
+#| fig-width: 12
+#| fig-height: 9
+summary_table |>
+  mutate(fu_label = paste0("FU", fu_number)) |>
+  ggplot(aes(x = factor(eps_meters), y = factor(min_pts),
+             fill = mean_precision)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", mean_precision)), size = 3) +
+  scale_fill_viridis_c(labels = scales::percent, limits = c(0, 1),
+                       option = "magma", direction = -1) +
+  facet_grid(rows = vars(fu_label),
+             cols = vars(dwell_threshold),
+             labeller = labeller(
+               dwell_threshold = \(x) paste0(x, " min")
+             )) +
+  labs(
+    title = "Mean Precision: eps x minPts",
+    subtitle = "Faceted by dwell threshold (cols) and follow-up window (rows)",
+    x = "eps (meters)",
+    y = "minPts",
+    fill = "Precision"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+### Recall Heatmap
+
+```{r}
+#| fig-width: 12
+#| fig-height: 9
+summary_table |>
+  mutate(fu_label = paste0("FU", fu_number)) |>
+  ggplot(aes(x = factor(eps_meters), y = factor(min_pts),
+             fill = mean_recall)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", mean_recall)), size = 3) +
+  scale_fill_viridis_c(labels = scales::percent, limits = c(0, 1),
+                       option = "magma", direction = -1) +
+  facet_grid(rows = vars(fu_label),
+             cols = vars(dwell_threshold),
+             labeller = labeller(
+               dwell_threshold = \(x) paste0(x, " min")
+             )) +
+  labs(
+    title = "Mean Recall: eps x minPts",
+    subtitle = "Faceted by dwell threshold (cols) and follow-up window (rows)",
+    x = "eps (meters)",
+    y = "minPts",
+    fill = "Recall"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+## 10. Confusion Matrix
+
+### Aggregate TP/FN/FP by Window (best params)
+
+```{r}
+# use the single best param set across all windows for consistency
+overall_best <- summary_table |>
+  group_by(param_id, dwell_threshold, eps_meters, min_pts) |>
+  summarize(overall_f1 = mean(mean_f1), .groups = "drop") |>
+  slice_max(overall_f1, n = 1, with_ties = FALSE)
+
+best_results <- results |>
+  semi_join(overall_best,
+            by = c("dwell_threshold", "eps_meters", "min_pts"))
+```
+
+### Stacked Bar Chart
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+confusion_agg <- best_results |>
+  group_by(fu_number) |>
+  summarize(
+    TP = sum(n_tp),
+    FN = sum(n_fn),
+    FP = sum(n_fp),
+    .groups = "drop"
+  ) |>
+  pivot_longer(cols = c(TP, FN, FP),
+               names_to = "category", values_to = "count")
+
+confusion_agg |>
+  mutate(
+    category = factor(category, levels = c("TP", "FN", "FP")),
+    fu_label = paste0("FU", fu_number)
+  ) |>
+  ggplot(aes(x = fu_label, y = count, fill = category)) +
+  geom_col(position = "stack", alpha = 0.8) +
+  scale_fill_manual(values = c(TP = "#2ca02c", FN = "#d62728",
+                                FP = "#1f77b4")) +
+  labs(
+    title = "Confusion Matrix: Aggregate TP/FN/FP by Window",
+    subtitle = paste0("Best params: dwell=", overall_best$dwell_threshold,
+                      ", eps=", overall_best$eps_meters,
+                      ", minPts=", overall_best$min_pts),
+    x = "Follow-Up Window",
+    y = "Count",
+    fill = "Category"
+  )
+```
+
+### Per-Subject Boxplots
+
+```{r}
+#| fig-width: 12
+#| fig-height: 6
+
+best_results |>
+  select(subid, fu_number, n_tp, n_fn, n_fp) |>
+  pivot_longer(cols = c(n_tp, n_fn, n_fp),
+               names_to = "category", values_to = "count") |>
+  mutate(
+    category = case_match(category,
+      "n_tp" ~ "TP", "n_fn" ~ "FN", "n_fp" ~ "FP"
+    ),
+    category = factor(category, levels = c("TP", "FN", "FP")),
+    fu_label = paste0("FU", fu_number)
+  ) |>
+  ggplot(aes(x = category, y = count, fill = category)) +
+  geom_boxplot(width = 0.6, alpha = 0.7, outlier.alpha = 0.4) +
+  geom_jitter(width = 0.15, alpha = 0.2, size = 1) +
+  scale_fill_manual(values = c(TP = "#2ca02c", FN = "#d62728",
+                                FP = "#1f77b4")) +
+  facet_wrap(~ fu_label) +
+  labs(
+    title = "Per-Subject TP/FN/FP by Window",
+    subtitle = paste0("Best params: dwell=", overall_best$dwell_threshold,
+                      ", eps=", overall_best$eps_meters,
+                      ", minPts=", overall_best$min_pts),
+    x = "Category",
+    y = "Count per Subject"
+  ) +
+  theme(legend.position = "none")
+```
+
+### Sensitivity / PPV Summary
+
+```{r}
+best_results |>
+  group_by(fu_number) |>
+  summarize(
+    n_subjects = n(),
+    mean_sensitivity = mean(recall, na.rm = TRUE),
+    mean_ppv = mean(precision, na.rm = TRUE),
+    mean_f1 = mean(f1, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  knitr::kable(
+    digits = 3,
+    col.names = c("FU Window", "N", "Sensitivity (Recall)",
+                  "PPV (Precision)", "F1")
+  )
+```
+
+## 11. Overlap / Differentiation Analysis
+
+```{r}
+#| cache: true
+
+overlap_details <- future_pmap_dfr(
+  list(
+    sub = cumulative_windows$subid,
+    fu_num = cumulative_windows$fu_number,
+    window_end = cumulative_windows$window_end
+  ),
+  function(sub, fu_num, window_end,
+           stays_by_threshold, locs_gt, best) {
+    dw <- best$dwell_threshold
+    eps <- best$eps_meters
+    mpts <- best$min_pts
+
+    stays <- stays_by_threshold[[as.character(dw)]]
+    stays_sub <- stays |>
+      filter(subid == sub, as_date(start_time) <= window_end)
+
+    if (nrow(stays_sub) < 2) return(NULL)
+
+    coords <- cbind(stays_sub$lon, stays_sub$lat)
+    db <- run_dbscan(coords, eps = eps, min_pts = mpts)
+    stays_sub <- stays_sub |> mutate(cluster = db$cluster)
+
+    if (db$n_clusters == 0 || !any(db$cluster > 0)) return(NULL)
+
+    centroids <- get_centroids(stays_sub, "cluster")
+
+    locs_sub <- locs_gt |> filter(subid == sub)
+    locs_filtered <- temporally_filter_legacy(locs_sub, window_end)
+    if (nrow(locs_filtered) == 0) return(NULL)
+    gt_deduped <- dedupe_locations(locs_filtered)
+    if (nrow(gt_deduped) == 0) return(NULL)
+
+    match <- get_match_details(centroids, gt_deduped)
+
+    # among FN (missed legacy): breakdown by intake vs algorithm
+    fn_locs <- gt_deduped[match$unmatched_gt, ]
+    n_fn_intake <- sum(fn_locs$intake == 1)
+    n_fn_algorithm <- sum(fn_locs$intake == 0)
+
+    tibble(
+      subid = sub,
+      fu_number = fu_num,
+      n_overlapping = length(match$matched_gt),
+      n_legacy_only = length(match$unmatched_gt),
+      n_dbscan_only = length(match$unmatched_centroids),
+      n_fn_intake = n_fn_intake,
+      n_fn_algorithm = n_fn_algorithm
+    )
+  },
+  stays_by_threshold = stays_by_threshold,
+  locs_gt = locs_gt,
+  best = overall_best,
+  .options = furrr_options(seed = TRUE),
+  .progress = TRUE
+)
+```
+
+### Summary per Window
+
+```{r}
+overlap_details |>
+  group_by(fu_number) |>
+  summarize(
+    n_subjects = n(),
+    mean_overlapping = mean(n_overlapping),
+    mean_legacy_only = mean(n_legacy_only),
+    mean_dbscan_only = mean(n_dbscan_only),
+    mean_fn_intake = mean(n_fn_intake),
+    mean_fn_algorithm = mean(n_fn_algorithm),
+    .groups = "drop"
+  ) |>
+  knitr::kable(
+    digits = 2,
+    col.names = c("FU", "N", "Overlapping", "Legacy Only",
+                  "DBSCAN Only", "FN (Intake)", "FN (Algorithm)")
+  )
+```
+
+## 12. Per-Subject Maps
+
+```{r}
+map_clusters_comparison <- function(sub, fu_num,
+                                    stays_by_threshold, locs_gt,
+                                    cumulative_windows,
+                                    best_params_row) {
+  window_row <- cumulative_windows |>
+    filter(subid == sub, fu_number == fu_num)
+  if (nrow(window_row) == 0) return(NULL)
+  window_end <- window_row$window_end
+
+  dw <- best_params_row$dwell_threshold
+  eps <- best_params_row$eps_meters
+  mpts <- best_params_row$min_pts
+
+  stays <- stays_by_threshold[[as.character(dw)]]
+  stays_sub <- stays |>
+    filter(subid == sub, as_date(start_time) <= window_end)
+
+  if (nrow(stays_sub) < 2) {
+    message("Fewer than 2 stays for subject ", sub)
+    return(NULL)
+  }
+
+  coords <- cbind(stays_sub$lon, stays_sub$lat)
+  db <- run_dbscan(coords, eps = eps, min_pts = mpts)
+  stays_sub <- stays_sub |> mutate(cluster = db$cluster)
+
+  centroids <- tibble()
+  if (db$n_clusters > 0 && any(db$cluster > 0)) {
+    centroids <- get_centroids(stays_sub, "cluster")
+  }
+
+  locs_sub <- locs_gt |> filter(subid == sub)
+  locs_filtered <- temporally_filter_legacy(locs_sub, window_end)
+  gt_deduped <- if (nrow(locs_filtered) > 0) {
+    dedupe_locations(locs_filtered)
+  } else {
+    tibble(location_id = integer(), lat = double(), lon = double(),
+           n_reports = integer(), intake = integer())
+  }
+
+  # get match details for color coding
+  match <- get_match_details(centroids, gt_deduped)
+
+  m <- leaflet() |>
+    addProviderTiles(providers$CartoDB.Positron)
+
+  # stays colored by cluster assignment
+  stay_colors <- if_else(stays_sub$cluster == 0, "#999999", "#3388ff")
+  m <- m |>
+    addCircleMarkers(
+      lng = stays_sub$lon, lat = stays_sub$lat,
+      radius = 3, color = stay_colors, fillOpacity = 0.4,
+      stroke = FALSE, group = "Stays",
+      popup = paste0(
+        "Stay #", stays_sub$stay_id,
+        "<br>Dwell: ", round(stays_sub$dwell_mins, 1), " min",
+        "<br>Cluster: ", stays_sub$cluster
+      )
+    )
+
+  # DBSCAN centroids: matched (blue) vs novel (orange)
+  if (nrow(centroids) > 0) {
+    cent_colors <- rep("#FF8C00", nrow(centroids))  # orange = novel
+    cent_colors[match$matched_centroids] <- "#0000FF"  # blue = matched
+    cent_labels <- rep("DBSCAN (novel)", nrow(centroids))
+    cent_labels[match$matched_centroids] <- "DBSCAN (matched)"
+
+    m <- m |>
+      addCircleMarkers(
+        lng = centroids$lon, lat = centroids$lat,
+        radius = 8, color = cent_colors, fillOpacity = 0.7,
+        weight = 2, group = "DBSCAN Centroids",
+        popup = paste0(
+          cent_labels,
+          "<br>Cluster #", centroids$cluster_id,
+          "<br>Stays: ", centroids$n_stays,
+          "<br>Days: ", centroids$n_days,
+          "<br>Dwell: ", round(centroids$total_dwell_hrs * 60, 1),
+          " min"
+        )
+      )
+  }
+
+  # Legacy locations: matched (green) vs missed (red)
+  if (nrow(gt_deduped) > 0) {
+    gt_colors <- rep("red", nrow(gt_deduped))
+    gt_colors[match$matched_gt] <- "green"
+    gt_labels <- rep("Legacy (missed)", nrow(gt_deduped))
+    gt_labels[match$matched_gt] <- "Legacy (matched)"
+
+    m <- m |>
+      addMarkers(
+        lng = gt_deduped$lon, lat = gt_deduped$lat,
+        group = "Legacy Locations",
+        icon = awesomeIcons(
+          icon = "ios-close", iconColor = "white",
+          library = "ion",
+          markerColor = gt_colors
+        ),
+        popup = paste0(
+          gt_labels,
+          "<br>Location #", gt_deduped$location_id,
+          "<br>Reports: ", gt_deduped$n_reports,
+          "<br>Intake: ", gt_deduped$intake
+        )
+      )
+  }
+
+  m |>
+    addLayersControl(
+      overlayGroups = c("Stays", "DBSCAN Centroids",
+                        "Legacy Locations"),
+      options = layersControlOptions(collapsed = FALSE)
+    )
+}
+```
+
+### Example Maps
+
+Select high/median/low agreement subjects from the last available
+window.
+
+```{r}
+# identify subjects by F1 agreement level at last window
+last_fu <- max(best_results$fu_number)
+
+subject_f1 <- best_results |>
+  filter(fu_number == last_fu) |>
+  arrange(f1)
+
+n_subs <- nrow(subject_f1)
+example_subs <- c(
+  subject_f1$subid[n_subs],               # high agreement
+  subject_f1$subid[ceiling(n_subs / 2)],   # median agreement
+  subject_f1$subid[1]                      # low agreement
+)
+
+example_labels <- c("High Agreement", "Median Agreement",
+                    "Low Agreement")
+```
+
+```{r}
+for (i in seq_along(example_subs)) {
+  cat("\n###", example_labels[i],
+      "(subid:", example_subs[i], ")\n\n")
+  print(
+    map_clusters_comparison(
+      sub = example_subs[i],
+      fu_num = last_fu,
+      stays_by_threshold = stays_by_threshold,
+      locs_gt = locs_gt,
+      cumulative_windows = cumulative_windows,
+      best_params_row = overall_best
+    )
+  )
+}
+```
+
+## 13. Per-Subject Metric Distributions
+
+### F1 Boxplots by Window
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+best_results |>
+  mutate(fu_label = paste0("FU", fu_number)) |>
+  ggplot(aes(x = fu_label, y = f1, fill = fu_label)) +
+  geom_boxplot(width = 0.6, alpha = 0.7, outlier.alpha = 0.4) +
+  geom_jitter(width = 0.15, alpha = 0.2, size = 1.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "Per-Subject F1 by Follow-Up Window (Best Params)",
+    subtitle = paste0("dwell=", overall_best$dwell_threshold,
+                      ", eps=", overall_best$eps_meters,
+                      ", minPts=", overall_best$min_pts),
+    x = "Follow-Up Window",
+    y = "F1 Score"
+  ) +
+  theme(legend.position = "none")
+```
+
+### Precision-Recall Scatter
+
+```{r}
+#| fig-width: 10
+#| fig-height: 8
+
+best_results |>
+  mutate(fu_label = paste0("FU", fu_number)) |>
+  ggplot(aes(x = recall, y = precision, color = fu_label)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+              alpha = 0.3) +
+  scale_x_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "Precision vs Recall by Window",
+    subtitle = paste0("dwell=", overall_best$dwell_threshold,
+                      ", eps=", overall_best$eps_meters,
+                      ", minPts=", overall_best$min_pts),
+    x = "Recall (Sensitivity)",
+    y = "Precision (PPV)",
+    color = "Window"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+## 14. Robustness Analysis
+
+### F1 Stability Across Parameter Sets
+
+```{r}
+robustness <- summary_table |>
+  group_by(fu_number) |>
+  summarize(
+    min_f1 = min(mean_f1),
+    q25_f1 = quantile(mean_f1, 0.25),
+    median_f1 = median(mean_f1),
+    q75_f1 = quantile(mean_f1, 0.75),
+    max_f1 = max(mean_f1),
+    .groups = "drop"
+  )
+
+robustness |>
+  knitr::kable(
+    digits = 3,
+    col.names = c("FU Window", "Min", "Q25", "Median", "Q75", "Max")
+  )
+```
+
+### Mean F1 Over Windows by Parameter Set
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+
+summary_table |>
+  mutate(
+    param_label = paste0("d=", dwell_threshold,
+                         " e=", eps_meters,
+                         " m=", min_pts)
+  ) |>
+  ggplot(aes(x = fu_number, y = mean_f1,
+             color = param_label, group = param_label)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 1:3, labels = paste0("FU", 1:3)) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  labs(
+    title = "Mean F1 Across Follow-Up Windows by Parameter Set",
+    x = "Follow-Up Window",
+    y = "Mean F1",
+    color = "Parameters"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+## 15. Diagnostics
+
+### Legacy Location Counts by Window
+
+Validates that temporal filtering produces increasing legacy
+location counts across FU1 < FU2 < FU3.
+
+```{r}
+legacy_counts <- future_pmap_dfr(
+  list(
+    sub = cumulative_windows$subid,
+    fu_num = cumulative_windows$fu_number,
+    window_end = cumulative_windows$window_end
+  ),
+  function(sub, fu_num, window_end, locs_gt) {
+    locs_sub <- locs_gt |> filter(subid == sub)
+    locs_filtered <- temporally_filter_legacy(locs_sub, window_end)
+    gt_deduped <- if (nrow(locs_filtered) > 0) {
+      dedupe_locations(locs_filtered)
+    } else {
+      tibble()
+    }
+    tibble(
+      subid = sub,
+      fu_number = fu_num,
+      n_legacy = nrow(gt_deduped)
+    )
+  },
+  locs_gt = locs_gt,
+  .options = furrr_options(seed = TRUE),
+  .progress = TRUE
+)
+
+legacy_counts |>
+  group_by(fu_number) |>
+  summarize(
+    n_subjects = n(),
+    mean_legacy = mean(n_legacy),
+    median_legacy = median(n_legacy),
+    min_legacy = min(n_legacy),
+    max_legacy = max(n_legacy),
+    .groups = "drop"
+  ) |>
+  knitr::kable(
+    digits = 1,
+    col.names = c("FU Window", "N Subjects", "Mean Locs",
+                  "Median Locs", "Min", "Max")
+  )
+```
+
+### Sample Size by Window
+
+```{r}
+cumulative_windows |>
+  count(fu_number, name = "n_subjects") |>
+  ggplot(aes(x = factor(fu_number), y = n_subjects)) +
+  geom_col(fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "Sample Size at Each Follow-Up Window",
+    x = "Follow-Up Window",
+    y = "Number of Subjects"
+  )
+```
+
+### DBSCAN Cluster Count by Window
+
+```{r}
+best_results |>
+  group_by(fu_number) |>
+  summarize(
+    mean_clusters = mean(n_dbscan),
+    median_clusters = median(n_dbscan),
+    min_clusters = min(n_dbscan),
+    max_clusters = max(n_dbscan),
+    .groups = "drop"
+  ) |>
+  knitr::kable(
+    digits = 1,
+    col.names = c("FU Window", "Mean", "Median", "Min", "Max")
+  )
+```
+
+## 16. Save Results
+
+```{r}
+write_csv(
+  results,
+  here::here(path_gps2, "data/cluster_comp_v2_results.csv")
+)
+```
