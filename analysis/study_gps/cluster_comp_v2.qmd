@@ -329,12 +329,42 @@ calculate_capture_bipartite <- function(centroids, gt_locations,
 
 ### Temporal Filtering of Legacy Locations
 
+Intake locations are known from enrollment and always available.
+Algorithm-derived locations are filtered by their reporting
+timestamp.
+
 ```{r}
 temporally_filter_legacy <- function(locs_gt_sub, window_end_date) {
   locs_gt_sub |>
-    filter(utc_datetime <= as.POSIXct(
-      paste0(window_end_date, " 23:59:59"), tz = "UTC"
-    ))
+    filter(
+      intake == 1 |
+        utc_datetime <= as.POSIXct(
+          paste0(window_end_date, " 23:59:59"), tz = "UTC"
+        )
+    )
+}
+```
+
+### Filter Unvisitable Legacy Locations
+
+Drop legacy locations with no GPS stays nearby — DBSCAN never
+had a chance to find them.
+
+```{r}
+filter_visitable <- function(gt_deduped, stays_sub,
+                             threshold_m = PROXIMITY_THRESHOLD) {
+  if (nrow(gt_deduped) == 0 || nrow(stays_sub) == 0) {
+    return(gt_deduped[0, ])
+  }
+
+  stay_coords <- cbind(stays_sub$lon, stays_sub$lat)
+
+  has_nearby <- map_lgl(seq_len(nrow(gt_deduped)), function(i) {
+    loc_coord <- c(gt_deduped$lon[i], gt_deduped$lat[i])
+    min(distHaversine(loc_coord, stay_coords)) <= threshold_m
+  })
+
+  gt_deduped |> filter(has_nearby)
 }
 ```
 
@@ -460,7 +490,8 @@ analyze_window <- function(sub, fu_num, window_end, intake_dt,
       n_reports = integer(), intake = integer()
     )
   } else {
-    gt_deduped <- dedupe_locations(locs_filtered)
+    gt_deduped <- dedupe_locations(locs_filtered) |>
+      filter_visitable(stays_sub)
   }
 
   # bipartite matching
@@ -796,7 +827,8 @@ overlap_details <- future_pmap_dfr(
     locs_sub <- locs_gt |> filter(subid == sub)
     locs_filtered <- temporally_filter_legacy(locs_sub, window_end)
     if (nrow(locs_filtered) == 0) return(NULL)
-    gt_deduped <- dedupe_locations(locs_filtered)
+    gt_deduped <- dedupe_locations(locs_filtered) |>
+      filter_visitable(stays_sub)
     if (nrow(gt_deduped) == 0) return(NULL)
 
     match <- get_match_details(centroids, gt_deduped)
@@ -882,7 +914,8 @@ map_clusters_comparison <- function(sub, fu_num,
   locs_sub <- locs_gt |> filter(subid == sub)
   locs_filtered <- temporally_filter_legacy(locs_sub, window_end)
   gt_deduped <- if (nrow(locs_filtered) > 0) {
-    dedupe_locations(locs_filtered)
+    dedupe_locations(locs_filtered) |>
+      filter_visitable(stays_sub)
   } else {
     tibble(location_id = integer(), lat = double(), lon = double(),
            n_reports = integer(), intake = integer())
@@ -1121,11 +1154,17 @@ legacy_counts <- future_pmap_dfr(
     fu_num = cumulative_windows$fu_number,
     window_end = cumulative_windows$window_end
   ),
-  function(sub, fu_num, window_end, locs_gt) {
+  function(sub, fu_num, window_end, locs_gt, stays_by_threshold,
+           dwell_threshold) {
+    stays <- stays_by_threshold[[as.character(dwell_threshold)]]
+    stays_sub <- stays |>
+      filter(subid == sub, as_date(start_time) <= window_end)
+
     locs_sub <- locs_gt |> filter(subid == sub)
     locs_filtered <- temporally_filter_legacy(locs_sub, window_end)
-    gt_deduped <- if (nrow(locs_filtered) > 0) {
-      dedupe_locations(locs_filtered)
+    gt_deduped <- if (nrow(locs_filtered) > 0 && nrow(stays_sub) > 0) {
+      dedupe_locations(locs_filtered) |>
+        filter_visitable(stays_sub)
     } else {
       tibble()
     }
@@ -1136,6 +1175,8 @@ legacy_counts <- future_pmap_dfr(
     )
   },
   locs_gt = locs_gt,
+  stays_by_threshold = stays_by_threshold,
+  dwell_threshold = overall_best$dwell_threshold,
   .options = furrr_options(seed = TRUE),
   .progress = TRUE
 )
