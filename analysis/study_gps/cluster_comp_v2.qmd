@@ -33,9 +33,9 @@ source(here::here("scripts/r/clustering.R"))
 library(geosphere)
 library(furrr)
 library(leaflet)
-library(clue)
+# library(clue)
 
-plan(multisession, workers = availableCores() - 1)
+plan(multisession, workers = 1)
 
 theme_set(theme_minimal())
 ```
@@ -126,7 +126,7 @@ intake_dates <- visits_long |>
   select(subid, intake_date = visit_date)
 
 followup_dates <- visits_long |>
-  filter(!str_detect(visit_type, "intake")) |>
+  filter(str_detect(visit_type, "followup") | visit_type == "end_study") |>
   group_by(subid) |>
   arrange(visit_date) |>
   mutate(fu_number = row_number()) |>
@@ -854,7 +854,7 @@ best_results |>
     digits = 1,
     col.names = c("FU", "Mean", "Median", "Min", "Max")
   )
-```
+``
 
 ## Save Results
 
