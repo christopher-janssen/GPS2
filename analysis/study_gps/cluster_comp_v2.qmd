@@ -33,11 +33,11 @@ source(here::here("scripts/r/clustering.R"))
 library(geosphere)
 library(furrr)
 library(leaflet)
-# library(clue)
+library(clue)
 
 plan(multisession, workers = 1)
 
-theme_set(theme_minimal())
+theme_set(theme_bw())
 ```
 
 ## Parameters
@@ -386,7 +386,7 @@ summary_table |>
 
 ## Location Agreement by Window
 
-Stacked bar showing mean counts of concordant, DBSCAN-unique, and
+Side-by-side bar showing mean counts of concordant, DBSCAN-unique, and
 legacy-unique locations at each window (overall best params).
 
 ```{r}
@@ -410,7 +410,7 @@ best_results |>
     fu_label = paste0("FU", fu_number)
   ) |>
   ggplot(aes(x = fu_label, y = mean_count, fill = category)) +
-  geom_col(position = "stack", alpha = 0.8) +
+  geom_col(position = "dodge", alpha = 0.8) +
   scale_fill_manual(
     values = c(Concordant = "#2ca02c",
                `Legacy Only` = "#d62728",
@@ -514,6 +514,7 @@ overlap_details <- future_pmap_dfr(
                                        threshold_m = proximity_m)
 
     fn_locs <- gt_deduped[match$unmatched_b, ]
+    tp_locs <- gt_deduped[match$matched_b, ]
 
     tibble(
       subid = sub,
@@ -522,7 +523,9 @@ overlap_details <- future_pmap_dfr(
       n_legacy_only = length(match$unmatched_b),
       n_dbscan_only = length(match$unmatched_a),
       n_fn_intake = sum(fn_locs$intake == 1),
-      n_fn_algorithm = sum(fn_locs$intake == 0)
+      n_fn_algorithm = sum(fn_locs$intake == 0),
+      n_tp_intake = sum(tp_locs$intake == 1),
+      n_tp_algorithm = sum(tp_locs$intake == 0)
     )
   },
   stays_by_threshold = stays_by_threshold,
@@ -548,13 +551,19 @@ overlap_details |>
     mean_dbscan_only = mean(n_dbscan_only),
     mean_fn_intake = mean(n_fn_intake),
     mean_fn_algorithm = mean(n_fn_algorithm),
+    concordance_intake = sum(n_tp_intake) /
+      sum(n_tp_intake + n_fn_intake),
+    concordance_algorithm = sum(n_tp_algorithm) /
+      sum(n_tp_algorithm + n_fn_algorithm),
     .groups = "drop"
   ) |>
   knitr::kable(
     digits = 2,
-    col.names = c("FU", "N", "Concordant", "Legacy Only",
-                  "DBSCAN Only", "Legacy Only (Intake)",
-                  "Legacy Only (Algorithm)")
+    col.names = c("FU", "N", "Concordant (N)", "Legacy Only",
+                  "DBSCAN Only", "Intake (N)",
+                  "Algorithm (N)",
+                  "Concordance % (Intake)",
+                  "Concordance % (Algorithm)")
   )
 ```
 
@@ -854,13 +863,4 @@ best_results |>
     digits = 1,
     col.names = c("FU", "Mean", "Median", "Min", "Max")
   )
-``
-
-## Save Results
-
-```{r}
-write_csv(
-  results,
-  here::here(path_gps2, "data/cluster_comp_v2_results.csv")
-)
 ```
