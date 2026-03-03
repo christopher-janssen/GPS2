@@ -37,7 +37,6 @@ local osm_poi = osm2pgsql.define_table({
     schema = 'public_data',
     ids    = { type = 'any', id_column = 'osm_id', type_column = 'osm_type' },
     columns = {
-        { column = 'osm_type',    type = 'text' },
         { column = 'class',       type = 'text', not_null = true },
         { column = 'type',        type = 'text', not_null = true },
         { column = 'name',        type = 'text' },
@@ -45,8 +44,8 @@ local osm_poi = osm2pgsql.define_table({
         { column = 'street',      type = 'text' },
         { column = 'city',        type = 'text' },
         { column = 'postcode',    type = 'text' },
-        { column = 'lon',         type = 'double precision' },
-        { column = 'lat',         type = 'double precision' },
+        { column = 'lon',         type = 'real' },
+        { column = 'lat',         type = 'real' },
         { column = 'geom',        type = 'point', projection = 4326 },
     },
 })
@@ -56,12 +55,11 @@ local osm_landuse = osm2pgsql.define_table({
     schema = 'public_data',
     ids    = { type = 'any', id_column = 'osm_id', type_column = 'osm_type' },
     columns = {
-        { column = 'osm_type',   type = 'text' },
         { column = 'class',      type = 'text', not_null = true },
         { column = 'type',       type = 'text', not_null = true },
         { column = 'name',       type = 'text' },
         { column = 'city',       type = 'text' },
-        { column = 'area_sqkm',  type = 'double precision' },
+        { column = 'area_sqkm',  type = 'real' },
         { column = 'geom',       type = 'multipolygon', projection = 4326 },
     },
 })
@@ -82,9 +80,8 @@ end
 -- ---------------------------------------------------------------------------
 -- Helper: build shared address/name columns from tags
 -- ---------------------------------------------------------------------------
-local function poi_row(tags, class_key, class_val, lon, lat, geom, osm_type)
+local function poi_row(tags, class_key, class_val, lon, lat, geom)
     return {
-        osm_type    = osm_type,
         class       = class_key,
         type        = class_val,
         name        = tags['name'],
@@ -110,7 +107,7 @@ function osm2pgsql.process_node(object)
 
     osm_poi:insert(poi_row(
         object.tags, class_key, class_val,
-        lon, lat, object:as_point(), 'N'
+        lon, lat, object:as_point()
     ))
 end
 
@@ -128,7 +125,6 @@ function osm2pgsql.process_way(object)
         if geom then
             local area = geom:transform(3857):area() / 1e6
             osm_landuse:insert({
-                osm_type  = 'W',
                 class     = 'landuse',
                 type      = object.tags['landuse'],
                 name      = object.tags['name'],
@@ -149,7 +145,7 @@ function osm2pgsql.process_way(object)
 
     osm_poi:insert(poi_row(
         object.tags, class_key, class_val,
-        centroid:lon(), centroid:lat(), centroid, 'W'
+        centroid:lon(), centroid:lat(), centroid
     ))
 end
 
@@ -167,7 +163,6 @@ function osm2pgsql.process_relation(object)
         if geom then
             local area = geom:transform(3857):area() / 1e6
             osm_landuse:insert({
-                osm_type  = 'R',
                 class     = 'landuse',
                 type      = object.tags['landuse'],
                 name      = object.tags['name'],
@@ -191,6 +186,6 @@ function osm2pgsql.process_relation(object)
 
     osm_poi:insert(poi_row(
         object.tags, class_key, class_val,
-        centroid:lon(), centroid:lat(), centroid, 'R'
+        centroid:lon(), centroid:lat(), centroid
     ))
 end
