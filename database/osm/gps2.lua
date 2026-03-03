@@ -114,7 +114,7 @@ function osm2pgsql.process_way(object)
 
     -- Landuse polygons
     if object.tags['landuse'] then
-        local geom = object:as_polygon()
+        local geom = object:as_multipolygon()
         if geom then
             local area = geom:transform(3857):area() / 1e6
             osm_landuse:insert({
@@ -123,7 +123,7 @@ function osm2pgsql.process_way(object)
                 name      = object.tags['name'],
                 city      = object.tags['addr:city'],
                 area_sqkm = area,
-                geom      = geom:as_multipolygon(),
+                geom      = geom,
             })
         end
         return
@@ -133,7 +133,7 @@ function osm2pgsql.process_way(object)
     local class_key, class_val = get_poi_class(object.tags)
     if not class_key then return end
 
-    local centroid = object:as_polygon():centroid()
+    local centroid = object:as_multipolygon():centroid()
     if not centroid then return end
 
     osm_poi:insert(poi_row(
