@@ -48,7 +48,7 @@ con <- connect_to_db()
 ## Load GPS Data
 
 ```{r}
-gps_path <- str_c(path_shared, "/gps_enriched_categorized.csv")
+gps_path <- str_c(path_shared, "/gps_enriched.csv")
 
 gps_data <- read_csv(gps_path, show_col_types = FALSE)
 
@@ -200,7 +200,7 @@ For each GPS point, count on-premise and off-premise outlets within
 density_results <- dbGetQuery(con, "
 WITH alcohol_poi AS (
   SELECT
-    geom,
+    ST_Transform(geom, 3857) AS geom,
     CASE
       WHEN (class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
         OR (class = 'craft' AND type = 'brewery') THEN 'on_premise'
@@ -210,24 +210,32 @@ WITH alcohol_poi AS (
   WHERE (class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
      OR (class = 'craft' AND type = 'brewery')
      OR (class = 'shop' AND type IN ('alcohol', 'wine'))
+),
+gps_proj AS (
+  SELECT row_id, ST_Transform(geom, 3857) AS geom
+  FROM temp_gps_points
 )
 SELECT
   g.row_id,
-  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 100)
+  COUNT(CASE WHEN ST_DWithin(g.geom, p.geom, 100)
                   AND p.category = 'on_premise' THEN 1 END) AS n_on_premise_100m,
-  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 250)
+  COUNT(CASE WHEN ST_DWithin(g.geom, p.geom, 250)
                   AND p.category = 'on_premise' THEN 1 END) AS n_on_premise_250m,
-  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 500)
+  COUNT(CASE WHEN ST_DWithin(g.geom, p.geom, 500)
                   AND p.category = 'on_premise' THEN 1 END) AS n_on_premise_500m,
-  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 100)
+  COUNT(CASE WHEN ST_DWithin(g.geom, p.geom, 1000)
+                  AND p.category = 'on_premise' THEN 1 END) AS n_on_premise_1000m,
+  COUNT(CASE WHEN ST_DWithin(g.geom, p.geom, 100)
                   AND p.category = 'off_premise' THEN 1 END) AS n_off_premise_100m,
-  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 250)
+  COUNT(CASE WHEN ST_DWithin(g.geom, p.geom, 250)
                   AND p.category = 'off_premise' THEN 1 END) AS n_off_premise_250m,
-  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 500)
-                  AND p.category = 'off_premise' THEN 1 END) AS n_off_premise_500m
-FROM temp_gps_points g
+  COUNT(CASE WHEN ST_DWithin(g.geom, p.geom, 500)
+                  AND p.category = 'off_premise' THEN 1 END) AS n_off_premise_500m,
+  COUNT(CASE WHEN ST_DWithin(g.geom, p.geom, 1000)
+                  AND p.category = 'off_premise' THEN 1 END) AS n_off_premise_1000m
+FROM gps_proj g
 LEFT JOIN alcohol_poi p
-  ON ST_DWithin(g.geom::geography, p.geom::geography, 500)
+  ON ST_DWithin(g.geom, p.geom, 1000)
 GROUP BY g.row_id
 ORDER BY g.row_id;
 ")
@@ -290,32 +298,38 @@ tibble(
 # Density: coverage rates at each radius
 tibble(
   feature = c(
-    "n_on_premise_100m", "n_on_premise_250m", "n_on_premise_500m",
-    "n_off_premise_100m", "n_off_premise_250m", "n_off_premise_500m"
+    "n_on_premise_100m", "n_on_premise_250m", "n_on_premise_500m", "n_on_premise_1000m",
+    "n_off_premise_100m", "n_off_premise_250m", "n_off_premise_500m", "n_off_premise_1000m"
   ),
   pct_nonzero = c(
     mean(gps_enriched_features$n_on_premise_100m > 0) * 100,
     mean(gps_enriched_features$n_on_premise_250m > 0) * 100,
     mean(gps_enriched_features$n_on_premise_500m > 0) * 100,
+    mean(gps_enriched_features$n_on_premise_1000m > 0) * 100,
     mean(gps_enriched_features$n_off_premise_100m > 0) * 100,
     mean(gps_enriched_features$n_off_premise_250m > 0) * 100,
-    mean(gps_enriched_features$n_off_premise_500m > 0) * 100
+    mean(gps_enriched_features$n_off_premise_500m > 0) * 100,
+    mean(gps_enriched_features$n_off_premise_1000m > 0) * 100
   ) |> round(2),
   mean_count = c(
     mean(gps_enriched_features$n_on_premise_100m),
     mean(gps_enriched_features$n_on_premise_250m),
     mean(gps_enriched_features$n_on_premise_500m),
+    mean(gps_enriched_features$n_on_premise_1000m),
     mean(gps_enriched_features$n_off_premise_100m),
     mean(gps_enriched_features$n_off_premise_250m),
-    mean(gps_enriched_features$n_off_premise_500m)
+    mean(gps_enriched_features$n_off_premise_500m),
+    mean(gps_enriched_features$n_off_premise_1000m)
   ) |> round(3),
   max_count = c(
     max(gps_enriched_features$n_on_premise_100m),
     max(gps_enriched_features$n_on_premise_250m),
     max(gps_enriched_features$n_on_premise_500m),
+    max(gps_enriched_features$n_on_premise_1000m),
     max(gps_enriched_features$n_off_premise_100m),
     max(gps_enriched_features$n_off_premise_250m),
-    max(gps_enriched_features$n_off_premise_500m)
+    max(gps_enriched_features$n_off_premise_500m),
+    max(gps_enriched_features$n_off_premise_1000m)
   )
 ) |>
   knitr::kable()
@@ -324,7 +338,7 @@ tibble(
 ## Write Output
 
 ```{r}
-output_path <- str_c(path_shared, "/gps_enriched_poi_features.csv")
+output_path <- str_c(path_shared, "/gps_enriched_prox_density.csv")
 
 write_csv(gps_enriched_features, output_path)
 ```
