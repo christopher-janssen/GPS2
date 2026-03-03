@@ -103,6 +103,10 @@ osm2pgsql \
 # ---------------------------------------------------------------------------
 echo "==> Populating lon/lat columns..."
 psql --dbname=geolocation --no-psqlrc --command="
+ALTER TABLE public_data.osm_poi
+    ADD COLUMN IF NOT EXISTS lon DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;
+
 UPDATE public_data.osm_poi
 SET lon = ST_X(geom),
     lat = ST_Y(geom);
