@@ -102,12 +102,10 @@ function osm2pgsql.process_node(object)
     local class_key, class_val = get_poi_class(object.tags)
     if not class_key then return end
 
-    local lon = object.location.lon
-    local lat = object.location.lat
-
+    local geom = object:as_point()
     osm_poi:insert(poi_row(
         object.tags, class_key, class_val,
-        lon, lat, object:as_point()
+        geom:lon(), geom:lat(), geom
     ))
 end
 
