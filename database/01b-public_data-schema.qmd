@@ -54,13 +54,13 @@ dbExecute(con, "GRANT ALL ON SCHEMA public_data TO PUBLIC;")
 
 Stores OpenStreetMap POI data for Wisconsin (amenity, shop, leisure, tourism, etc.)
 
-**Source:** `osm_poi_wisconsin.gpkg` from research drive
-**Expected size:** ~50k-100k points
+**Source:** Geofabrik Wisconsin PBF snapshot (2017-2018), imported via osm2pgsql
+**Expected size:** ~100k-500k points
 
 ```{r}
 dbExecute(con, "
 CREATE TABLE IF NOT EXISTS public_data.osm_poi (
-    osm_id BIGINT PRIMARY KEY,
+    osm_id BIGINT NOT NULL,
     osm_type CHAR(1),
     class TEXT NOT NULL,
     type TEXT NOT NULL,
@@ -69,10 +69,10 @@ CREATE TABLE IF NOT EXISTS public_data.osm_poi (
     street TEXT,
     city TEXT,
     postcode TEXT,
-    rank_address INTEGER,
     lon DOUBLE PRECISION,
     lat DOUBLE PRECISION,
-    geom GEOMETRY(Point, 4326)
+    geom GEOMETRY(Point, 4326),
+    UNIQUE (osm_type, osm_id)
 );
 ")
 ```
@@ -96,21 +96,21 @@ ORDER BY ordinal_position;
 
 Stores OpenStreetMap landuse polygon data for Wisconsin.
 
-**Source:** `osm_landuse_wisconsin.gpkg` from research drive
+**Source:** Geofabrik Wisconsin PBF snapshot (2017-2018), imported via osm2pgsql
 **Expected size:** ~10k-50k polygons
 
 ```{r}
 dbExecute(con, "
 CREATE TABLE IF NOT EXISTS public_data.osm_landuse (
-    osm_id BIGINT PRIMARY KEY,
+    osm_id BIGINT NOT NULL,
     osm_type CHAR(1),
     class TEXT NOT NULL,
     type TEXT NOT NULL,
     name TEXT,
     city TEXT,
-    rank_address INTEGER,
     area_sqkm DOUBLE PRECISION,
-    geom GEOMETRY(MultiPolygon, 4326)
+    geom GEOMETRY(MultiPolygon, 4326),
+    UNIQUE (osm_type, osm_id)
 );
 ")
 ```

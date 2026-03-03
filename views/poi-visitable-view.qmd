@@ -40,7 +40,6 @@ dbExecute(con, "
     street,
     city,
     postcode,
-    rank_address,
     lon,
     lat,
     geom

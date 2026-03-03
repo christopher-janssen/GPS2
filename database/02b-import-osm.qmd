@@ -1,0 +1,181 @@
+---
+title: "Import OSM Historical Data (2017-2018)"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# OSM Historical Data Import
+
+## Overview
+
+GPS2 participant data was collected in 2017-2018. To accurately reflect
+the POI landscape during that period, we source OpenStreetMap data from
+Geofabrik Wisconsin PBF snapshots rather than a modern Nominatim export.
+
+**Import approach:** `osm2pgsql` with a Flex config (`database/osm/gps2.lua`)
+
+The Lua config serves as both the import driver and schema documentation:
+it specifies exactly which OSM tags map to which columns. Using `--create`
+makes each import idempotent — tables are dropped and rebuilt from scratch.
+
+**POI classes captured:** `amenity`, `shop`, `leisure`, `tourism`,
+`healthcare`, `craft`, `office`, `historic`, `emergency`, `natural`,
+`man_made`, `military`
+
+**Data source:** Geofabrik Wisconsin historical extract
+(`https://download.geofabrik.de/north-america/us/wisconsin.html`)
+— download the `.osm.pbf` for the relevant 2017-2018 date.
+
+**Prerequisites:**
+
+1.  `database/01b-public_data-schema.qmd` has been run (tables exist)
+2.  `osm2pgsql >= 1.6` is installed (flex output support required)
+
+## Run Import
+
+Execute the import script from the repository root:
+
+``` bash
+# Wisconsin-only PBF (recommended):
+./scripts/bash/import-osm.sh /path/to/wisconsin-2018.osm.pbf
+
+# Midwest extract — filter to Wisconsin bbox first:
+./scripts/bash/import-osm.sh /path/to/midwest-2018.osm.pbf --filter-wisconsin
+```
+
+The script runs `osm2pgsql --create --slim --drop` which fully rebuilds
+the tables. After completion, re-run `views/poi-visitable-view.qmd` and
+`database/99-create-indexes.qmd`.
+
+## Database Connection
+
+```{r}
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+
+con <- connect_to_db()
+dbGetQuery(con, "SELECT current_database(), current_user")
+```
+
+## Verify Load
+
+### Row counts
+
+```{r}
+dbGetQuery(con, "
+SELECT
+    'osm_poi'     AS table_name,
+    COUNT(*)      AS row_count
+FROM public_data.osm_poi
+UNION ALL
+SELECT
+    'osm_landuse' AS table_name,
+    COUNT(*)      AS row_count
+FROM public_data.osm_landuse
+ORDER BY table_name;
+") |> knitr::kable()
+```
+
+### Geographic bounding box
+
+The extent should fall within Wisconsin
+(lon: -92.9 to -86.2, lat: 42.5 to 47.3).
+
+```{r}
+dbGetQuery(con, "
+SELECT
+    ST_XMin(extent) AS lon_min,
+    ST_XMax(extent) AS lon_max,
+    ST_YMin(extent) AS lat_min,
+    ST_YMax(extent) AS lat_max
+FROM (
+    SELECT ST_Extent(geom) AS extent
+    FROM public_data.osm_poi
+) sub;
+") |> knitr::kable(digits = 3)
+```
+
+### Sample records
+
+```{r}
+dbGetQuery(con, "
+SELECT osm_id, osm_type, class, type, name, city, lon, lat
+FROM public_data.osm_poi
+ORDER BY random()
+LIMIT 10;
+") |> knitr::kable()
+```
+
+## Summary Statistics
+
+### POI counts by class
+
+```{r}
+dbGetQuery(con, "
+SELECT
+    class,
+    COUNT(*) AS n_poi
+FROM public_data.osm_poi
+GROUP BY class
+ORDER BY n_poi DESC;
+") |> knitr::kable()
+```
+
+### Top POI types within each class
+
+```{r}
+dbGetQuery(con, "
+SELECT
+    class,
+    type,
+    COUNT(*) AS n
+FROM public_data.osm_poi
+GROUP BY class, type
+ORDER BY class, n DESC;
+") |> knitr::kable()
+```
+
+### Landuse counts by type
+
+```{r}
+dbGetQuery(con, "
+SELECT
+    type,
+    COUNT(*)          AS n_polygons,
+    ROUND(SUM(area_sqkm)::numeric, 2) AS total_area_sqkm
+FROM public_data.osm_landuse
+GROUP BY type
+ORDER BY n_polygons DESC;
+") |> knitr::kable()
+```
+
+### Visitable POI materialized view
+
+Confirm `osm_poi_visitable` refreshed successfully after the import:
+
+```{r}
+dbGetQuery(con, "
+SELECT
+    'osm_poi'           AS source,
+    COUNT(*)            AS count
+FROM public_data.osm_poi
+UNION ALL
+SELECT
+    'osm_poi_visitable' AS source,
+    COUNT(*)            AS count
+FROM public_data.osm_poi_visitable
+ORDER BY source;
+") |> knitr::kable()
+```
+
+```{r}
+disconnect_db(con)
+```
