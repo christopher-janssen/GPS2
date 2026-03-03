@@ -1,0 +1,342 @@
+---
+title: "Enrich GPS Data with Alcohol POI Proximity & Density"
+author: "Christopher Janssen"
+date: "`r lubridate::today()`"
+format:
+  html:
+    self-contained: true
+editor_options:
+  chunk_output_type: console
+editor:
+  markdown:
+    wrap: 72
+---
+
+# POI Proximity & Density Features
+
+This notebook computes spatial exposure features for extreme-risk
+alcohol POI at the GPS point level.
+
+**Two feature types:**
+
+-   **Proximity** — distance (meters) to the nearest POI in each risk
+    category, unbounded. Every GPS point gets a value regardless of how
+    far away the nearest outlet is.
+
+-   **Density** — count of risk POI within 100m, 250m, and 500m of each
+    GPS point.
+
+**Categories:**
+
+-   **on_premise** — bars, pubs, nightclubs, biergartens, breweries
+    (consumption venues)
+-   **off_premise** — liquor stores, wine shops (retail alcohol sales)
+
+**Input:** `gps_enriched_categorized.csv`
+
+**Output:** `gps_enriched_poi_features.csv`
+
+## Setup
+
+```{r include=FALSE}
+source(here::here("scripts/r/setup.R"))
+source(here::here("scripts/r/connection.R"))
+
+con <- connect_to_db()
+```
+
+## Load GPS Data
+
+```{r}
+gps_path <- str_c(path_shared, "/gps_enriched_categorized.csv")
+
+gps_data <- read_csv(gps_path, show_col_types = FALSE)
+
+nrow(gps_data)
+```
+
+```{r}
+glimpse(gps_data)
+```
+
+## Load GPS Points into Temporary Database Table
+
+```{r}
+gps_spatial <- gps_data |>
+  mutate(row_id = row_number()) |>
+  select(row_id, lat, lon)
+```
+
+```{r}
+dbWriteTable(con, "temp_gps_points", gps_spatial, temporary = TRUE, overwrite = TRUE, row.names = FALSE)
+```
+
+```{r}
+dbExecute(con, "
+ALTER TABLE temp_gps_points
+ADD COLUMN geom GEOMETRY(Point, 4326);
+")
+
+dbExecute(con, "
+UPDATE temp_gps_points
+SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326);
+")
+```
+
+```{r}
+dbExecute(con, "
+CREATE INDEX idx_temp_gps_geom ON temp_gps_points USING GIST(geom);
+")
+
+dbExecute(con, "
+CREATE INDEX idx_temp_gps_row_id ON temp_gps_points(row_id);
+")
+
+dbExecute(con, "ANALYZE temp_gps_points;")
+```
+
+```{r}
+dbGetQuery(con, "
+SELECT COUNT(*) as total_points, COUNT(geom) as with_geometry
+FROM temp_gps_points;
+")
+```
+
+## Verify POI Availability
+
+```{r}
+dbGetQuery(con, "
+SELECT
+  CASE
+    WHEN (class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
+      OR (class = 'craft' AND type = 'brewery') THEN 'on_premise'
+    WHEN class = 'shop' AND type IN ('alcohol', 'wine') THEN 'off_premise'
+  END AS category,
+  COUNT(*) as n_poi
+FROM public_data.osm_poi
+WHERE (class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
+   OR (class = 'craft' AND type = 'brewery')
+   OR (class = 'shop' AND type IN ('alcohol', 'wine'))
+GROUP BY category
+ORDER BY category;
+")
+```
+
+## Compute Proximity Features
+
+For each GPS point, find the distance to the nearest on-premise and
+off-premise outlet. Unbounded — distance is returned regardless of how
+far away the nearest outlet is.
+
+**SQL Pattern:**
+
+-   `CROSS JOIN LATERAL ... ORDER BY geom <-> g.geom LIMIT 1` — uses
+    GIST index for fast nearest-neighbor lookup
+-   `ST_Distance(...::geography)` — accurate great-circle distance in
+    meters
+
+```{r}
+proximity_results <- dbGetQuery(con, "
+WITH on_premise_poi AS (
+  SELECT geom
+  FROM public_data.osm_poi
+  WHERE (class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
+     OR (class = 'craft' AND type = 'brewery')
+),
+off_premise_poi AS (
+  SELECT geom
+  FROM public_data.osm_poi
+  WHERE class = 'shop' AND type IN ('alcohol', 'wine')
+),
+nearest_on AS (
+  SELECT DISTINCT ON (g.row_id)
+    g.row_id,
+    ROUND(ST_Distance(g.geom::geography, p.geom::geography)::numeric, 2)
+      AS proximity_on_premise_m
+  FROM temp_gps_points g
+  CROSS JOIN LATERAL (
+    SELECT geom FROM on_premise_poi ORDER BY geom <-> g.geom LIMIT 1
+  ) p
+  ORDER BY g.row_id
+),
+nearest_off AS (
+  SELECT DISTINCT ON (g.row_id)
+    g.row_id,
+    ROUND(ST_Distance(g.geom::geography, p.geom::geography)::numeric, 2)
+      AS proximity_off_premise_m
+  FROM temp_gps_points g
+  CROSS JOIN LATERAL (
+    SELECT geom FROM off_premise_poi ORDER BY geom <-> g.geom LIMIT 1
+  ) p
+  ORDER BY g.row_id
+)
+SELECT n1.row_id, n1.proximity_on_premise_m, n2.proximity_off_premise_m
+FROM nearest_on n1
+JOIN nearest_off n2 ON n1.row_id = n2.row_id;
+")
+
+nrow(proximity_results)
+```
+
+```{r}
+# Summary: proximity distributions (meters)
+proximity_results |>
+  select(proximity_on_premise_m, proximity_off_premise_m) |>
+  summary()
+```
+
+## Compute Density Features
+
+For each GPS point, count on-premise and off-premise outlets within
+100m, 250m, and 500m.
+
+**SQL Pattern:**
+
+-   LEFT JOIN on 500m (max radius) pre-filters to relevant POI only
+-   `COUNT(CASE WHEN ST_DWithin(...) THEN 1 END)` counts within each
+    inner radius
+
+```{r}
+density_results <- dbGetQuery(con, "
+WITH alcohol_poi AS (
+  SELECT
+    geom,
+    CASE
+      WHEN (class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
+        OR (class = 'craft' AND type = 'brewery') THEN 'on_premise'
+      WHEN class = 'shop' AND type IN ('alcohol', 'wine') THEN 'off_premise'
+    END AS category
+  FROM public_data.osm_poi
+  WHERE (class = 'amenity' AND type IN ('bar', 'pub', 'nightclub', 'biergarten'))
+     OR (class = 'craft' AND type = 'brewery')
+     OR (class = 'shop' AND type IN ('alcohol', 'wine'))
+)
+SELECT
+  g.row_id,
+  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 100)
+                  AND p.category = 'on_premise' THEN 1 END) AS n_on_premise_100m,
+  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 250)
+                  AND p.category = 'on_premise' THEN 1 END) AS n_on_premise_250m,
+  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 500)
+                  AND p.category = 'on_premise' THEN 1 END) AS n_on_premise_500m,
+  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 100)
+                  AND p.category = 'off_premise' THEN 1 END) AS n_off_premise_100m,
+  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 250)
+                  AND p.category = 'off_premise' THEN 1 END) AS n_off_premise_250m,
+  COUNT(CASE WHEN ST_DWithin(g.geom::geography, p.geom::geography, 500)
+                  AND p.category = 'off_premise' THEN 1 END) AS n_off_premise_500m
+FROM temp_gps_points g
+LEFT JOIN alcohol_poi p
+  ON ST_DWithin(g.geom::geography, p.geom::geography, 500)
+GROUP BY g.row_id
+ORDER BY g.row_id;
+")
+
+# Cast integer64 to integer for R compatibility
+density_results <- density_results |>
+  mutate(across(starts_with("n_"), as.integer))
+
+nrow(density_results)
+```
+
+```{r}
+# Summary: density distributions
+density_results |>
+  select(starts_with("n_")) |>
+  summary()
+```
+
+## Join All Features
+
+```{r}
+gps_enriched_features <- gps_data |>
+  mutate(row_id = row_number()) |>
+  left_join(proximity_results, by = "row_id") |>
+  left_join(density_results, by = "row_id") |>
+  # Replace NA density counts with 0 (no POI in range)
+  mutate(across(starts_with("n_"), ~replace_na(.x, 0L))) |>
+  select(-row_id)
+
+nrow(gps_enriched_features)
+```
+
+## Validation
+
+```{r}
+# Proximity: no NAs expected (unbounded — every point has a nearest outlet)
+tibble(
+  feature = c("proximity_on_premise_m", "proximity_off_premise_m"),
+  n_na = c(
+    sum(is.na(gps_enriched_features$proximity_on_premise_m)),
+    sum(is.na(gps_enriched_features$proximity_off_premise_m))
+  ),
+  min_m = c(
+    min(gps_enriched_features$proximity_on_premise_m, na.rm = TRUE),
+    min(gps_enriched_features$proximity_off_premise_m, na.rm = TRUE)
+  ),
+  median_m = c(
+    median(gps_enriched_features$proximity_on_premise_m, na.rm = TRUE),
+    median(gps_enriched_features$proximity_off_premise_m, na.rm = TRUE)
+  ),
+  max_m = c(
+    max(gps_enriched_features$proximity_on_premise_m, na.rm = TRUE),
+    max(gps_enriched_features$proximity_off_premise_m, na.rm = TRUE)
+  )
+) |>
+  knitr::kable()
+```
+
+```{r}
+# Density: coverage rates at each radius
+tibble(
+  feature = c(
+    "n_on_premise_100m", "n_on_premise_250m", "n_on_premise_500m",
+    "n_off_premise_100m", "n_off_premise_250m", "n_off_premise_500m"
+  ),
+  pct_nonzero = c(
+    mean(gps_enriched_features$n_on_premise_100m > 0) * 100,
+    mean(gps_enriched_features$n_on_premise_250m > 0) * 100,
+    mean(gps_enriched_features$n_on_premise_500m > 0) * 100,
+    mean(gps_enriched_features$n_off_premise_100m > 0) * 100,
+    mean(gps_enriched_features$n_off_premise_250m > 0) * 100,
+    mean(gps_enriched_features$n_off_premise_500m > 0) * 100
+  ) |> round(2),
+  mean_count = c(
+    mean(gps_enriched_features$n_on_premise_100m),
+    mean(gps_enriched_features$n_on_premise_250m),
+    mean(gps_enriched_features$n_on_premise_500m),
+    mean(gps_enriched_features$n_off_premise_100m),
+    mean(gps_enriched_features$n_off_premise_250m),
+    mean(gps_enriched_features$n_off_premise_500m)
+  ) |> round(3),
+  max_count = c(
+    max(gps_enriched_features$n_on_premise_100m),
+    max(gps_enriched_features$n_on_premise_250m),
+    max(gps_enriched_features$n_on_premise_500m),
+    max(gps_enriched_features$n_off_premise_100m),
+    max(gps_enriched_features$n_off_premise_250m),
+    max(gps_enriched_features$n_off_premise_500m)
+  )
+) |>
+  knitr::kable()
+```
+
+## Write Output
+
+```{r}
+output_path <- str_c(path_shared, "/gps_enriched_poi_features.csv")
+
+write_csv(gps_enriched_features, output_path)
+```
+
+```{r}
+file.info(output_path)$size / 1024^2  # Size in MB
+```
+
+## Cleanup
+
+```{r}
+dbExecute(con, "DROP TABLE IF EXISTS temp_gps_points;")
+
+disconnect_db(con)
+```
