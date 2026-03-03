@@ -44,8 +44,6 @@ local osm_poi = osm2pgsql.define_table({
         { column = 'street',      type = 'text' },
         { column = 'city',        type = 'text' },
         { column = 'postcode',    type = 'text' },
-        { column = 'lon',         type = 'real' },
-        { column = 'lat',         type = 'real' },
         { column = 'geom',        type = 'point', projection = 4326 },
     },
 })
@@ -80,7 +78,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Helper: build shared address/name columns from tags
 -- ---------------------------------------------------------------------------
-local function poi_row(tags, class_key, class_val, lon, lat, geom)
+local function poi_row(tags, class_key, class_val, geom)
     return {
         class       = class_key,
         type        = class_val,
@@ -89,8 +87,6 @@ local function poi_row(tags, class_key, class_val, lon, lat, geom)
         street      = tags['addr:street'],
         city        = tags['addr:city'],
         postcode    = tags['addr:postcode'],
-        lon         = lon,
-        lat         = lat,
         geom        = geom,
     }
 end
@@ -102,11 +98,9 @@ function osm2pgsql.process_node(object)
     local class_key, class_val = get_poi_class(object.tags)
     if not class_key then return end
 
-    local geom = object:as_point()
-    local lon, lat = object:get_bbox()
     osm_poi:insert(poi_row(
         object.tags, class_key, class_val,
-        lon, lat, geom
+        object:as_point()
     ))
 end
 
@@ -142,10 +136,9 @@ function osm2pgsql.process_way(object)
     local centroid = object:as_polygon():centroid()
     if not centroid then return end
 
-    local lon, lat = centroid:get_bbox()
     osm_poi:insert(poi_row(
         object.tags, class_key, class_val,
-        lon, lat, centroid
+        centroid
     ))
 end
 
@@ -184,9 +177,8 @@ function osm2pgsql.process_relation(object)
     local centroid = geom:centroid()
     if not centroid then return end
 
-    local lon, lat = centroid:get_bbox()
     osm_poi:insert(poi_row(
         object.tags, class_key, class_val,
-        lon, lat, centroid
+        centroid
     ))
 end

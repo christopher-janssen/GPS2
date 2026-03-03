@@ -99,7 +99,17 @@ osm2pgsql \
     "$PBF_IMPORT"
 
 # ---------------------------------------------------------------------------
-# Step 3: Row counts
+# Step 3: Populate lon/lat from geometry
+# ---------------------------------------------------------------------------
+echo "==> Populating lon/lat columns..."
+psql --dbname=geolocation --no-psqlrc --command="
+UPDATE public_data.osm_poi
+SET lon = ST_X(geom),
+    lat = ST_Y(geom);
+"
+
+# ---------------------------------------------------------------------------
+# Step 4: Row counts
 # ---------------------------------------------------------------------------
 echo ""
 echo "==> Import complete. Row counts:"
