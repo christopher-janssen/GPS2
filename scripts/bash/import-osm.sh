@@ -95,6 +95,7 @@ osm2pgsql \
     --output=flex \
     --style="$LUA_STYLE" \
     --database=geolocation \
+    --middle-schema=public_data \
     "$PBF_IMPORT"
 
 # ---------------------------------------------------------------------------
