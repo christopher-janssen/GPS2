@@ -103,9 +103,10 @@ function osm2pgsql.process_node(object)
     if not class_key then return end
 
     local geom = object:as_point()
+    local lon, lat = object:get_bbox()
     osm_poi:insert(poi_row(
         object.tags, class_key, class_val,
-        geom:lon(), geom:lat(), geom
+        lon, lat, geom
     ))
 end
 
@@ -141,9 +142,10 @@ function osm2pgsql.process_way(object)
     local centroid = object:as_polygon():centroid()
     if not centroid then return end
 
+    local lon, lat = centroid:get_bbox()
     osm_poi:insert(poi_row(
         object.tags, class_key, class_val,
-        centroid:lon(), centroid:lat(), centroid
+        lon, lat, centroid
     ))
 end
 
@@ -182,8 +184,9 @@ function osm2pgsql.process_relation(object)
     local centroid = geom:centroid()
     if not centroid then return end
 
+    local lon, lat = centroid:get_bbox()
     osm_poi:insert(poi_row(
         object.tags, class_key, class_val,
-        centroid:lon(), centroid:lat(), centroid
+        lon, lat, centroid
     ))
 end
